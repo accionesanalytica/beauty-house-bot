@@ -1,0 +1,28 @@
+# Secretos — NUNCA subir
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Dependencias
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Editores
+.vscode/
+.idea/
+
+# Build
+dist/
+build/
+
+# Archivos de trabajo con datos del negocio (no versionar exports con datos de clientes)
+assets/exports/*.csv
