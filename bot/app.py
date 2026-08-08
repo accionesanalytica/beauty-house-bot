@@ -21,8 +21,8 @@ import numpy as np
 from google import genai
 from google.genai import types
 
-# Importar el agent
-from agent import answer
+# TODO: Importar agent (requiere arreglar OpenAI SDK conflict)
+# from agent import answer
 
 load_dotenv()
 
@@ -172,20 +172,11 @@ async def webhook_post(request: Request):
 
     print(f"\n[WhatsApp] {customer_phone}: {message_text}")
 
-    # 1. Buscar contexto en Supabase
-    rag_context = search_similar_products(message_text, limit=3)
+    # TODO: Implementar agent loop con DeepSeek API directo (sin OpenAI SDK)
+    # Por ahora, respuesta temporal
+    reply = "Hola! El bot está en construcción. Pronto podré ayudarte con consultas de stock 😊"
 
-    # 2. Llamar al agent
-    result = answer(
-        user_message=message_text,
-        history=None,  # TODO: cargar historial de Supabase si existe
-        rag_context=rag_context,
-        verbose=True,
-    )
-
-    reply = result["reply"]
-
-    # 3. Responder a WhatsApp
+    # Responder a WhatsApp
     send_whatsapp_message(customer_phone, reply)
 
     return JSONResponse(content={"ok": True})
