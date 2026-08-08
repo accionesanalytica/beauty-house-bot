@@ -22,8 +22,8 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "api"))
-from tiendanube_tools import AVAILABLE_TOOLS, TOOL_SCHEMAS  # noqa: E402
+# Import from same directory (bot/)
+from tiendanube_tools import AVAILABLE_TOOLS, TOOL_SCHEMAS
 
 load_dotenv()
 
