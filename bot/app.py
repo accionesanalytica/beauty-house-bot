@@ -4,10 +4,8 @@ Escucha mensajes, busca contexto en Supabase (RAG vectorial),
 y responde usando el agent de DeepSeek.
 """
 
-import json
 import os
 import sys
-from typing import Any, Dict, Optional
 
 # Agregar el directorio actual al path para importar agent.py
 sys.path.insert(0, os.path.dirname(__file__))
@@ -21,14 +19,17 @@ import numpy as np
 from google import genai
 from google.genai import types
 
-# TODO: Importar agent (requiere arreglar OpenAI SDK conflict)
+# TODO: Importar agent cuando esté listo
 # from agent import answer
 
 load_dotenv()
 
 app = FastAPI()
 
-# Configuración
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 WHATSAPP_PHONE_ID = os.getenv("PHONE_NUMBER_ID")
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN")
@@ -41,8 +42,13 @@ EMBED_DIMS = 768
 gemini_client = genai.Client(api_key=GEMINI_KEY)
 
 
+# ============================================================
+# GEMINI EMBEDDINGS
+# ============================================================
+
 def embed_text(text: str, task_type: str = "RETRIEVAL_QUERY") -> list:
     """Genera embedding de 768 dimensiones, normalizado."""
+
     result = gemini_client.models.embed_content(
         model=EMBED_MODEL,
         contents=text,
@@ -51,34 +57,58 @@ def embed_text(text: str, task_type: str = "RETRIEVAL_QUERY") -> list:
             task_type=task_type,
         ),
     )
+
     vector = np.array(result.embeddings[0].values)
-    normalized = (vector / np.linalg.norm(vector)).tolist()
+
+    normalized = (
+        vector / np.linalg.norm(vector)
+    ).tolist()
+
     return normalized
 
+
+# ============================================================
+# BÚSQUEDA RAG EN SUPABASE
+# ============================================================
 
 def search_similar_products(query: str, limit: int = 3) -> str:
     """
     Busca productos similares en Supabase usando búsqueda vectorial.
     Devuelve un string con el contexto para el agent.
     """
+
     try:
-        embedding = embed_text(query, task_type="RETRIEVAL_QUERY")
+        embedding = embed_text(
+            query,
+            task_type="RETRIEVAL_QUERY"
+        )
 
         conn = psycopg2.connect(SUPABASE_DB_URL)
         cursor = conn.cursor()
 
-        # Búsqueda por similitud (cosine distance)
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT
-                product_id, variant_id, sku, product_name, variant,
+                product_id,
+                variant_id,
+                sku,
+                product_name,
+                variant,
                 1 - (embedding <=> %s::vector) AS similarity
             FROM product_embeddings
             WHERE published = true
             ORDER BY embedding <=> %s::vector
             LIMIT %s
-        """, (str(embedding), str(embedding), limit))
+            """,
+            (
+                str(embedding),
+                str(embedding),
+                limit,
+            ),
+        )
 
         results = cursor.fetchall()
+
         cursor.close()
         conn.close()
 
@@ -86,10 +116,21 @@ def search_similar_products(query: str, limit: int = 3) -> str:
             return ""
 
         context = "Productos encontrados:\n"
+
         for row in results:
-            product_id, variant_id, sku, product_name, variant, similarity = row
+
+            (
+                product_id,
+                variant_id,
+                sku,
+                product_name,
+                variant,
+                similarity,
+            ) = row
+
             context += (
-                f"- {product_name} (SKU: {sku or 'N/A'}) "
+                f"- {product_name} "
+                f"(SKU: {sku or 'N/A'}) "
                 f"Variante: {variant or 'default'} "
                 f"(similitud: {similarity:.2f})\n"
             )
@@ -97,98 +138,223 @@ def search_similar_products(query: str, limit: int = 3) -> str:
         return context
 
     except Exception as e:
-        print(f"ERROR en search_similar_products: {e}")
+
+        print(
+            f"ERROR en search_similar_products: {e}"
+        )
+
         return ""
 
 
-def send_whatsapp_message(phone_number: str, message: str) -> bool:
+# ============================================================
+# WHATSAPP — ENVÍO DE MENSAJES
+# ============================================================
+
+def send_whatsapp_message(
+    phone_number: str,
+    message: str
+) -> bool:
     """Envía un mensaje de vuelta a WhatsApp."""
-    url = f"https://graph.instagram.com/v18.0/{WHATSAPP_PHONE_ID}/messages"
+
+    url = (
+        f"https://graph.facebook.com/v26.0/"
+        f"{WHATSAPP_PHONE_ID}/messages"
+    )
+
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json",
     }
+
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
         "to": phone_number,
         "type": "text",
-        "text": {"body": message},
+        "text": {
+            "body": message
+        },
     }
 
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
+
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=10,
+        )
+
+        print(
+            f"[WhatsApp] HTTP {response.status_code}"
+        )
+
+        print(
+            f"[WhatsApp] Response: {response.text}"
+        )
+
         response.raise_for_status()
+
         return True
+
     except Exception as e:
-        print(f"ERROR enviando mensaje a WhatsApp: {e}")
+
+        print(
+            f"ERROR enviando mensaje a WhatsApp: {e}"
+        )
+
         return False
 
+
+# ============================================================
+# WEBHOOK — VERIFICACIÓN META
+# ============================================================
 
 @app.get("/webhook")
 async def webhook_get(request: Request):
     """Verificación del webhook por parte de Meta."""
-    verify_token = request.query_params.get("hub.verify_token")
-    challenge = request.query_params.get("hub.challenge")
+
+    verify_token = request.query_params.get(
+        "hub.verify_token"
+    )
+
+    challenge = request.query_params.get(
+        "hub.challenge"
+    )
 
     if verify_token == WHATSAPP_WEBHOOK_VERIFY_TOKEN:
-        return JSONResponse(content=int(challenge))
 
-    return JSONResponse(content={"error": "Invalid token"}, status_code=403)
+        return JSONResponse(
+            content=int(challenge)
+        )
 
+    return JSONResponse(
+        content={"error": "Invalid token"},
+        status_code=403,
+    )
+
+
+# ============================================================
+# WEBHOOK — MENSAJES ENTRANTES
+# ============================================================
 
 @app.post("/webhook")
 async def webhook_post(request: Request):
     """Procesa mensajes entrantes de WhatsApp."""
+
     body = await request.json()
 
     # Meta envía un array de entries
-    if "entry" not in body or not body["entry"]:
-        return JSONResponse(content={"ok": True})
+    if (
+        "entry" not in body
+        or not body["entry"]
+    ):
+        return JSONResponse(
+            content={"ok": True}
+        )
 
     entry = body["entry"][0]
 
-    # Verificar si hay cambios en messaging
-    if "changes" not in entry or not entry["changes"]:
-        return JSONResponse(content={"ok": True})
+    # Verificar cambios
+    if (
+        "changes" not in entry
+        or not entry["changes"]
+    ):
+        return JSONResponse(
+            content={"ok": True}
+        )
 
     change = entry["changes"][0]
 
-    # Verificar si hay mensajes
-    if "value" not in change or "messages" not in change["value"]:
-        return JSONResponse(content={"ok": True})
+    # Verificar mensajes
+    if (
+        "value" not in change
+        or "messages" not in change["value"]
+    ):
+        return JSONResponse(
+            content={"ok": True}
+        )
 
     messages = change["value"]["messages"]
 
     if not messages:
-        return JSONResponse(content={"ok": True})
+        return JSONResponse(
+            content={"ok": True}
+        )
 
     msg = messages[0]
+
     customer_phone = msg.get("from")
-    message_text = msg.get("text", {}).get("body", "").strip()
+
+    message_text = (
+        msg.get("text", {})
+        .get("body", "")
+        .strip()
+    )
 
     if not message_text:
-        return JSONResponse(content={"ok": True})
 
-    print(f"\n[WhatsApp] {customer_phone}: {message_text}")
+        return JSONResponse(
+            content={"ok": True}
+        )
 
-    # TODO: Implementar agent loop con DeepSeek API directo (sin OpenAI SDK)
-    # Por ahora, respuesta temporal
-    reply = "Hola! El bot está en construcción. Pronto podré ayudarte con consultas de stock 😊"
+    print(
+        f"\n[WhatsApp] "
+        f"{customer_phone}: "
+        f"{message_text}"
+    )
 
-    # Responder a WhatsApp
-    send_whatsapp_message(customer_phone, reply)
+    # ========================================================
+    # RESPUESTA TEMPORAL
+    # ========================================================
+    #
+    # TODO:
+    # Implementar agent loop con DeepSeek + RAG.
+    #
 
-    return JSONResponse(content={"ok": True})
+    reply = (
+        "Hola! El bot está en construcción. "
+        "Pronto podré ayudarte con consultas de stock 😊"
+    )
 
+    # Enviar respuesta
+    send_whatsapp_message(
+        customer_phone,
+        reply,
+    )
+
+    return JSONResponse(
+        content={"ok": True}
+    )
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
 
 @app.get("/health")
 async def health():
     """Health check para Railway."""
-    return {"status": "ok"}
 
+    return {
+        "status": "ok"
+    }
+
+
+# ============================================================
+# LOCAL DEVELOPMENT
+# ============================================================
 
 if __name__ == "__main__":
+
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+
+    port = int(
+        os.getenv("PORT", 8000)
+    )
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+    )
