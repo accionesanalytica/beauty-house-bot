@@ -172,6 +172,140 @@ def load_history(customer_phone: str, limit: int = 12) -> List[Dict[str, Any]]:
     return history
 
 
+def get_active_sales_intake(conversation_id: int) -> Optional[Dict[str, Any]]:
+    """Return the active sales-intake form for one customer conversation."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status, product_request, quantity, fulfillment, customer_name, customer_email
+                FROM sales_intakes
+                WHERE conversation_id = %s
+                  AND status NOT IN ('ready_for_isa', 'cancelled')
+                """,
+                (conversation_id,),
+            )
+            row = cursor.fetchone()
+    finally:
+        connection.close()
+
+    if not row:
+        return None
+    return {
+        "status": row[0],
+        "product_request": row[1],
+        "quantity": row[2],
+        "fulfillment": row[3],
+        "customer_name": row[4],
+        "customer_email": row[5],
+    }
+
+
+def start_sales_intake(conversation_id: int) -> None:
+    """Start or reset the pre-approval sales form. It never creates an order."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO sales_intakes (conversation_id, status)
+                VALUES (%s, 'product')
+                ON CONFLICT (conversation_id) DO UPDATE
+                SET status = 'product',
+                    product_request = NULL,
+                    quantity = NULL,
+                    fulfillment = NULL,
+                    customer_name = NULL,
+                    customer_email = NULL,
+                    updated_at = now()
+                """,
+                (conversation_id,),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def set_sales_intake_product(conversation_id: int, product_request: str) -> None:
+    _update_sales_intake(conversation_id, "quantity", product_request=product_request)
+
+
+def set_sales_intake_quantity(conversation_id: int, quantity: int) -> None:
+    _update_sales_intake(conversation_id, "fulfillment", quantity=quantity)
+
+
+def set_sales_intake_fulfillment(conversation_id: int, fulfillment: str) -> None:
+    if fulfillment not in ("shipping", "pickup"):
+        raise ValueError("Invalid fulfillment")
+    _update_sales_intake(conversation_id, "customer", fulfillment=fulfillment)
+
+
+def set_sales_intake_customer(
+    conversation_id: int,
+    customer_name: str,
+    customer_email: str,
+) -> None:
+    _update_sales_intake(
+        conversation_id,
+        "confirmation",
+        customer_name=customer_name,
+        customer_email=customer_email,
+    )
+
+
+def mark_sales_intake_ready(conversation_id: int) -> None:
+    _update_sales_intake(conversation_id, "ready_for_isa")
+
+
+def cancel_sales_intake(conversation_id: int) -> None:
+    _update_sales_intake(conversation_id, "cancelled")
+
+
+def _update_sales_intake(conversation_id: int, status: str, **values: Any) -> None:
+    """Persist one explicit sales-form transition."""
+    allowed_statuses = {
+        "product", "quantity", "fulfillment", "customer", "confirmation", "ready_for_isa", "cancelled"
+    }
+    if status not in allowed_statuses:
+        raise ValueError("Invalid sales intake status")
+
+    allowed_fields = {
+        "product_request", "quantity", "fulfillment", "customer_name", "customer_email"
+    }
+    unknown = set(values) - allowed_fields
+    if unknown:
+        raise ValueError("Invalid sales intake fields")
+
+    assignments = ["status = %s", "updated_at = now()"]
+    parameters: List[Any] = [status]
+    for field, value in values.items():
+        assignments.append("{} = %s".format(field))
+        parameters.append(value)
+    parameters.append(conversation_id)
+
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE sales_intakes SET {} WHERE conversation_id = %s".format(
+                    ", ".join(assignments)
+                ),
+                parameters,
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("No existe una ficha de venta activa.")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def pending_action_count() -> int:
     """Return the global number of actions waiting for Isa."""
     connection = _connect()

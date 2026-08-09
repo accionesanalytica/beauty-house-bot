@@ -7,6 +7,7 @@ responde con una plantilla de prueba aprobada por Meta.
 import os
 import re
 import sys
+import unicodedata
 
 # Agregar el directorio actual al path para importar agent.py
 sys.path.insert(0, os.path.dirname(__file__))
@@ -23,15 +24,23 @@ from google.genai import types
 from agent import answer
 from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
 from conversation_store import (
+    cancel_sales_intake,
     create_pending_action,
+    get_active_sales_intake,
     load_history,
     list_pending_actions,
+    mark_sales_intake_ready,
     pending_action_count,
     record_isa_feedback,
     record_bot_message,
     record_inbound_message,
     resolve_pending_action,
+    set_sales_intake_customer,
+    set_sales_intake_fulfillment,
+    set_sales_intake_product,
+    set_sales_intake_quantity,
     set_conversation_state,
+    start_sales_intake,
 )
 
 load_dotenv()
@@ -52,6 +61,7 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 # actual. El modo agent se habilitará explícitamente en una etapa posterior.
 BOT_RESPONSE_MODE = os.getenv("BOT_RESPONSE_MODE", "template").lower()
 ISA_WHATSAPP_NUMBER = os.getenv("ISA_WHATSAPP_NUMBER", "")
+SALES_INTAKE_ENABLED = os.getenv("SALES_INTAKE_ENABLED", "false").lower() == "true"
 
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMS = 768
@@ -381,6 +391,7 @@ def _queue_for_isa(
     summary: str,
     customer_message: str,
     conversation_context: list = None,
+    sale_draft: dict = None,
 ) -> int:
     """Create an escalation and notify Isa only when the queue was empty."""
     pending_before = pending_action_count()
@@ -388,7 +399,7 @@ def _queue_for_isa(
     if action_type == "purchase_review":
         # A draft is an internal checklist, not an order. Fields are populated
         # only later, after Isa reviews the conversation and explicitly approves.
-        payload["sale_draft"] = {
+        payload["sale_draft"] = sale_draft or {
             "status": "needs_isa_review",
             "items_status": "por confirmar",
             "delivery_status": "por confirmar",
@@ -419,6 +430,8 @@ def _queue_for_isa(
 def _customer_escalation_type(message_text: str, has_bot_history: bool) -> str:
     """Recognize only clear handoff/purchase signals; vague questions stay with Fred."""
     normalized = message_text.lower()
+    if re.search(r"\bno\b.{0,30}\b(quiero|interesa|comprar|proceder)\b", normalized):
+        return ""
     human_patterns = (
         r"hablar con isa",
         r"pasame con isa",
@@ -468,6 +481,149 @@ def _needs_purchase_clarification(message_text: str, prior_history: list) -> boo
             flags=re.IGNORECASE,
         )
     )
+
+
+def _normalized_text(text: str) -> str:
+    return "".join(
+        character
+        for character in unicodedata.normalize("NFD", text.lower())
+        if unicodedata.category(character) != "Mn"
+    )
+
+
+def _extract_quantity(text: str) -> int:
+    match = re.search(r"\b(\d{1,2})\s*(?:x|u|unidades?|unidad)?\b", text.lower())
+    if not match:
+        return 0
+    quantity = int(match.group(1))
+    return quantity if 1 <= quantity <= 99 else 0
+
+
+def _extract_customer_details(text: str) -> tuple:
+    email_match = re.search(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", text)
+    if not email_match:
+        return ()
+
+    name_text = text[:email_match.start()]
+    name_text = re.sub(r"(?i)\b(nombre|soy|mi mail|email|correo|es)\b\s*:? *", "", name_text)
+    name_text = re.sub(r"[,:;|]+", " ", name_text).strip()
+    name_words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", name_text)
+    if len(name_words) < 2:
+        return ()
+    return " ".join(name_words[:5]), email_match.group(0).lower()
+
+
+def _sales_fulfillment(text: str) -> str:
+    normalized = _normalized_text(text)
+    if any(word in normalized for word in ("retiro", "retirar", "showroom", "paso a buscar")):
+        return "pickup"
+    if any(word in normalized for word in ("envio", "enviar", "domicilio", "correo")):
+        return "shipping"
+    return ""
+
+
+def _sales_summary(intake: dict) -> str:
+    fulfillment = "envío" if intake["fulfillment"] == "shipping" else "retiro"
+    return (
+        "Te resumo antes de pasárselo a Isa:\n"
+        "Producto/modelo: {}\n"
+        "Cantidad: {}\n"
+        "Entrega: {}\n"
+        "Nombre: {}\n"
+        "Email: {}\n\n"
+        "¿Confirmás que lo preparemos para revisión?"
+    ).format(
+        intake["product_request"],
+        intake["quantity"],
+        fulfillment,
+        intake["customer_name"],
+        intake["customer_email"],
+    )
+
+
+def _start_sales_intake(conversation_id: int) -> str:
+    start_sales_intake(conversation_id)
+    return (
+        "¡Dale! Para prepararte el link necesito confirmar bien el producto. "
+        "¿Qué modelo o variante querés llevar?"
+    )
+
+
+def _handle_sales_intake(
+    conversation_id: int,
+    customer_phone: str,
+    message_text: str,
+    intake: dict,
+    prior_history: list,
+) -> bool:
+    """Advance one safe sales-form step. Returns true when it sent a reply."""
+    normalized = _normalized_text(message_text)
+    if re.fullmatch(r"(?:cancelar|cancelo|dejalo|no sigo)", normalized):
+        cancel_sales_intake(conversation_id)
+        reply = "Dale, cancelé esta preparación. Si querés volver a empezar, avisame 😊"
+    elif intake["status"] == "product":
+        set_sales_intake_product(conversation_id, message_text)
+        reply = "Perfecto. ¿Cuántas unidades querés?"
+    elif intake["status"] == "quantity":
+        quantity = _extract_quantity(message_text)
+        if not quantity:
+            reply = "Para confirmarlo bien, decime solo cuántas unidades querés."
+        else:
+            set_sales_intake_quantity(conversation_id, quantity)
+            reply = "¿Preferís envío o retiro?"
+    elif intake["status"] == "fulfillment":
+        fulfillment = _sales_fulfillment(message_text)
+        if not fulfillment:
+            reply = "¿Lo necesitás con envío o preferís retirar?"
+        else:
+            set_sales_intake_fulfillment(conversation_id, fulfillment)
+            reply = (
+                "Último dato: pasame tu nombre y apellido junto con tu email. "
+                "Ejemplo: Ana Pérez, ana@email.com"
+            )
+    elif intake["status"] == "customer":
+        customer_details = _extract_customer_details(message_text)
+        if not customer_details:
+            reply = "Necesito nombre y apellido + un email válido. Ejemplo: Ana Pérez, ana@email.com"
+        else:
+            customer_name, customer_email = customer_details
+            set_sales_intake_customer(conversation_id, customer_name, customer_email)
+            refreshed = get_active_sales_intake(conversation_id)
+            reply = _sales_summary(refreshed)
+    elif intake["status"] == "confirmation":
+        if re.match(r"^(si|confirmo|confirmar|dale|ok)\b", normalized):
+            mark_sales_intake_ready(conversation_id)
+            sale_draft = {
+                "status": "ready_for_isa_review",
+                "items_status": "{} × {}".format(
+                    intake["quantity"], intake["product_request"]
+                ),
+                "delivery_status": "envío" if intake["fulfillment"] == "shipping" else "retiro",
+                "payment_status": "link pendiente de aprobación de Isa",
+                "customer_name": intake["customer_name"],
+                "customer_email": intake["customer_email"],
+                "order_creation": "disabled until Isa approval",
+            }
+            _queue_for_isa(
+                conversation_id,
+                customer_phone,
+                "purchase_review",
+                "La clienta confirmó una ficha de venta completa.",
+                message_text,
+                conversation_context=prior_history,
+                sale_draft=sale_draft,
+            )
+            reply = "Perfecto, ya se lo pasé a Isa para que revise los detalles antes de generar cualquier link 😊"
+        elif re.match(r"^(no|cambiar|corregir)\b", normalized):
+            reply = _start_sales_intake(conversation_id)
+        else:
+            reply = "¿Confirmás el resumen? Respondé “confirmo” o decime si querés corregirlo."
+    else:
+        return False
+
+    if send_whatsapp_text(customer_phone, reply):
+        record_bot_message(conversation_id, reply)
+    return True
 
 
 def _isa_feedback_text(message_text: str) -> str:
@@ -769,6 +925,34 @@ async def webhook_post(request: Request):
             print(f"[Conversacion] El bot no responde en estado {state}.")
             return JSONResponse(content={"ok": True})
 
+        if SALES_INTAKE_ENABLED:
+            try:
+                active_sales_intake = get_active_sales_intake(conversation_id)
+                if active_sales_intake and _handle_sales_intake(
+                    conversation_id,
+                    customer_phone,
+                    message_text,
+                    active_sales_intake,
+                    prior_history,
+                ):
+                    return JSONResponse(content={"ok": True})
+            except Exception as error:  # noqa: BLE001
+                print(f"ERROR en ficha de venta (tipo: {type(error).__name__})")
+                customer_reply = (
+                    "Perdón, no pude preparar esos datos ahora. Se lo paso a Isa para revisarlo."
+                )
+                _queue_for_isa(
+                    conversation_id,
+                    customer_phone,
+                    "bot_fallback",
+                    "Fred no pudo guardar la ficha de venta.",
+                    message_text,
+                    conversation_context=prior_history,
+                )
+                if send_whatsapp_text(customer_phone, customer_reply):
+                    record_bot_message(conversation_id, customer_reply)
+                return JSONResponse(content={"ok": True})
+
         if _needs_purchase_clarification(message_text, prior_history):
             customer_reply = (
                 "Para no confundirme: el set sorpresa lo dejamos descartado. "
@@ -791,6 +975,23 @@ async def webhook_post(request: Request):
                 customer_reply = "Dale, se lo paso a Isa para que te ayude. 😊"
                 summary = "La clienta pidió hablar directamente con Isa."
             else:
+                if SALES_INTAKE_ENABLED:
+                    try:
+                        customer_reply = _start_sales_intake(conversation_id)
+                    except Exception as error:  # noqa: BLE001
+                        print(f"ERROR iniciando ficha de venta (tipo: {type(error).__name__})")
+                        _queue_for_isa(
+                            conversation_id,
+                            customer_phone,
+                            "bot_fallback",
+                            "Fred no pudo iniciar la ficha de venta.",
+                            message_text,
+                            conversation_context=prior_history,
+                        )
+                        customer_reply = "Perdón, no pude preparar la compra ahora. Se lo paso a Isa."
+                    if send_whatsapp_text(customer_phone, customer_reply):
+                        record_bot_message(conversation_id, customer_reply)
+                    return JSONResponse(content={"ok": True})
                 customer_reply = "Perfecto, se lo paso a Isa para que confirme los detalles de tu compra. 😊"
                 summary = "La clienta indicó que quiere avanzar con una compra."
 
@@ -831,14 +1032,17 @@ async def webhook_post(request: Request):
                     if handoff.get("reason") == "human_request"
                     else "bot_fallback"
                 )
-                _queue_for_isa(
-                    conversation_id,
-                    customer_phone,
-                    action_type,
-                    handoff.get("summary") or "Fred solicitó intervención de Isa.",
-                    message_text,
-                    conversation_context=prior_history,
-                )
+                if action_type == "purchase_review" and SALES_INTAKE_ENABLED:
+                    reply = _start_sales_intake(conversation_id)
+                else:
+                    _queue_for_isa(
+                        conversation_id,
+                        customer_phone,
+                        action_type,
+                        handoff.get("summary") or "Fred solicitó intervención de Isa.",
+                        message_text,
+                        conversation_context=prior_history,
+                    )
 
             if send_whatsapp_text(customer_phone, reply):
                 record_bot_message(conversation_id, reply)
@@ -903,3 +1107,8 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
     )
+    set_sales_intake_customer,
+    set_sales_intake_fulfillment,
+    set_sales_intake_product,
+    set_sales_intake_quantity,
+    start_sales_intake,
