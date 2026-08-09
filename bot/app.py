@@ -303,6 +303,14 @@ def _is_isa_phone(phone_number: str) -> bool:
     )
 
 
+def _format_ars(value) -> str:
+    """Format a verified ARS amount for people, never for calculations."""
+    try:
+        return "${:,.0f}".format(Decimal(str(value))).replace(",", ".")
+    except (InvalidOperation, TypeError, ValueError):
+        return "a confirmar"
+
+
 def _pending_action_text(action: dict) -> str:
     labels = {
         "human_handoff": "Clienta pidió hablar con Isa",
@@ -324,25 +332,25 @@ def _pending_action_text(action: dict) -> str:
     if sale_draft:
         text += (
             "\n\nBorrador de venta"
-            "\nProducto/variante/cantidad: {}"
-            "\nEntrega: {}"
-            "\nPago: {}"
+            "\nProducto/cantidad: {}"
+            "\nVariante: {}"
             "\nSubtotal productos: {}"
+            "\nEntrega: {}"
+            "\nEnvío: a confirmar"
+            "\nTotal final: a confirmar"
+            "\nCliente: {}"
+            "\nEmail: {}"
+            "\nPago: {}"
         ).format(
             sale_draft["items_status"],
+            sale_draft.get("selected_variant", "a confirmar"),
+            _format_ars(sale_draft.get("products_subtotal")),
             sale_draft["delivery_status"],
+            sale_draft.get("customer_name", "a confirmar"),
+            sale_draft.get("customer_email", "a confirmar"),
             sale_draft["payment_status"],
-            sale_draft.get("products_subtotal", "a confirmar"),
         )
-
-        context = action["payload"].get("conversation_context", [])
-        if context:
-            compact_context = " | ".join(
-                "{}: {}".format(item["speaker"], item["body"])
-                for item in context[-4:]
-            )
-            text += "\nContexto: {}".format(compact_context)
-    return text[:950]
+    return text[:900]
 
 
 def send_isa_pending_buttons(action: dict) -> bool:
@@ -542,7 +550,7 @@ def _sales_summary(intake: dict) -> str:
     if intake["unit_price"] is not None:
         try:
             subtotal = Decimal(str(intake["unit_price"])) * intake["quantity"]
-            formatted_subtotal = "${:,.0f}".format(subtotal).replace(",", ".")
+            formatted_subtotal = _format_ars(subtotal)
             price_summary = (
                 "Subtotal de productos: {}\n"
                 "Envío: a confirmar\n"
@@ -572,7 +580,27 @@ def _sales_summary(intake: dict) -> str:
     )
 
 
-def _start_sales_intake(conversation_id: int, sale_candidate: dict = None) -> str:
+def _recent_candidate_quantity(prior_history: list, sale_candidate: dict) -> int:
+    product_words = {
+        word for word in _normalized_text(sale_candidate.get("product_name", "")).split()
+        if len(word) >= 4
+    }
+    for item in reversed(prior_history[-6:]):
+        if item.get("role") != "user":
+            continue
+        message = item.get("content", "")
+        if product_words.intersection(_normalized_text(message).split()):
+            quantity = _extract_quantity(message)
+            if quantity:
+                return quantity
+    return 0
+
+
+def _start_sales_intake(
+    conversation_id: int,
+    sale_candidate: dict = None,
+    quantity: int = 0,
+) -> str:
     if sale_candidate:
         product_request = sale_candidate["product_name"]
         selected_variant = sale_candidate.get("variant") or ""
@@ -582,7 +610,10 @@ def _start_sales_intake(conversation_id: int, sale_candidate: dict = None) -> st
             selected_sku=sale_candidate["sku"],
             selected_variant=selected_variant,
             unit_price=sale_candidate.get("unit_price"),
+            quantity=quantity or None,
         )
+        if quantity:
+            return "¡Buenísimo! ¿Preferís envío o retiro?"
         return "¡Buenísimo! ¿Cuántas unidades querés llevar?"
 
     start_sales_intake(conversation_id)
@@ -1061,7 +1092,15 @@ async def webhook_post(request: Request):
             handoff = result.get("handoff")
             if sale_candidate and SALES_INTAKE_ENABLED:
                 try:
-                    reply = _start_sales_intake(conversation_id, sale_candidate)
+                    candidate_quantity = (
+                        _extract_quantity(message_text)
+                        or _recent_candidate_quantity(prior_history, sale_candidate)
+                    )
+                    reply = _start_sales_intake(
+                        conversation_id,
+                        sale_candidate,
+                        quantity=candidate_quantity,
+                    )
                     handoff = None
                 except Exception as error:  # noqa: BLE001
                     print(f"ERROR iniciando ficha preseleccionada (tipo: {type(error).__name__})")

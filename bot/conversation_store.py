@@ -212,6 +212,7 @@ def start_sales_intake(
     selected_sku: str = "",
     selected_variant: str = "",
     unit_price: Optional[str] = None,
+    quantity: Optional[int] = None,
 ) -> None:
     """Start or reset the pre-approval sales form. It never creates an order."""
     connection = _connect()
@@ -220,16 +221,16 @@ def start_sales_intake(
             cursor.execute(
                 """
                 INSERT INTO sales_intakes (
-                    conversation_id, status, product_request, selected_sku, selected_variant, unit_price
+                    conversation_id, status, product_request, selected_sku, selected_variant, unit_price, quantity
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (conversation_id) DO UPDATE
                 SET status = EXCLUDED.status,
                     product_request = EXCLUDED.product_request,
                     selected_sku = EXCLUDED.selected_sku,
                     selected_variant = EXCLUDED.selected_variant,
                     unit_price = EXCLUDED.unit_price,
-                    quantity = NULL,
+                    quantity = EXCLUDED.quantity,
                     fulfillment = NULL,
                     customer_name = NULL,
                     customer_email = NULL,
@@ -237,11 +238,12 @@ def start_sales_intake(
                 """,
                 (
                     conversation_id,
-                    "quantity" if product_request else "product",
+                    "fulfillment" if quantity else "quantity" if product_request else "product",
                     product_request or None,
                     selected_sku or None,
                     selected_variant or None,
                     unit_price,
+                    quantity,
                 ),
             )
         connection.commit()
