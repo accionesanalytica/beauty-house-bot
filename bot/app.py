@@ -420,6 +420,10 @@ async def webhook_post(request: Request):
                 message_text,
                 history=prior_history,
                 rag_context=rag_context,
+                greeting_required=not any(
+                    message.get("role") == "assistant"
+                    for message in prior_history
+                ),
                 verbose=False,
             )
             reply = (result.get("reply") or "").strip()

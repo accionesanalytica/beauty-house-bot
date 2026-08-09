@@ -14,7 +14,9 @@ Python 3.9 compatible.
 """
 
 import os
+import re
 import time
+from html import unescape
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -76,6 +78,14 @@ def _localized(value: Any) -> str:
 def _describe_variant(variant: Dict[str, Any]) -> str:
     values = variant.get("values") or []
     return " / ".join(_localized(v) for v in values)
+
+
+def _product_description(product: Dict[str, Any], limit: int = 1200) -> str:
+    """Convert the store's HTML description into short plain text for the LLM."""
+    raw_description = _localized(product.get("description"))
+    plain_text = re.sub(r"<[^>]+>", " ", unescape(raw_description))
+    plain_text = re.sub(r"\s+", " ", plain_text).strip()
+    return plain_text[:limit]
 
 
 # --------------------------------------------------------------------------
@@ -238,6 +248,8 @@ def get_product_availability(product_id: int) -> Dict[str, Any]:
         "found": True,
         "product_id": product_id,
         "product_name": _localized(product.get("name")),
+        "description": _product_description(product),
+        "product_url": product.get("canonical_url") or "",
         "variants": variants,
     }
 

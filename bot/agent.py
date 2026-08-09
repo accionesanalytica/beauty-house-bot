@@ -16,6 +16,7 @@ Python 3.9 compatible.
 
 import json
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +33,7 @@ load_dotenv()
 MODEL = "deepseek-chat"
 MAX_TOOL_ROUNDS = 5
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+URL_PATTERN = re.compile(r"https?://[^\s<>()]+")
 
 SYSTEM_PROMPT = """Sos el asistente de atención al cliente de Beauty House, \
 una tienda argentina de maquillaje importado y pestañas (marca propia: Shoow Tools).
@@ -64,7 +66,9 @@ REGLAS QUE NO PODÉS ROMPER:
    es por encargo. Decí que necesitás confirmarlo con Isa y no prometas plazos.
 
 5. No confirmes pedidos ni tomes compromisos en nombre de la tienda.
-   Podés armar el pedido, pero siempre aclarás que Isa lo confirma.
+   No digas que podés armar, crear, reservar o dejar listo un pedido: esas
+   funciones todavía no existen. Si la clienta quiere comprar, decí que Isa
+   confirma los detalles con ella.
 
 6. No afirmes promociones, envío gratis, descuentos, cuotas ni medios de pago
    específicos si no están confirmados por una fuente vigente.
@@ -74,6 +78,17 @@ REGLAS QUE NO PODÉS ROMPER:
 
 TONO: español rioplatense, cercano y breve. Como habla Isa con sus clientas.
 No uses lenguaje corporativo.
+
+Humanidad y links:
+- Si esta es tu primera respuesta en la conversación, empezá con un saludo
+  breve y natural antes de ayudar. En los mensajes siguientes no repitas el
+  saludo salvo que la conversación se haya reiniciado.
+- Usá la descripción que devuelven las herramientas para explicar una
+  recomendación solo cuando aporte valor. No inventes beneficios fuera de ella.
+- Compartí como máximo un link de producto y solo si la clienta pide verlo,
+  quiere más detalle o el link ayuda claramente a decidir. Usá únicamente
+  product_url entregada por la herramienta; no fabriques URLs. Si te piden un
+  link, llamá primero a get_product_availability para obtener product_url.
 
 {policy_context}
 
@@ -97,6 +112,19 @@ def _run_tool(name: str, arguments: Dict[str, Any]) -> Any:
     except Exception as error:  # noqa: BLE001
         # The model needs to know it failed so it can tell the customer
         return {"error": str(error)}
+
+
+def _remove_unverified_urls(text: str, verified_urls: List[str]) -> str:
+    """Block a hallucinated link even if the model ignores its instructions."""
+    verified = set(verified_urls)
+
+    def replace_url(match: re.Match) -> str:
+        url = match.group(0)
+        # Sentence punctuation is not part of an URL, but may be matched.
+        normalized = url.rstrip(".,!?")
+        return normalized if normalized in verified else ""
+
+    return URL_PATTERN.sub(replace_url, text).strip()
 
 
 def _ask_deepseek(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -142,6 +170,7 @@ def answer(
     user_message: str,
     history: Optional[List[Dict[str, Any]]] = None,
     rag_context: Optional[str] = None,
+    greeting_required: bool = False,
     verbose: bool = True,
 ) -> Dict[str, Any]:
     """
@@ -166,9 +195,19 @@ def answer(
             ),
         })
 
+    if greeting_required:
+        messages.append({
+            "role": "system",
+            "content": (
+                "Esta es tu primera respuesta en esta conversación. Saludá de "
+                "forma breve y natural antes de responder la consulta."
+            ),
+        })
+
     messages.append({"role": "user", "content": user_message})
 
     tool_calls_made = []
+    verified_product_urls: List[str] = []
 
     for round_number in range(MAX_TOOL_ROUNDS):
         message = _ask_deepseek(messages)
@@ -176,7 +215,10 @@ def answer(
 
         if not tool_calls:
             return {
-                "reply": message.get("content") or "",
+                "reply": _remove_unverified_urls(
+                    message.get("content") or "",
+                    verified_product_urls,
+                ),
                 "tool_calls": tool_calls_made,
                 "rounds": round_number,
             }
@@ -210,6 +252,9 @@ def answer(
 
             result = _run_tool(name, arguments)
             tool_calls_made.append({"name": name, "arguments": arguments})
+
+            if isinstance(result, dict) and result.get("product_url"):
+                verified_product_urls.append(result["product_url"])
 
             messages.append({
                 "role": "tool",
