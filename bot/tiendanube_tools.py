@@ -115,6 +115,44 @@ def search_products(query: str, limit: int = 5, include_hidden: bool = False) ->
     return results
 
 
+def search_available_products(query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """Find published variants with positively confirmed live stock.
+
+    Unlike search_products(), this is for recommendations. It only returns
+    variants whose current Tiendanube stock is greater than zero; stock=None
+    is deliberately excluded because it is not confirmed availability.
+    """
+    products = _get("/products", {"q": query, "per_page": 50})
+    results = []
+
+    for product in products:
+        if not product.get("published", False):
+            continue
+
+        available_variants = []
+        for variant in product.get("variants", []):
+            stock = variant.get("stock")
+            if stock is None or stock <= 0:
+                continue
+            available_variants.append({
+                "sku": variant.get("sku") or "",
+                "description": _describe_variant(variant),
+                "quantity": stock,
+            })
+
+        if available_variants:
+            results.append({
+                "product_id": product.get("id"),
+                "name": _localized(product.get("name")),
+                "variants": available_variants,
+            })
+
+        if len(results) >= limit:
+            break
+
+    return results
+
+
 def get_stock(sku: str) -> Dict[str, Any]:
     """
     Return the live availability for a single SKU.
@@ -127,6 +165,10 @@ def get_stock(sku: str) -> Dict[str, Any]:
     products = _get("/products", {"q": sku, "per_page": 10})
 
     for product in products:
+        # A hidden product must never be presented as a customer option.
+        if not product.get("published", False):
+            continue
+
         for variant in product.get("variants", []):
             if (variant.get("sku") or "").strip().lower() != sku.strip().lower():
                 continue
@@ -164,6 +206,42 @@ def get_stock(sku: str) -> Dict[str, Any]:
     }
 
 
+def get_product_availability(product_id: int) -> Dict[str, Any]:
+    """Return live availability for every sellable variant of one product."""
+    product = _get("/products/{}".format(product_id))
+
+    if not product.get("published", False):
+        return {
+            "found": False,
+            "product_id": product_id,
+            "message": "El producto no está publicado para la venta.",
+        }
+
+    variants = []
+    for variant in product.get("variants", []):
+        stock = variant.get("stock")
+        if stock is None:
+            status = "untracked_stock"
+        elif stock > 0:
+            status = "in_stock"
+        else:
+            status = "out_of_stock"
+
+        variants.append({
+            "sku": variant.get("sku") or "",
+            "variant": _describe_variant(variant),
+            "status": status,
+            "quantity": stock,
+        })
+
+    return {
+        "found": True,
+        "product_id": product_id,
+        "product_name": _localized(product.get("name")),
+        "variants": variants,
+    }
+
+
 def get_order_status(order_number: str) -> Dict[str, Any]:
     """Look up an order by its number. Replaces the simulated version."""
     orders = _get("/orders", {"q": order_number, "per_page": 5})
@@ -197,7 +275,8 @@ TOOL_SCHEMAS = [
                 "Busca productos por nombre en el catálogo real de la tienda. "
                 "Usar cuando la clienta menciona un producto pero no se conoce su SKU. "
                 "Solo identifica candidatos y variantes: NO confirma stock ni precio. "
-                "Después usá get_stock con el SKU elegido."
+                "Después usá get_stock o get_product_availability antes de "
+                "hablar de disponibilidad."
             ),
             "parameters": {
                 "type": "object",
@@ -212,6 +291,54 @@ TOOL_SCHEMAS = [
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_available_products",
+            "description": (
+                "Busca productos publicados con stock positivo confirmado en "
+                "Tiendanube. Usar para una recomendación genérica (por ejemplo, "
+                "'pestañas naturales') antes de decir que no hay alternativas. "
+                "Los resultados ya están filtrados por disponibilidad real."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Categoría o nombre simple para buscar.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Máximo de productos. Por defecto 5.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_product_availability",
+            "description": (
+                "Consulta en Tiendanube la disponibilidad real de todas las "
+                "variantes publicadas de un producto identificado por product_id. "
+                "Usar para comparar candidatos de una recomendación y priorizar "
+                "una variante con status in_stock."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {
+                        "type": "integer",
+                        "description": "ID interno del producto de Tiendanube.",
+                    },
+                },
+                "required": ["product_id"],
             },
         },
     },
@@ -258,7 +385,9 @@ TOOL_SCHEMAS = [
 # Registry so the agent loop can dispatch by name
 AVAILABLE_TOOLS = {
     "search_products": search_products,
+    "search_available_products": search_available_products,
     "get_stock": get_stock,
+    "get_product_availability": get_product_availability,
     "get_order_status": get_order_status,
 }
 
@@ -271,8 +400,7 @@ if __name__ == "__main__":
     for product in found:
         print("{}  (published: {})".format(product["name"], product["published"]))
         for variant in product["variants"]:
-            stock = "unlimited" if variant["stock"] is None else variant["stock"]
-            print("    sku={:<24} stock={:<10} {}".format(
-                variant["sku"] or "-", stock, variant["description"]
+            print("    sku={:<24} {}".format(
+                variant["sku"] or "-", variant["description"]
             ))
         print()

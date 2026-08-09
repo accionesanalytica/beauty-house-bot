@@ -137,7 +137,7 @@ def search_similar_products(query: str, limit: int = 3) -> str:
             ) = row
 
             context += (
-                f"- {product_name} "
+                f"- product_id: {product_id}; {product_name} "
                 f"(SKU: {sku or 'N/A'}) "
                 f"Variante: {variant or 'default'} "
                 f"(similitud: {similarity:.2f})\n"
