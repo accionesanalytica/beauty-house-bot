@@ -630,8 +630,16 @@ def _start_sales_intake(
             quantity=quantity or None,
         )
         if quantity:
-            return "¡Buenísimo! ¿Preferís envío o retiro?"
-        return "¡Buenísimo! ¿Cuántas unidades querés llevar?"
+            return (
+                "¡Buenísimo! Para avanzar de una, pasame en un solo mensaje: "
+                "si preferís envío o retiro, tu nombre y apellido, y tu email.\n"
+                "Ejemplo: envío, Ana Pérez, ana@email.com"
+            )
+        return (
+            "¡Buenísimo! Para avanzar de una, pasame en un solo mensaje: "
+            "cantidad, si preferís envío o retiro, tu nombre y apellido, y tu email.\n"
+            "Ejemplo: 2 unidades, envío, Ana Pérez, ana@email.com"
+        )
 
     start_sales_intake(conversation_id)
     return (
@@ -658,20 +666,40 @@ def _handle_sales_intake(
     elif intake["status"] == "quantity":
         quantity = _extract_quantity(message_text)
         if not quantity:
-            reply = "Para confirmarlo bien, decime solo cuántas unidades querés."
+            reply = (
+                "Para confirmarlo bien me falta la cantidad. Si querés, pasame "
+                "todo junto: cantidad, envío o retiro, nombre y apellido, y email."
+            )
         else:
             set_sales_intake_quantity(conversation_id, quantity)
-            reply = "¿Preferís envío o retiro?"
+            fulfillment = _sales_fulfillment(message_text)
+            customer_details = _extract_customer_details(message_text)
+            if fulfillment:
+                set_sales_intake_fulfillment(conversation_id, fulfillment)
+            if customer_details:
+                customer_name, customer_email = customer_details
+                if fulfillment:
+                    set_sales_intake_customer(conversation_id, customer_name, customer_email)
+                    reply = _sales_summary(get_active_sales_intake(conversation_id))
+                else:
+                    reply = "Me falta confirmar si preferís envío o retiro."
+            elif fulfillment:
+                reply = "Perfecto. Me falta tu nombre y apellido junto con tu email."
+            else:
+                reply = "Me falta confirmar si preferís envío o retiro, más tu nombre y apellido con email."
     elif intake["status"] == "fulfillment":
         fulfillment = _sales_fulfillment(message_text)
         if not fulfillment:
-            reply = "¿Lo necesitás con envío o preferís retirar?"
+            reply = "Me falta confirmar si preferís envío o retiro."
         else:
             set_sales_intake_fulfillment(conversation_id, fulfillment)
-            reply = (
-                "Último dato: pasame tu nombre y apellido junto con tu email. "
-                "Ejemplo: Ana Pérez, ana@email.com"
-            )
+            customer_details = _extract_customer_details(message_text)
+            if customer_details:
+                customer_name, customer_email = customer_details
+                set_sales_intake_customer(conversation_id, customer_name, customer_email)
+                reply = _sales_summary(get_active_sales_intake(conversation_id))
+            else:
+                reply = "Perfecto. Me falta tu nombre y apellido junto con tu email."
     elif intake["status"] == "customer":
         customer_details = _extract_customer_details(message_text)
         if not customer_details:
