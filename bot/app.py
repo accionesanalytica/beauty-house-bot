@@ -26,6 +26,7 @@ from conversation_store import (
     load_history,
     list_pending_actions,
     pending_action_count,
+    record_isa_feedback,
     record_bot_message,
     record_inbound_message,
     resolve_pending_action,
@@ -398,8 +399,41 @@ def _customer_escalation_type(message_text: str, has_bot_history: bool) -> str:
     return ""
 
 
-def handle_isa_message(button_reply_id: str = "") -> None:
+def _isa_feedback_text(message_text: str) -> str:
+    """Extract explicit internal feedback without treating normal messages as feedback."""
+    match = re.match(r"^\s*feedback\s*:\s*(.+)$", message_text, flags=re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
+def handle_isa_message(
+    message_text: str,
+    wa_message_id: str = "",
+    button_reply_id: str = "",
+) -> None:
     """Any message from Isa opens the queue; button replies resolve one draft."""
+    feedback = _isa_feedback_text(message_text)
+    if feedback:
+        try:
+            saved = record_isa_feedback(
+                ISA_WHATSAPP_NUMBER,
+                feedback,
+                wa_message_id=wa_message_id or None,
+            )
+            if saved:
+                send_whatsapp_text(
+                    ISA_WHATSAPP_NUMBER,
+                    "Listo, guardé tu feedback para revisarlo. No cambia nada automáticamente.",
+                )
+            else:
+                print("[Isa] Feedback duplicado ignorado.")
+        except Exception as error:  # noqa: BLE001
+            print(f"ERROR guardando feedback de Isa (tipo: {type(error).__name__})")
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "No pude guardar ese feedback ahora. Probá enviarlo de nuevo más tarde.",
+            )
+        return
+
     match = re.match(r"^(approve|reject|view):(\d+)$", button_reply_id or "")
     if not match:
         send_next_pending_to_isa()
@@ -543,8 +577,15 @@ async def webhook_post(request: Request):
         )
 
     if _is_isa_phone(customer_phone):
-        print(f"\n[Isa] {message_text or button_reply_id}")
-        handle_isa_message(button_reply_id)
+        if _isa_feedback_text(message_text):
+            print("\n[Isa] Feedback recibido.")
+        else:
+            print(f"\n[Isa] {message_text or button_reply_id}")
+        handle_isa_message(
+            message_text,
+            wa_message_id=wa_message_id or "",
+            button_reply_id=button_reply_id,
+        )
         return JSONResponse(content={"ok": True})
 
     print(

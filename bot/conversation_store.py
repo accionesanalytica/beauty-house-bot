@@ -99,6 +99,51 @@ def record_bot_message(conversation_id: int, body: str) -> None:
         connection.close()
 
 
+def record_isa_feedback(
+    isa_phone: str,
+    body: str,
+    wa_message_id: Optional[str] = None,
+) -> bool:
+    """Store internal feedback from Isa without affecting a customer conversation.
+
+    Returns False when Meta retries an already-recorded WhatsApp message.
+    Feedback is deliberately stored as a message for now: it is auditable, but
+    it does not alter prompts, products, orders, or customer replies by itself.
+    """
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            conversation_id, _state = _get_or_create_conversation(cursor, isa_phone)
+
+            if wa_message_id:
+                cursor.execute(
+                    "SELECT 1 FROM messages WHERE wa_message_id = %s LIMIT 1",
+                    (wa_message_id,),
+                )
+                if cursor.fetchone():
+                    connection.commit()
+                    return False
+
+            cursor.execute(
+                "UPDATE conversations SET state = 'ISA', last_message_at = now() WHERE id = %s",
+                (conversation_id,),
+            )
+            cursor.execute(
+                """
+                INSERT INTO messages (conversation_id, direction, sender, body, wa_message_id)
+                VALUES (%s, 'in', 'isa', %s, %s)
+                """,
+                (conversation_id, "FEEDBACK: " + body, wa_message_id),
+            )
+        connection.commit()
+        return True
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def load_history(customer_phone: str, limit: int = 12) -> List[Dict[str, Any]]:
     """Return the last messages oldest-first in the DeepSeek chat format."""
     connection = _connect()
