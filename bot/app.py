@@ -150,6 +150,17 @@ def search_similar_products(query: str, limit: int = 3) -> str:
 # WHATSAPP — ENVÍO DE MENSAJES
 # ============================================================
 
+def normalize_whatsapp_recipient(phone_number: str) -> str:
+    """Usa el formato que Meta registra para números móviles argentinos."""
+
+    # El webhook identifica móviles argentinos como 549..., mientras que
+    # la lista de destinatarios de prueba de Meta los registra como 54....
+    if phone_number.startswith("549"):
+        return f"54{phone_number[3:]}"
+
+    return phone_number
+
+
 def send_escalacion_isa_template(
     phone_number: str,
     pending_inquiries: int = 1,
@@ -166,10 +177,12 @@ def send_escalacion_isa_template(
         "Content-Type": "application/json",
     }
 
+    recipient_phone = normalize_whatsapp_recipient(phone_number)
+
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
-        "to": phone_number,
+        "to": recipient_phone,
         "type": "template",
         "template": {
             "name": "escalacion_isa",
