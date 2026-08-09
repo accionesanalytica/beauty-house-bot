@@ -31,7 +31,10 @@ from tiendanube_tools import AVAILABLE_TOOLS, TOOL_SCHEMAS
 load_dotenv()
 
 MODEL = "deepseek-chat"
-MAX_TOOL_ROUNDS = 5
+# Una compra con modelo explícito puede requerir: buscar nombre, verificar SKU,
+# seleccionar la variante y redactar la respuesta. Dejamos margen para que no
+# termine en un falso "paso a Isa" solo por agotar rondas técnicas.
+MAX_TOOL_ROUNDS = 8
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 URL_PATTERN = re.compile(r"https?://[^\s<>()]+")
 HANDOFF_TOOL_SCHEMA = {
@@ -138,8 +141,15 @@ REGLAS QUE NO PODÉS ROMPER:
    nuevo su SKU con get_stock y asegurate de que devuelva in_stock. Eso no crea
    una orden: permite preguntarle únicamente los datos que faltan. Si hay dos
    opciones posibles o no sabés a cuál se refiere, pedí una aclaración breve.
-   “Quiero ordenar 4 de Isabel” también es compra explícita: conservá esa
-   cantidad al seleccionar la variante, no la preguntes de nuevo.
+
+   Si la clienta nombra un modelo y compra en el mismo mensaje —por ejemplo,
+   “Isabel I quisiera comprar 4” o “quiero ordenar 4 de Isabel”— tratá el
+   modelo como una selección explícita. Hacé esta secuencia antes de escribir:
+   search_products con el nombre -> identificá una sola variante publicada ->
+   get_stock de su SKU -> select_sale_candidate. Conservá la cantidad; no la
+   preguntes otra vez. Solo pedí aclaración si la búsqueda devuelve más de una
+   coincidencia razonable o ninguna; nunca pases a Isa solo porque una ronda de
+   herramientas no alcanzó.
 
 TONO: español rioplatense, cercano y breve. Como habla Isa con sus clientas.
 No uses lenguaje corporativo.
@@ -409,13 +419,17 @@ def answer(
             })
 
     return {
-        "reply": "Perdón, no pude resolver esa consulta. Se la paso a Isa.",
+        # Agotar rondas técnicas no equivale a que la clienta pidió una persona.
+        # Evitamos crear pendientes inútiles para Isa: si el modelo no dejó una
+        # solicitud explícita, pedimos una precisión al cliente y mantenemos BOT.
+        "reply": (
+            "Para asegurarme de ubicar el modelo correcto, ¿me confirmás el "
+            "nombre tal como aparece en la tienda o una foto? 😊"
+        ),
         "tool_calls": tool_calls_made,
-        "handoff": handoff_request or {
-            "reason": "unable_to_verify",
-            "summary": "El agente agotó sus intentos de herramientas.",
-        },
+        "handoff": handoff_request,
         "sale_candidate": sale_candidate,
+        "needs_product_clarification": True,
         "rounds": MAX_TOOL_ROUNDS,
     }
 

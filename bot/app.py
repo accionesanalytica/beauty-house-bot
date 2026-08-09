@@ -450,7 +450,7 @@ def _queue_for_isa(
 
 
 def _customer_escalation_type(message_text: str, has_bot_history: bool) -> str:
-    """Recognize only clear handoff/purchase signals; vague questions stay with Fred."""
+    """Recognize direct human handoffs; sales intake handles purchase intent."""
     normalized = message_text.lower()
     if re.search(r"\bno\b.{0,30}\b(quiero|interesa|comprar|proceder)\b", normalized):
         return ""
@@ -471,7 +471,14 @@ def _customer_escalation_type(message_text: str, has_bot_history: bool) -> str:
         r"\bquiero hacer el pedido\b",
         r"\bproceder con la compra\b",
     )
-    if has_bot_history and any(re.search(pattern, normalized) for pattern in purchase_patterns):
+    # Con la ficha de venta activa, no saltamos el catálogo ni molestamos a Isa:
+    # el agente debe identificar/verificar el producto y pedir solo los datos
+    # faltantes. El pase a Isa ocurre recién después de la confirmación final.
+    if (
+        has_bot_history
+        and not SALES_INTAKE_ENABLED
+        and any(re.search(pattern, normalized) for pattern in purchase_patterns)
+    ):
         return "purchase_review"
     return ""
 
@@ -594,6 +601,16 @@ def _recent_candidate_quantity(prior_history: list, sale_candidate: dict) -> int
             if quantity:
                 return quantity
     return 0
+
+
+def _already_asked_product_clarification(prior_history: list) -> bool:
+    """Return True only after Fred already asked once to identify a model."""
+    for item in reversed(prior_history[-4:]):
+        if item.get("role") != "assistant":
+            continue
+        text = _normalized_text(item.get("content", ""))
+        return "asegurarme de ubicar el modelo correcto" in text
+    return False
 
 
 def _start_sales_intake(
@@ -1090,6 +1107,21 @@ async def webhook_post(request: Request):
 
             sale_candidate = result.get("sale_candidate")
             handoff = result.get("handoff")
+            # Un fallo de identificación recibe una sola repregunta. Si la
+            # clienta ya respondió esa repregunta y aún no podemos verificar el
+            # modelo, Isa recibe un caso realmente excepcional y con contexto.
+            if (
+                result.get("needs_product_clarification")
+                and not handoff
+                and _already_asked_product_clarification(prior_history)
+            ):
+                handoff = {
+                    "reason": "unable_to_verify",
+                    "summary": (
+                        "Fred pidió una precisión para identificar el producto, "
+                        "pero todavía no pudo verificarlo en Tiendanube."
+                    ),
+                }
             if sale_candidate and SALES_INTAKE_ENABLED:
                 try:
                     candidate_quantity = (
