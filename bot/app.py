@@ -349,9 +349,9 @@ def send_isa_pending_buttons(action: dict) -> bool:
             "body": {"text": _pending_action_text(action)},
             "action": {
                 "buttons": [
-                    {"type": "reply", "reply": {"id": "approve:{}".format(action_id), "title": "Aprobar"}},
-                    {"type": "reply", "reply": {"id": "reject:{}".format(action_id), "title": "Rechazar"}},
-                    {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver detalle"}},
+                    {"type": "reply", "reply": {"id": "approve:{}".format(action_id), "title": "Tomar caso"}},
+                    {"type": "reply", "reply": {"id": "reject:{}".format(action_id), "title": "Descartar"}},
+                    {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
                 ]
             },
         },
@@ -433,10 +433,40 @@ def _customer_escalation_type(message_text: str, has_bot_history: bool) -> str:
         r"\bme lo llevo\b",
         r"\bquiero comprar\b",
         r"\bquiero hacer el pedido\b",
+        r"\bproceder con la compra\b",
     )
     if has_bot_history and any(re.search(pattern, normalized) for pattern in purchase_patterns):
         return "purchase_review"
     return ""
+
+
+def _needs_purchase_clarification(message_text: str, prior_history: list) -> bool:
+    """Avoid guessing after the client has just rejected a proposed product."""
+    wants_to_proceed = re.search(
+        r"\b(lo quiero|me lo llevo|quiero comprar|quiero hacer el pedido|"
+        r"(?:me )?gustar[ií]a proceder con la compra|quiero proceder con la compra)\b",
+        message_text,
+        flags=re.IGNORECASE,
+    )
+    if not wants_to_proceed:
+        return False
+
+    recent_customer_messages = [
+        item.get("content", "")
+        for item in prior_history[-4:]
+        if item.get("role") == "user"
+    ]
+    if not recent_customer_messages:
+        return False
+
+    last_customer_message = recent_customer_messages[-1]
+    return bool(
+        re.search(
+            r"\bno\b.{0,80}\b(quiero|interesa|avanzar|proceder|comprar)\b",
+            last_customer_message,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _isa_feedback_text(message_text: str) -> str:
@@ -500,11 +530,11 @@ def handle_isa_message(
     if action == "approve":
         send_whatsapp_text(
             ISA_WHATSAPP_NUMBER,
-            "Aprobaste el pendiente #{}. La creación de la orden todavía está apagada "
-            "hasta terminar esta prueba.".format(action_id),
+            "Tomaste el caso #{}. Todavía no se creó ninguna orden: es solo el "
+            "borrador de trabajo para esta prueba.".format(action_id),
         )
     else:
-        send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Rechazaste el pendiente #{}.".format(action_id))
+        send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Descartaste el pendiente #{}.".format(action_id))
 
     if pending_action_count():
         send_next_pending_to_isa()
@@ -679,6 +709,16 @@ async def webhook_post(request: Request):
 
         if state != "BOT":
             print(f"[Conversacion] El bot no responde en estado {state}.")
+            return JSONResponse(content={"ok": True})
+
+        if _needs_purchase_clarification(message_text, prior_history):
+            customer_reply = (
+                "Para no confundirme: el set sorpresa lo dejamos descartado. "
+                "¿Querés que busquemos otra opción natural o había otro modelo "
+                "puntual con el que querías avanzar? 😊"
+            )
+            if send_whatsapp_text(customer_phone, customer_reply):
+                record_bot_message(conversation_id, customer_reply)
             return JSONResponse(content={"ok": True})
 
         escalation_type = _customer_escalation_type(
