@@ -150,11 +150,11 @@ def search_similar_products(query: str, limit: int = 3) -> str:
 # WHATSAPP — ENVÍO DE MENSAJES
 # ============================================================
 
-def send_whatsapp_message(
+def send_escalacion_isa_template(
     phone_number: str,
-    message: str
+    pending_inquiries: int = 1,
 ) -> bool:
-    """Envía un mensaje de vuelta a WhatsApp."""
+    """Envía la plantilla Meta escalacion_isa con la cantidad de consultas."""
 
     url = (
         f"https://graph.facebook.com/v26.0/"
@@ -170,9 +170,23 @@ def send_whatsapp_message(
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
         "to": phone_number,
-        "type": "text",
-        "text": {
-            "body": message
+        "type": "template",
+        "template": {
+            "name": "escalacion_isa",
+            "language": {
+                "code": "es_AR"
+            },
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {
+                            "type": "text",
+                            "text": str(pending_inquiries),
+                        }
+                    ],
+                }
+            ],
         },
     }
 
@@ -199,9 +213,7 @@ def send_whatsapp_message(
 
     except Exception as e:
 
-        print(
-            f"ERROR enviando mensaje a WhatsApp: {e}"
-        )
+        print(f"ERROR enviando plantilla a WhatsApp: {e}")
 
         return False
 
@@ -312,15 +324,10 @@ async def webhook_post(request: Request):
     # Implementar agent loop con DeepSeek + RAG.
     #
 
-    reply = (
-        "Hola! El bot está en construcción. "
-        "Pronto podré ayudarte con consultas de stock 😊"
-    )
-
-    # Enviar respuesta
-    send_whatsapp_message(
+    # Enviar la plantilla Meta escalacion_isa con {{1}} = 1.
+    send_escalacion_isa_template(
         customer_phone,
-        reply,
+        pending_inquiries=1,
     )
 
     return JSONResponse(
