@@ -308,6 +308,26 @@ def _pending_action_text(action: dict) -> str:
     )
     if customer_message:
         text += "\nMensaje: {}".format(customer_message)
+    sale_draft = action["payload"].get("sale_draft")
+    if sale_draft:
+        text += (
+            "\n\nBorrador de venta"
+            "\nProducto/variante/cantidad: {}"
+            "\nEntrega: {}"
+            "\nPago: {}"
+        ).format(
+            sale_draft["items_status"],
+            sale_draft["delivery_status"],
+            sale_draft["payment_status"],
+        )
+
+        context = action["payload"].get("conversation_context", [])
+        if context:
+            compact_context = " | ".join(
+                "{}: {}".format(item["speaker"], item["body"])
+                for item in context[-4:]
+            )
+            text += "\nContexto: {}".format(compact_context)
     return text[:950]
 
 
@@ -359,14 +379,34 @@ def _queue_for_isa(
     action_type: str,
     summary: str,
     customer_message: str,
+    conversation_context: list = None,
 ) -> int:
     """Create an escalation and notify Isa only when the queue was empty."""
     pending_before = pending_action_count()
+    payload = {"customer_phone": customer_phone, "customer_message": customer_message}
+    if action_type == "purchase_review":
+        # A draft is an internal checklist, not an order. Fields are populated
+        # only later, after Isa reviews the conversation and explicitly approves.
+        payload["sale_draft"] = {
+            "status": "needs_isa_review",
+            "items_status": "por confirmar",
+            "delivery_status": "por confirmar",
+            "payment_status": "por confirmar",
+            "order_creation": "disabled",
+        }
+        payload["conversation_context"] = [
+            {
+                "speaker": "Clienta" if item.get("role") == "user" else "Fred",
+                "body": (item.get("content") or "")[:240],
+            }
+            for item in (conversation_context or [])[-6:]
+            if item.get("content")
+        ]
     action_id = create_pending_action(
         conversation_id=conversation_id,
         action_type=action_type,
         summary=summary,
-        payload={"customer_phone": customer_phone, "customer_message": customer_message},
+        payload=payload,
     )
     set_conversation_state(conversation_id, "ESCALATED")
     if pending_before == 0:
@@ -662,6 +702,7 @@ async def webhook_post(request: Request):
                 escalation_type,
                 summary,
                 message_text,
+                conversation_context=prior_history,
             )
             if send_whatsapp_text(customer_phone, customer_reply):
                 record_bot_message(conversation_id, customer_reply)
@@ -698,6 +739,7 @@ async def webhook_post(request: Request):
                     action_type,
                     handoff.get("summary") or "Fred solicitó intervención de Isa.",
                     message_text,
+                    conversation_context=prior_history,
                 )
 
             if send_whatsapp_text(customer_phone, reply):
@@ -712,6 +754,7 @@ async def webhook_post(request: Request):
                 "bot_fallback",
                 "Fred no pudo completar una respuesta verificada.",
                 message_text,
+                conversation_context=prior_history,
             )
             if send_whatsapp_text(
                 customer_phone,
