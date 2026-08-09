@@ -63,6 +63,12 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 BOT_RESPONSE_MODE = os.getenv("BOT_RESPONSE_MODE", "template").lower()
 ISA_WHATSAPP_NUMBER = os.getenv("ISA_WHATSAPP_NUMBER", "")
 SALES_INTAKE_ENABLED = os.getenv("SALES_INTAKE_ENABLED", "false").lower() == "true"
+# Segunda llave explícita: incluso si existen credenciales demo, una aprobación
+# normal nunca crea nada. Solo sirve para probar el recorrido completo.
+DEMO_APPROVALS_ENABLED = (
+    os.getenv("DEMO_APPROVALS_ENABLED", "false").lower() == "true"
+    and os.getenv("TIENDANUBE_DRAFT_ORDERS_MODE", "disabled").lower() == "demo"
+)
 
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMS = 768
@@ -361,6 +367,19 @@ def send_isa_pending_buttons(action: dict) -> bool:
         "Content-Type": "application/json",
     }
     action_id = action["id"]
+    approve_button = {
+        "type": "reply",
+        "reply": {"id": "approve:{}".format(action_id), "title": "Tomar caso"},
+    }
+    if DEMO_APPROVALS_ENABLED and action["action_type"] == "purchase_review":
+        approve_button = {
+            "type": "reply",
+            "reply": {
+                "id": "approve_demo:{}".format(action_id),
+                "title": "Aprobar demo",
+            },
+        }
+
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -371,7 +390,7 @@ def send_isa_pending_buttons(action: dict) -> bool:
             "body": {"text": _pending_action_text(action)},
             "action": {
                 "buttons": [
-                    {"type": "reply", "reply": {"id": "approve:{}".format(action_id), "title": "Tomar caso"}},
+                    approve_button,
                     {"type": "reply", "reply": {"id": "reject:{}".format(action_id), "title": "Descartar"}},
                     {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
                 ]
@@ -552,6 +571,15 @@ def _sales_fulfillment(text: str) -> str:
     if any(word in normalized for word in ("envio", "enviar", "domicilio", "correo")):
         return "shipping"
     return ""
+
+
+def _looks_like_new_customer_request(text: str) -> bool:
+    """Do not trap a new question inside an old confirmation screen."""
+    normalized = _normalized_text(text).strip()
+    return bool(
+        re.match(r"^(hola|buenas|buen dia|buenas tardes)\b", normalized)
+        or re.search(r"\b(busco|quisiera saber|tienen|tenes|me recomendas)\b", normalized)
+    )
 
 
 def _sales_summary(intake: dict) -> str:
@@ -744,8 +772,17 @@ def _handle_sales_intake(
                 sale_draft=sale_draft,
             )
             reply = "Perfecto, ya se lo pasé a Isa para que revise los detalles antes de generar cualquier link 😊"
-        elif re.match(r"^(no|cambiar|corregir)\b", normalized):
-            reply = _start_sales_intake(conversation_id)
+        elif re.match(r"^(?:quiero\s+)?(?:cambiar|corregir)(?:lo)?\b", normalized):
+            cancel_sales_intake(conversation_id)
+            reply = (
+                "Dale, descarté ese resumen para corregirlo. Decime qué producto "
+                "y cantidad querés llevar, y lo armamos de nuevo 😊"
+            )
+        elif _looks_like_new_customer_request(message_text):
+            # La persona arrancó otra consulta: no la obligamos a terminar un
+            # borrador viejo. Al devolver False, el webhook la procesa con Fred.
+            cancel_sales_intake(conversation_id)
+            return False
         else:
             reply = "¿Confirmás el resumen? Respondé “confirmo” o decime si querés corregirlo."
     else:
@@ -776,6 +813,34 @@ def _isa_demo_order_request(message_text: str) -> tuple:
 
 def _is_demo_command(message_text: str) -> bool:
     return bool(re.match(r"^\s*demo\b", message_text, flags=re.IGNORECASE))
+
+
+def _pending_action_by_id(action_id: int) -> dict:
+    """Read one still-pending card; used before a demo-only side effect."""
+    return next(
+        (item for item in list_pending_actions(limit=20) if item["id"] == action_id),
+        None,
+    )
+
+
+def _create_demo_link_for_approved_sale(action: dict) -> dict:
+    """Create a checkout only in the dedicated demo store.
+
+    The real product is intentionally never copied to the demo order. This
+    verifies approval -> checkout plumbing with a clearly fake test SKU.
+    """
+    if not DEMO_APPROVALS_ENABLED:
+        raise DraftOrderDemoError("La aprobación demo está apagada.")
+    if action["action_type"] != "purchase_review":
+        raise DraftOrderDemoError("Solo las fichas de compra pueden crear un link demo.")
+
+    sale_draft = action.get("payload", {}).get("sale_draft", {})
+    try:
+        quantity = int(sale_draft.get("items_status", "").split("×", 1)[0].strip())
+    except (ValueError, AttributeError):
+        raise DraftOrderDemoError("No pude leer la cantidad de la ficha.")
+
+    return create_demo_draft_order("TEST-FRED-001", quantity)
 
 
 def handle_isa_message(
@@ -841,7 +906,7 @@ def handle_isa_message(
         )
         return
 
-    match = re.match(r"^(approve|reject|view):(\d+)$", button_reply_id or "")
+    match = re.match(r"^(approve|approve_demo|reject|view):(\d+)$", button_reply_id or "")
     if not match:
         send_next_pending_to_isa()
         return
@@ -854,6 +919,41 @@ def handle_isa_message(
             send_isa_pending_buttons(actions[0])
         else:
             send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya no está disponible.")
+        return
+
+    if action == "approve_demo":
+        pending_action = _pending_action_by_id(action_id)
+        if not pending_action:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya no está disponible.")
+            return
+        try:
+            draft_order = _create_demo_link_for_approved_sale(pending_action)
+        except DraftOrderDemoError as error:
+            # La tarjeta queda pendiente para que Isa pueda corregir o descartar.
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "No creé ningún link demo. {}".format(error),
+            )
+            return
+
+        result = resolve_pending_action(action_id, "approved")
+        if not result:
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "El link demo se creó, pero el pendiente ya había sido resuelto. No se envió a la clienta.",
+            )
+            return
+
+        set_conversation_state(result["conversation_id"], "ISA")
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Link demo creado tras tu aprobación ✅\nBorrador #{}\n{}\n\n"
+            "Usa TEST-FRED-001 y no corresponde al producto real ni se envía a la clienta."
+            .format(draft_order["id"], draft_order["checkout_url"]),
+        )
+        print("[Isa] Borrador demo #{} creado desde pendiente #{}.".format(draft_order["id"], action_id))
+        if pending_action_count():
+            send_next_pending_to_isa()
         return
 
     result = resolve_pending_action(
