@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import unicodedata
+from decimal import Decimal, InvalidOperation
 
 # Agregar el directorio actual al path para importar agent.py
 sys.path.insert(0, os.path.dirname(__file__))
@@ -326,10 +327,12 @@ def _pending_action_text(action: dict) -> str:
             "\nProducto/variante/cantidad: {}"
             "\nEntrega: {}"
             "\nPago: {}"
+            "\nSubtotal productos: {}"
         ).format(
             sale_draft["items_status"],
             sale_draft["delivery_status"],
             sale_draft["payment_status"],
+            sale_draft.get("products_subtotal", "a confirmar"),
         )
 
         context = action["payload"].get("conversation_context", [])
@@ -422,7 +425,18 @@ def _queue_for_isa(
     )
     set_conversation_state(conversation_id, "ESCALATED")
     if pending_before == 0:
-        send_isa_pending_notification(pending_before + 1)
+        action = {
+            "id": action_id,
+            "action_type": action_type,
+            "summary": summary,
+            "payload": payload,
+            "customer_phone": customer_phone,
+        }
+        # If Isa wrote recently, WhatsApp permits the detailed interactive card
+        # immediately. Outside that window Meta rejects it, so fall back to the
+        # approved template and wait for Isa to reply "ver".
+        if not send_isa_pending_buttons(action):
+            send_isa_pending_notification(pending_before + 1)
     print(f"[Isa] Pendiente #{action_id} creado ({action_type}).")
     return action_id
 
@@ -524,6 +538,19 @@ def _sales_fulfillment(text: str) -> str:
 
 def _sales_summary(intake: dict) -> str:
     fulfillment = "envío" if intake["fulfillment"] == "shipping" else "retiro"
+    price_summary = ""
+    if intake["unit_price"] is not None:
+        try:
+            subtotal = Decimal(str(intake["unit_price"])) * intake["quantity"]
+            formatted_subtotal = "${:,.0f}".format(subtotal).replace(",", ".")
+            price_summary = (
+                "Subtotal de productos: {}\n"
+                "Envío: a confirmar\n"
+                "Total final: a confirmar\n"
+            ).format(formatted_subtotal)
+        except (InvalidOperation, TypeError):
+            pass
+
     return (
         "Te resumo antes de pasárselo a Isa:\n"
         "Producto/modelo: {}\n"
@@ -532,6 +559,7 @@ def _sales_summary(intake: dict) -> str:
         "Entrega: {}\n"
         "Nombre: {}\n"
         "Email: {}\n\n"
+        "{}\n"
         "¿Confirmás que lo preparemos para revisión?"
     ).format(
         intake["product_request"],
@@ -540,6 +568,7 @@ def _sales_summary(intake: dict) -> str:
         fulfillment,
         intake["customer_name"],
         intake["customer_email"],
+        price_summary,
     )
 
 
@@ -552,6 +581,7 @@ def _start_sales_intake(conversation_id: int, sale_candidate: dict = None) -> st
             product_request=product_request,
             selected_sku=sale_candidate["sku"],
             selected_variant=selected_variant,
+            unit_price=sale_candidate.get("unit_price"),
         )
         return "¡Buenísimo! ¿Cuántas unidades querés llevar?"
 
@@ -613,6 +643,12 @@ def _handle_sales_intake(
                 ),
                 "selected_sku": intake["selected_sku"] or "a confirmar",
                 "selected_variant": intake["selected_variant"] or "a confirmar",
+                "unit_price": str(intake["unit_price"]) if intake["unit_price"] is not None else "a confirmar",
+                "products_subtotal": (
+                    str(Decimal(str(intake["unit_price"])) * intake["quantity"])
+                    if intake["unit_price"] is not None
+                    else "a confirmar"
+                ),
                 "delivery_status": "envío" if intake["fulfillment"] == "shipping" else "retiro",
                 "payment_status": "link pendiente de aprobación de Isa",
                 "customer_name": intake["customer_name"],

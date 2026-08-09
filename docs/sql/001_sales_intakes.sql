@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS sales_intakes (
     product_request TEXT,
     selected_sku TEXT,
     selected_variant TEXT,
+    unit_price NUMERIC(12, 2),
     quantity INTEGER,
     fulfillment TEXT CHECK (fulfillment IN ('shipping', 'pickup')),
     customer_name TEXT,
@@ -20,3 +21,8 @@ CREATE TABLE IF NOT EXISTS sales_intakes (
 
 CREATE INDEX IF NOT EXISTS sales_intakes_status_idx
     ON sales_intakes (status, updated_at DESC);
+
+-- Necesario solo si la tabla ya existía de una prueba anterior.
+ALTER TABLE sales_intakes ADD COLUMN IF NOT EXISTS selected_sku TEXT;
+ALTER TABLE sales_intakes ADD COLUMN IF NOT EXISTS selected_variant TEXT;
+ALTER TABLE sales_intakes ADD COLUMN IF NOT EXISTS unit_price NUMERIC(12, 2);

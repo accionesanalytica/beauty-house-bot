@@ -313,7 +313,7 @@ def answer(
     tool_calls_made = []
     verified_product_urls: List[str] = []
     handoff_request: Optional[Dict[str, Any]] = None
-    verified_in_stock_skus = set()
+    verified_in_stock_skus: Dict[str, Dict[str, Any]] = {}
     sale_candidate: Optional[Dict[str, str]] = None
 
     for round_number in range(MAX_TOOL_ROUNDS):
@@ -384,12 +384,18 @@ def answer(
 
             if name == "get_stock" and isinstance(result, dict):
                 if result.get("status") == "in_stock" and result.get("sku"):
-                    verified_in_stock_skus.add(result["sku"].strip().lower())
+                    verified_in_stock_skus[result["sku"].strip().lower()] = result
 
             if name == "select_sale_candidate" and isinstance(result, dict):
                 candidate = result.get("sale_candidate")
                 if candidate and candidate.get("sku") and candidate.get("product_name"):
-                    sale_candidate = candidate
+                    verified_stock = verified_in_stock_skus.get(
+                        candidate["sku"].strip().lower(), {}
+                    )
+                    sale_candidate = {
+                        **candidate,
+                        "unit_price": verified_stock.get("price"),
+                    }
 
             if isinstance(result, dict) and result.get("product_url"):
                 verified_product_urls.append(result["product_url"])
