@@ -5,6 +5,7 @@ responde con una plantilla de prueba aprobada por Meta.
 """
 
 import os
+import re
 import sys
 
 # Agregar el directorio actual al path para importar agent.py
@@ -21,9 +22,14 @@ from google.genai import types
 
 from agent import answer
 from conversation_store import (
+    create_pending_action,
     load_history,
+    list_pending_actions,
+    pending_action_count,
     record_bot_message,
     record_inbound_message,
+    resolve_pending_action,
+    set_conversation_state,
 )
 
 load_dotenv()
@@ -43,6 +49,7 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 # Seguridad: hasta completar las pruebas, el webhook conserva la plantilla
 # actual. El modo agent se habilitará explícitamente en una etapa posterior.
 BOT_RESPONSE_MODE = os.getenv("BOT_RESPONSE_MODE", "template").lower()
+ISA_WHATSAPP_NUMBER = os.getenv("ISA_WHATSAPP_NUMBER", "")
 
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMS = 768
@@ -268,6 +275,167 @@ def send_whatsapp_text(phone_number: str, text: str) -> bool:
         return False
 
 
+def send_isa_pending_notification(pending_count: int) -> bool:
+    """Notify Isa once when the queue changes from empty to non-empty."""
+    if not ISA_WHATSAPP_NUMBER:
+        print("ERROR avisando a Isa: falta ISA_WHATSAPP_NUMBER")
+        return False
+    return send_escalacion_isa_template(ISA_WHATSAPP_NUMBER, pending_count)
+
+
+def _is_isa_phone(phone_number: str) -> bool:
+    return bool(ISA_WHATSAPP_NUMBER) and (
+        normalize_whatsapp_recipient(phone_number)
+        == normalize_whatsapp_recipient(ISA_WHATSAPP_NUMBER)
+    )
+
+
+def _pending_action_text(action: dict) -> str:
+    labels = {
+        "human_handoff": "Clienta pidió hablar con Isa",
+        "purchase_review": "Compra pendiente de confirmación",
+        "bot_fallback": "Fred no pudo resolver la consulta",
+    }
+    customer_message = action["payload"].get("customer_message", "")
+    text = (
+        "Pendiente #{}\n{}\nCliente: {}\n{}".format(
+            action["id"],
+            labels.get(action["action_type"], action["action_type"]),
+            action["customer_phone"],
+            action["summary"],
+        )
+    )
+    if customer_message:
+        text += "\nMensaje: {}".format(customer_message)
+    return text[:950]
+
+
+def send_isa_pending_buttons(action: dict) -> bool:
+    """Show one queued draft to Isa after she messages the bot."""
+    url = f"https://graph.facebook.com/v26.0/{WHATSAPP_PHONE_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    action_id = action["id"]
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": normalize_whatsapp_recipient(ISA_WHATSAPP_NUMBER),
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": _pending_action_text(action)},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": "approve:{}".format(action_id), "title": "Aprobar"}},
+                    {"type": "reply", "reply": {"id": "reject:{}".format(action_id), "title": "Rechazar"}},
+                    {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver detalle"}},
+                ]
+            },
+        },
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        print(f"[Isa] HTTP {response.status_code}")
+        response.raise_for_status()
+        return True
+    except Exception as error:  # noqa: BLE001
+        print(f"ERROR enviando botones a Isa: {type(error).__name__}")
+        return False
+
+
+def send_next_pending_to_isa() -> bool:
+    pending_actions = list_pending_actions(limit=1)
+    if not pending_actions:
+        return send_whatsapp_text(ISA_WHATSAPP_NUMBER, "No tenés pendientes para revisar. 😊")
+    return send_isa_pending_buttons(pending_actions[0])
+
+
+def _queue_for_isa(
+    conversation_id: int,
+    customer_phone: str,
+    action_type: str,
+    summary: str,
+    customer_message: str,
+) -> int:
+    """Create an escalation and notify Isa only when the queue was empty."""
+    pending_before = pending_action_count()
+    action_id = create_pending_action(
+        conversation_id=conversation_id,
+        action_type=action_type,
+        summary=summary,
+        payload={"customer_phone": customer_phone, "customer_message": customer_message},
+    )
+    set_conversation_state(conversation_id, "ESCALATED")
+    if pending_before == 0:
+        send_isa_pending_notification(pending_before + 1)
+    print(f"[Isa] Pendiente #{action_id} creado ({action_type}).")
+    return action_id
+
+
+def _customer_escalation_type(message_text: str, has_bot_history: bool) -> str:
+    """Recognize only clear handoff/purchase signals; vague questions stay with Fred."""
+    normalized = message_text.lower()
+    human_patterns = (
+        r"hablar con isa",
+        r"pasame con isa",
+        r"quiero a isa",
+        r"quiero hablar con una persona",
+        r"hablar con alguien",
+    )
+    if any(re.search(pattern, normalized) for pattern in human_patterns):
+        return "human_handoff"
+
+    purchase_patterns = (
+        r"\blo quiero\b",
+        r"\bme lo llevo\b",
+        r"\bquiero comprar\b",
+        r"\bquiero hacer el pedido\b",
+    )
+    if has_bot_history and any(re.search(pattern, normalized) for pattern in purchase_patterns):
+        return "purchase_review"
+    return ""
+
+
+def handle_isa_message(button_reply_id: str = "") -> None:
+    """Any message from Isa opens the queue; button replies resolve one draft."""
+    match = re.match(r"^(approve|reject|view):(\d+)$", button_reply_id or "")
+    if not match:
+        send_next_pending_to_isa()
+        return
+
+    action, action_id_text = match.groups()
+    action_id = int(action_id_text)
+    if action == "view":
+        actions = [item for item in list_pending_actions(limit=20) if item["id"] == action_id]
+        if actions:
+            send_isa_pending_buttons(actions[0])
+        else:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya no está disponible.")
+        return
+
+    result = resolve_pending_action(
+        action_id,
+        "approved" if action == "approve" else "rejected",
+    )
+    if not result:
+        send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya fue resuelto.")
+        return
+
+    if action == "approve":
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Aprobaste el pendiente #{}. La creación de la orden todavía está apagada "
+            "hasta terminar esta prueba.".format(action_id),
+        )
+    else:
+        send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Rechazaste el pendiente #{}.".format(action_id))
+
+    if pending_action_count():
+        send_next_pending_to_isa()
+
+
 # ============================================================
 # WEBHOOK — VERIFICACIÓN META
 # ============================================================
@@ -348,6 +516,11 @@ async def webhook_post(request: Request):
 
     customer_phone = msg.get("from")
     wa_message_id = msg.get("id")
+    button_reply_id = (
+        msg.get("interactive", {})
+        .get("button_reply", {})
+        .get("id", "")
+    )
 
     message_text = (
         msg.get("text", {})
@@ -355,11 +528,24 @@ async def webhook_post(request: Request):
         .strip()
     )
 
+    if not message_text and button_reply_id:
+        message_text = (
+            msg.get("interactive", {})
+            .get("button_reply", {})
+            .get("title", "")
+            .strip()
+        )
+
     if not message_text:
 
         return JSONResponse(
             content={"ok": True}
         )
+
+    if _is_isa_phone(customer_phone):
+        print(f"\n[Isa] {message_text or button_reply_id}")
+        handle_isa_message(button_reply_id)
+        return JSONResponse(content={"ok": True})
 
     print(
         f"\n[WhatsApp] "
@@ -414,6 +600,32 @@ async def webhook_post(request: Request):
             print(f"[Conversacion] El bot no responde en estado {state}.")
             return JSONResponse(content={"ok": True})
 
+        escalation_type = _customer_escalation_type(
+            message_text,
+            has_bot_history=any(
+                message.get("role") == "assistant"
+                for message in prior_history
+            ),
+        )
+        if escalation_type:
+            if escalation_type == "human_handoff":
+                customer_reply = "Dale, se lo paso a Isa para que te ayude. 😊"
+                summary = "La clienta pidió hablar directamente con Isa."
+            else:
+                customer_reply = "Perfecto, se lo paso a Isa para que confirme los detalles de tu compra. 😊"
+                summary = "La clienta indicó que quiere avanzar con una compra."
+
+            _queue_for_isa(
+                conversation_id,
+                customer_phone,
+                escalation_type,
+                summary,
+                message_text,
+            )
+            if send_whatsapp_text(customer_phone, customer_reply):
+                record_bot_message(conversation_id, customer_reply)
+            return JSONResponse(content={"ok": True})
+
         try:
             rag_context = search_similar_products(message_text)
             result = answer(
@@ -430,15 +642,41 @@ async def webhook_post(request: Request):
             if not reply:
                 raise RuntimeError("El agente no devolvió texto.")
 
+            handoff = result.get("handoff")
+            if handoff:
+                action_type = (
+                    "purchase_review"
+                    if handoff.get("reason") == "purchase_intent"
+                    else "human_handoff"
+                    if handoff.get("reason") == "human_request"
+                    else "bot_fallback"
+                )
+                _queue_for_isa(
+                    conversation_id,
+                    customer_phone,
+                    action_type,
+                    handoff.get("summary") or "Fred solicitó intervención de Isa.",
+                    message_text,
+                )
+
             if send_whatsapp_text(customer_phone, reply):
                 record_bot_message(conversation_id, reply)
                 print("[Conversacion] Respuesta del agente guardada.")
         except Exception as error:  # noqa: BLE001
             print(f"ERROR respondiendo con agente (tipo: {type(error).__name__})")
-            send_whatsapp_text(
+            customer_reply = "Perdón, no pude resolverlo ahora. Se la paso a Isa."
+            _queue_for_isa(
+                conversation_id,
                 customer_phone,
-                "Perdón, no pude resolverlo ahora. Se la paso a Isa.",
+                "bot_fallback",
+                "Fred no pudo completar una respuesta verificada.",
+                message_text,
             )
+            if send_whatsapp_text(
+                customer_phone,
+                customer_reply,
+            ):
+                record_bot_message(conversation_id, customer_reply)
 
         return JSONResponse(content={"ok": True})
 

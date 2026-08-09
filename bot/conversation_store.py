@@ -9,6 +9,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
+from psycopg2.extras import Json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -124,3 +125,137 @@ def load_history(customer_phone: str, limit: int = 12) -> List[Dict[str, Any]]:
         role = "user" if direction == "in" and sender == "customer" else "assistant"
         history.append({"role": role, "content": body})
     return history
+
+
+def pending_action_count() -> int:
+    """Return the global number of actions waiting for Isa."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM pending_actions WHERE status = 'pending'")
+            return int(cursor.fetchone()[0])
+    finally:
+        connection.close()
+
+
+def create_pending_action(
+    conversation_id: int,
+    action_type: str,
+    summary: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Create an approval/handoff draft. It never creates a Tiendanube order."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO pending_actions (conversation_id, action_type, summary, payload)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (conversation_id, action_type, summary, Json(payload or {})),
+            )
+            action_id = int(cursor.fetchone()[0])
+        connection.commit()
+        return action_id
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def set_conversation_state(conversation_id: int, state: str) -> None:
+    """Route a conversation to the bot or Isa."""
+    if state not in ("BOT", "ESCALATED", "ISA"):
+        raise ValueError("Invalid conversation state")
+
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE conversations SET state = %s, last_message_at = now() WHERE id = %s",
+                (state, conversation_id),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def list_pending_actions(limit: int = 10) -> List[Dict[str, Any]]:
+    """Return pending actions oldest-first, including the customer phone."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    pending_actions.id,
+                    pending_actions.action_type,
+                    pending_actions.summary,
+                    pending_actions.payload,
+                    pending_actions.created_at,
+                    conversations.customer_phone
+                FROM pending_actions
+                JOIN conversations ON conversations.id = pending_actions.conversation_id
+                WHERE pending_actions.status = 'pending'
+                ORDER BY pending_actions.created_at ASC, pending_actions.id ASC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+    finally:
+        connection.close()
+
+    return [
+        {
+            "id": int(row[0]),
+            "action_type": row[1],
+            "summary": row[2],
+            "payload": row[3] or {},
+            "created_at": row[4],
+            "customer_phone": row[5],
+        }
+        for row in rows
+    ]
+
+
+def resolve_pending_action(action_id: int, status: str) -> Optional[Dict[str, Any]]:
+    """Approve or reject a draft; order creation remains a later explicit step."""
+    if status not in ("approved", "rejected"):
+        raise ValueError("Invalid pending action status")
+
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE pending_actions
+                SET status = %s, resolved_at = now()
+                WHERE id = %s AND status = 'pending'
+                RETURNING conversation_id, action_type, summary, payload
+                """,
+                (status, action_id),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+    if not row:
+        return None
+    return {
+        "conversation_id": int(row[0]),
+        "action_type": row[1],
+        "summary": row[2],
+        "payload": row[3] or {},
+        "status": status,
+    }
