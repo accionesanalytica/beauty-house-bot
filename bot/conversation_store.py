@@ -179,7 +179,8 @@ def get_active_sales_intake(conversation_id: int) -> Optional[Dict[str, Any]]:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT status, product_request, quantity, fulfillment, customer_name, customer_email
+                SELECT status, product_request, selected_sku, selected_variant, quantity,
+                       fulfillment, customer_name, customer_email
                 FROM sales_intakes
                 WHERE conversation_id = %s
                   AND status NOT IN ('ready_for_isa', 'cancelled')
@@ -195,32 +196,49 @@ def get_active_sales_intake(conversation_id: int) -> Optional[Dict[str, Any]]:
     return {
         "status": row[0],
         "product_request": row[1],
-        "quantity": row[2],
-        "fulfillment": row[3],
-        "customer_name": row[4],
-        "customer_email": row[5],
+        "selected_sku": row[2],
+        "selected_variant": row[3],
+        "quantity": row[4],
+        "fulfillment": row[5],
+        "customer_name": row[6],
+        "customer_email": row[7],
     }
 
 
-def start_sales_intake(conversation_id: int) -> None:
+def start_sales_intake(
+    conversation_id: int,
+    product_request: str = "",
+    selected_sku: str = "",
+    selected_variant: str = "",
+) -> None:
     """Start or reset the pre-approval sales form. It never creates an order."""
     connection = _connect()
     try:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO sales_intakes (conversation_id, status)
-                VALUES (%s, 'product')
+                INSERT INTO sales_intakes (
+                    conversation_id, status, product_request, selected_sku, selected_variant
+                )
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (conversation_id) DO UPDATE
-                SET status = 'product',
-                    product_request = NULL,
+                SET status = EXCLUDED.status,
+                    product_request = EXCLUDED.product_request,
+                    selected_sku = EXCLUDED.selected_sku,
+                    selected_variant = EXCLUDED.selected_variant,
                     quantity = NULL,
                     fulfillment = NULL,
                     customer_name = NULL,
                     customer_email = NULL,
                     updated_at = now()
                 """,
-                (conversation_id,),
+                (
+                    conversation_id,
+                    "quantity" if product_request else "product",
+                    product_request or None,
+                    selected_sku or None,
+                    selected_variant or None,
+                ),
             )
         connection.commit()
     except Exception:
@@ -231,7 +249,13 @@ def start_sales_intake(conversation_id: int) -> None:
 
 
 def set_sales_intake_product(conversation_id: int, product_request: str) -> None:
-    _update_sales_intake(conversation_id, "quantity", product_request=product_request)
+    _update_sales_intake(
+        conversation_id,
+        "quantity",
+        product_request=product_request,
+        selected_sku=None,
+        selected_variant=None,
+    )
 
 
 def set_sales_intake_quantity(conversation_id: int, quantity: int) -> None:
@@ -274,7 +298,8 @@ def _update_sales_intake(conversation_id: int, status: str, **values: Any) -> No
         raise ValueError("Invalid sales intake status")
 
     allowed_fields = {
-        "product_request", "quantity", "fulfillment", "customer_name", "customer_email"
+        "product_request", "selected_sku", "selected_variant", "quantity", "fulfillment",
+        "customer_name", "customer_email"
     }
     unknown = set(values) - allowed_fields
     if unknown:

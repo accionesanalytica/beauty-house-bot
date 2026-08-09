@@ -527,6 +527,7 @@ def _sales_summary(intake: dict) -> str:
     return (
         "Te resumo antes de pasárselo a Isa:\n"
         "Producto/modelo: {}\n"
+        "Variante: {}\n"
         "Cantidad: {}\n"
         "Entrega: {}\n"
         "Nombre: {}\n"
@@ -534,6 +535,7 @@ def _sales_summary(intake: dict) -> str:
         "¿Confirmás que lo preparemos para revisión?"
     ).format(
         intake["product_request"],
+        intake["selected_variant"] or "a confirmar",
         intake["quantity"],
         fulfillment,
         intake["customer_name"],
@@ -541,7 +543,18 @@ def _sales_summary(intake: dict) -> str:
     )
 
 
-def _start_sales_intake(conversation_id: int) -> str:
+def _start_sales_intake(conversation_id: int, sale_candidate: dict = None) -> str:
+    if sale_candidate:
+        product_request = sale_candidate["product_name"]
+        selected_variant = sale_candidate.get("variant") or ""
+        start_sales_intake(
+            conversation_id,
+            product_request=product_request,
+            selected_sku=sale_candidate["sku"],
+            selected_variant=selected_variant,
+        )
+        return "¡Buenísimo! ¿Cuántas unidades querés llevar?"
+
     start_sales_intake(conversation_id)
     return (
         "¡Dale! Para prepararte el link necesito confirmar bien el producto. "
@@ -598,6 +611,8 @@ def _handle_sales_intake(
                 "items_status": "{} × {}".format(
                     intake["quantity"], intake["product_request"]
                 ),
+                "selected_sku": intake["selected_sku"] or "a confirmar",
+                "selected_variant": intake["selected_variant"] or "a confirmar",
                 "delivery_status": "envío" if intake["fulfillment"] == "shipping" else "retiro",
                 "payment_status": "link pendiente de aprobación de Isa",
                 "customer_name": intake["customer_name"],
@@ -975,23 +990,6 @@ async def webhook_post(request: Request):
                 customer_reply = "Dale, se lo paso a Isa para que te ayude. 😊"
                 summary = "La clienta pidió hablar directamente con Isa."
             else:
-                if SALES_INTAKE_ENABLED:
-                    try:
-                        customer_reply = _start_sales_intake(conversation_id)
-                    except Exception as error:  # noqa: BLE001
-                        print(f"ERROR iniciando ficha de venta (tipo: {type(error).__name__})")
-                        _queue_for_isa(
-                            conversation_id,
-                            customer_phone,
-                            "bot_fallback",
-                            "Fred no pudo iniciar la ficha de venta.",
-                            message_text,
-                            conversation_context=prior_history,
-                        )
-                        customer_reply = "Perdón, no pude preparar la compra ahora. Se lo paso a Isa."
-                    if send_whatsapp_text(customer_phone, customer_reply):
-                        record_bot_message(conversation_id, customer_reply)
-                    return JSONResponse(content={"ok": True})
                 customer_reply = "Perfecto, se lo paso a Isa para que confirme los detalles de tu compra. 😊"
                 summary = "La clienta indicó que quiere avanzar con una compra."
 
@@ -1023,7 +1021,19 @@ async def webhook_post(request: Request):
             if not reply:
                 raise RuntimeError("El agente no devolvió texto.")
 
+            sale_candidate = result.get("sale_candidate")
             handoff = result.get("handoff")
+            if sale_candidate and SALES_INTAKE_ENABLED:
+                try:
+                    reply = _start_sales_intake(conversation_id, sale_candidate)
+                    handoff = None
+                except Exception as error:  # noqa: BLE001
+                    print(f"ERROR iniciando ficha preseleccionada (tipo: {type(error).__name__})")
+                    handoff = {
+                        "reason": "unable_to_verify",
+                        "summary": "Fred no pudo guardar la selección de compra.",
+                    }
+
             if handoff:
                 action_type = (
                     "purchase_review"

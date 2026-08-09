@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS sales_intakes (
         'product', 'quantity', 'fulfillment', 'customer', 'confirmation', 'ready_for_isa', 'cancelled'
     )),
     product_request TEXT,
+    selected_sku TEXT,
+    selected_variant TEXT,
     quantity INTEGER,
     fulfillment TEXT CHECK (fulfillment IN ('shipping', 'pickup')),
     customer_name TEXT,

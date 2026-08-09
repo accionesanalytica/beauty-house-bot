@@ -59,7 +59,27 @@ HANDOFF_TOOL_SCHEMA = {
         },
     },
 }
-ALL_TOOL_SCHEMAS = TOOL_SCHEMAS + [HANDOFF_TOOL_SCHEMA]
+SALE_CANDIDATE_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "select_sale_candidate",
+        "description": (
+            "Marca la variante exacta que la clienta acaba de aceptar para una "
+            "ficha de venta. Solo usar si get_stock verificó ese SKU como in_stock "
+            "en este mismo turno. No crea pedidos ni reserva stock."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sku": {"type": "string", "description": "SKU verificado."},
+                "product_name": {"type": "string", "description": "Nombre conversacional."},
+                "variant": {"type": "string", "description": "Variante conversacional."},
+            },
+            "required": ["sku", "product_name", "variant"],
+        },
+    },
+}
+ALL_TOOL_SCHEMAS = TOOL_SCHEMAS + [HANDOFF_TOOL_SCHEMA, SALE_CANDIDATE_TOOL_SCHEMA]
 
 SYSTEM_PROMPT = """Sos el asistente de atención al cliente de Beauty House, \
 una tienda argentina de maquillaje importado y pestañas (marca propia: Shoow Tools).
@@ -106,6 +126,13 @@ REGLAS QUE NO PODÉS ROMPER:
    con una compra, o no podés responder de manera verificable después de una
    aclaración razonable. No sigas dando vueltas ni inventes una salida.
 
+9. Si recién recomendaste una única variante disponible y la clienta confirma
+   que quiere esa opción (por ejemplo "la quiero", "me la llevo" o "quiero ese"),
+   verificá nuevamente su SKU con get_stock. Si devuelve in_stock, llamá a
+   select_sale_candidate. Eso no crea una orden: permite preguntarle solo los
+   datos que faltan. Si hay dos opciones posibles o no sabés a cuál se refiere,
+   pedí una aclaración breve y no llames esa función.
+
 TONO: español rioplatense, cercano y breve. Como habla Isa con sus clientas.
 No uses lenguaje corporativo.
 
@@ -144,6 +171,15 @@ def _run_tool(name: str, arguments: Dict[str, Any]) -> Any:
     """Dispatch a tool call to the real implementation."""
     if name == "request_isa_handoff":
         return {"handoff_requested": True, "reason": arguments.get("reason")}
+
+    if name == "select_sale_candidate":
+        return {
+            "sale_candidate": {
+                "sku": arguments.get("sku", "").strip(),
+                "product_name": arguments.get("product_name", "").strip(),
+                "variant": arguments.get("variant", "").strip(),
+            }
+        }
 
     function = AVAILABLE_TOOLS.get(name)
     if function is None:
@@ -271,6 +307,8 @@ def answer(
     tool_calls_made = []
     verified_product_urls: List[str] = []
     handoff_request: Optional[Dict[str, Any]] = None
+    verified_in_stock_skus = set()
+    sale_candidate: Optional[Dict[str, str]] = None
 
     for round_number in range(MAX_TOOL_ROUNDS):
         message = _ask_deepseek(messages)
@@ -287,6 +325,7 @@ def answer(
                 ),
                 "tool_calls": tool_calls_made,
                 "handoff": handoff_request,
+                "sale_candidate": sale_candidate,
                 "rounds": round_number,
             }
 
@@ -317,7 +356,18 @@ def answer(
             if verbose:
                 print("  -> {}({})".format(name, arguments))
 
-            result = _run_tool(name, arguments)
+            if name == "select_sale_candidate":
+                candidate_sku = (arguments.get("sku") or "").strip().lower()
+                if candidate_sku not in verified_in_stock_skus:
+                    result = {
+                        "error": (
+                            "Primero verificá este mismo SKU con get_stock y que esté in_stock."
+                        )
+                    }
+                else:
+                    result = _run_tool(name, arguments)
+            else:
+                result = _run_tool(name, arguments)
             tool_calls_made.append({"name": name, "arguments": arguments})
 
             if name == "request_isa_handoff":
@@ -325,6 +375,15 @@ def answer(
                     "reason": arguments.get("reason", "unable_to_verify"),
                     "summary": arguments.get("summary", ""),
                 }
+
+            if name == "get_stock" and isinstance(result, dict):
+                if result.get("status") == "in_stock" and result.get("sku"):
+                    verified_in_stock_skus.add(result["sku"].strip().lower())
+
+            if name == "select_sale_candidate" and isinstance(result, dict):
+                candidate = result.get("sale_candidate")
+                if candidate and candidate.get("sku") and candidate.get("product_name"):
+                    sale_candidate = candidate
 
             if isinstance(result, dict) and result.get("product_url"):
                 verified_product_urls.append(result["product_url"])
@@ -342,6 +401,7 @@ def answer(
             "reason": "unable_to_verify",
             "summary": "El agente agotó sus intentos de herramientas.",
         },
+        "sale_candidate": sale_candidate,
         "rounds": MAX_TOOL_ROUNDS,
     }
 
