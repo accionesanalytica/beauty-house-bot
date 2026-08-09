@@ -21,6 +21,7 @@ from google import genai
 from google.genai import types
 
 from agent import answer
+from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
 from conversation_store import (
     create_pending_action,
     load_history,
@@ -475,6 +476,22 @@ def _isa_feedback_text(message_text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _isa_demo_order_request(message_text: str) -> tuple:
+    """Parse Isa's explicit demo-only order command."""
+    match = re.match(
+        r"^\s*demo\s*:\s*([A-Za-z0-9_-]+)\s*[x×]\s*(\d+)\s*$",
+        message_text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ()
+    return match.group(1), int(match.group(2))
+
+
+def _is_demo_command(message_text: str) -> bool:
+    return bool(re.match(r"^\s*demo\b", message_text, flags=re.IGNORECASE))
+
+
 def handle_isa_message(
     message_text: str,
     wa_message_id: str = "",
@@ -502,6 +519,40 @@ def handle_isa_message(
                 ISA_WHATSAPP_NUMBER,
                 "No pude guardar ese feedback ahora. Probá enviarlo de nuevo más tarde.",
             )
+        return
+
+    demo_order_request = _isa_demo_order_request(message_text)
+    if demo_order_request:
+        sku, quantity = demo_order_request
+        try:
+            draft_order = create_demo_draft_order(sku, quantity)
+        except DraftOrderDemoError as error:
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "No creé ninguna orden. {}".format(error),
+            )
+            return
+
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Link demo creado ✅\nProducto: {}\nCantidad: {}\nBorrador #{}\n{}\n\n"
+            "Es solo una prueba: no se lo envíes a una clienta ni lo uses para cobrar."
+            .format(
+                draft_order["product_name"],
+                draft_order["quantity"],
+                draft_order["id"],
+                draft_order["checkout_url"],
+            ),
+        )
+        print("[Isa] Borrador demo #{} creado.".format(draft_order["id"]))
+        return
+
+    if _is_demo_command(message_text):
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Para la prueba demo escribí exactamente: demo: TEST-FRED-001 x 1\n"
+            "No se crea nada si el modo demo está apagado.",
+        )
         return
 
     match = re.match(r"^(approve|reject|view):(\d+)$", button_reply_id or "")
