@@ -19,7 +19,12 @@ import numpy as np
 from google import genai
 from google.genai import types
 
-from conversation_store import record_inbound_message
+from agent import answer
+from conversation_store import (
+    load_history,
+    record_bot_message,
+    record_inbound_message,
+)
 
 load_dotenv()
 
@@ -237,6 +242,32 @@ def send_escalacion_isa_template(
         return False
 
 
+def send_whatsapp_text(phone_number: str, text: str) -> bool:
+    """Send a text reply inside the customer-initiated 24-hour window."""
+    url = f"https://graph.facebook.com/v26.0/{WHATSAPP_PHONE_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": normalize_whatsapp_recipient(phone_number),
+        "type": "text",
+        "text": {"preview_url": False, "body": text},
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        print(f"[WhatsApp] HTTP {response.status_code}")
+        print(f"[WhatsApp] Response: {response.text}")
+        response.raise_for_status()
+        return True
+    except Exception as error:  # noqa: BLE001
+        print(f"ERROR enviando texto a WhatsApp: {type(error).__name__}")
+        return False
+
+
 # ============================================================
 # WEBHOOK — VERIFICACIÓN META
 # ============================================================
@@ -336,6 +367,16 @@ async def webhook_post(request: Request):
         f"{message_text}"
     )
 
+    prior_history = []
+    history_available = True
+    if BOT_RESPONSE_MODE == "agent":
+        try:
+            # Load before storing the current message: answer() adds it once.
+            prior_history = load_history(customer_phone)
+        except Exception as error:  # noqa: BLE001
+            history_available = False
+            print(f"ERROR cargando conversacion (tipo: {type(error).__name__})")
+
     try:
         conversation_id, state, duplicate = record_inbound_message(
             customer_phone=customer_phone,
@@ -353,18 +394,51 @@ async def webhook_post(request: Request):
     except Exception as error:  # noqa: BLE001
         # Do not block the current template test if the history store is down.
         # Error details may contain database information, so log only its type.
+        history_available = False
         print(f"ERROR guardando conversacion (tipo: {type(error).__name__})")
 
     # ========================================================
-    # RESPUESTA TEMPORAL — MODO SEGURO
+    # RESPUESTA
     # ========================================================
-    #
-    # El historial ya queda guardado, pero todavía no se llama al agente.
-    # BOT_RESPONSE_MODE se mantiene en "template" hasta completar una prueba
-    # controlada del flujo conversacional.
-    #
 
-    # Enviar la plantilla Meta escalacion_isa con {{1}} = 1.
+    if BOT_RESPONSE_MODE == "agent":
+        # A database outage must not turn into a stateless AI conversation.
+        if not history_available:
+            send_whatsapp_text(
+                customer_phone,
+                "Perdón, no pude procesar tu consulta ahora. Se la paso a Isa.",
+            )
+            return JSONResponse(content={"ok": True})
+
+        if state != "BOT":
+            print(f"[Conversacion] El bot no responde en estado {state}.")
+            return JSONResponse(content={"ok": True})
+
+        try:
+            rag_context = search_similar_products(message_text)
+            result = answer(
+                message_text,
+                history=prior_history,
+                rag_context=rag_context,
+                verbose=False,
+            )
+            reply = (result.get("reply") or "").strip()
+            if not reply:
+                raise RuntimeError("El agente no devolvió texto.")
+
+            if send_whatsapp_text(customer_phone, reply):
+                record_bot_message(conversation_id, reply)
+                print("[Conversacion] Respuesta del agente guardada.")
+        except Exception as error:  # noqa: BLE001
+            print(f"ERROR respondiendo con agente (tipo: {type(error).__name__})")
+            send_whatsapp_text(
+                customer_phone,
+                "Perdón, no pude resolverlo ahora. Se la paso a Isa.",
+            )
+
+        return JSONResponse(content={"ok": True})
+
+    # Modo seguro por defecto: plantilla Meta escalacion_isa con {{1}} = 1.
     send_escalacion_isa_template(
         customer_phone,
         pending_inquiries=1,
