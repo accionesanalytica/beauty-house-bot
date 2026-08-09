@@ -23,6 +23,7 @@ from google import genai
 from google.genai import types
 
 from agent import answer
+from tiendanube_checkout import CheckoutError, checkout_enabled, create_approved_checkout
 from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
 from tiendanube_tools import get_stock
 from conversation_store import (
@@ -40,6 +41,7 @@ from conversation_store import (
     record_bot_message,
     record_inbound_message,
     resolve_pending_action,
+    save_pending_action_checkout,
     set_sales_intake_customer,
     set_sales_intake_fulfillment,
     set_sales_intake_product,
@@ -75,6 +77,7 @@ DEMO_APPROVALS_ENABLED = (
     os.getenv("DEMO_APPROVALS_ENABLED", "false").lower() == "true"
     and os.getenv("TIENDANUBE_DRAFT_ORDERS_MODE", "disabled").lower() == "demo"
 )
+LIVE_CHECKOUTS_ENABLED = checkout_enabled()
 
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMS = 768
@@ -377,7 +380,15 @@ def send_isa_pending_buttons(action: dict) -> bool:
         "type": "reply",
         "reply": {"id": "approve:{}".format(action_id), "title": "Tomar caso"},
     }
-    if DEMO_APPROVALS_ENABLED and action["action_type"] == "purchase_review":
+    if LIVE_CHECKOUTS_ENABLED and action["action_type"] == "purchase_review":
+        approve_button = {
+            "type": "reply",
+            "reply": {
+                "id": "approve_checkout:{}".format(action_id),
+                "title": "Aprobar compra",
+            },
+        }
+    elif DEMO_APPROVALS_ENABLED and action["action_type"] == "purchase_review":
         approve_button = {
             "type": "reply",
             "reply": {
@@ -1095,7 +1106,7 @@ def handle_isa_message(
         )
         return
 
-    match = re.match(r"^(approve|approve_demo|reject|view):(\d+)$", button_reply_id or "")
+    match = re.match(r"^(approve|approve_demo|approve_checkout|reject|view):(\d+)$", button_reply_id or "")
     if not match:
         send_next_pending_to_isa()
         return
@@ -1141,6 +1152,70 @@ def handle_isa_message(
             .format(draft_order["id"], draft_order["checkout_url"]),
         )
         print("[Isa] Borrador demo #{} creado desde pendiente #{}.".format(draft_order["id"], action_id))
+        if pending_action_count():
+            send_next_pending_to_isa()
+        return
+
+    if action == "approve_checkout":
+        pending_action = _pending_action_by_id(action_id)
+        if not pending_action:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya no está disponible.")
+            return
+        if pending_action["action_type"] != "purchase_review":
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente no es una compra para aprobar.")
+            return
+
+        payload = pending_action.get("payload", {})
+        sale_draft = payload.get("sale_draft", {})
+        checkout = payload.get("checkout")
+        try:
+            if not checkout:
+                items_status = sale_draft.get("items_status", "")
+                quantity = int(items_status.split("×", 1)[0].strip())
+                checkout = create_approved_checkout(
+                    sku=sale_draft.get("selected_sku", ""),
+                    quantity=quantity,
+                    customer_name=sale_draft.get("customer_name", ""),
+                    customer_email=sale_draft.get("customer_email", ""),
+                    customer_phone=pending_action["customer_phone"],
+                )
+                save_pending_action_checkout(action_id, checkout)
+        except (CheckoutError, ValueError, IndexError) as error:
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "No se creó ningún link. {} El pendiente sigue abierto para revisarlo.".format(error),
+            )
+            return
+
+        customer_text = (
+            "¡Listo! Isa revisó tu pedido 😊\n\n"
+            "Te dejo el link seguro para completar la compra:\n{}\n\n"
+            "Ahí vas a poder ingresar la dirección si elegís envío, o seleccionar retiro, "
+            "y elegir el medio de pago. Cuando se acredite, Tiendanube registra el pedido."
+        ).format(checkout["checkout_url"])
+        if not send_whatsapp_text(pending_action["customer_phone"], customer_text):
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "El checkout #{} ya está creado, pero no pude entregar el link. Tocá "
+                "“Aprobar compra” otra vez: se reutiliza el mismo link.".format(checkout.get("id", "")),
+            )
+            return
+
+        result = resolve_pending_action(action_id, "approved")
+        if not result:
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "El link ya fue enviado a la clienta, pero el pendiente cambió de estado. Revisalo en Tiendanube.",
+            )
+            return
+        set_conversation_state(result["conversation_id"], "BOT")
+        record_bot_message(result["conversation_id"], customer_text)
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Compra aprobada ✅ Link de checkout #{} enviado a la clienta. Tiendanube va a registrar "
+            "el pago y el pedido cuando ella complete el checkout.".format(checkout.get("id", "")),
+        )
+        print("[Isa] Checkout #{} enviado desde pendiente #{}.".format(checkout.get("id"), action_id))
         if pending_action_count():
             send_next_pending_to_isa()
         return

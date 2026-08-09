@@ -472,6 +472,33 @@ def resolve_pending_action(action_id: int, status: str) -> Optional[Dict[str, An
     }
 
 
+def save_pending_action_checkout(action_id: int, checkout: Dict[str, Any]) -> bool:
+    """Persist an approved checkout before delivering its link over WhatsApp.
+
+    This makes an approval retry idempotent: Fred reuses the same checkout URL
+    instead of accidentally creating a second cart/order.
+    """
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE pending_actions
+                SET payload = jsonb_set(payload, '{checkout}', %s::jsonb, true)
+                WHERE id = %s AND status = 'pending'
+                """,
+                (Json(checkout).dumps(checkout), action_id),
+            )
+            saved = cursor.rowcount == 1
+        connection.commit()
+        return saved
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def start_isa_sale_session(isa_phone: str) -> None:
     """Start a guided internal sale draft for Isa; never creates an order."""
     _update_isa_sale_session(isa_phone, "choose_type", sale_type=None, details=None)
