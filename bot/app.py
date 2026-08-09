@@ -24,6 +24,7 @@ from google.genai import types
 
 from agent import answer
 from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
+from tiendanube_tools import get_stock
 from conversation_store import (
     cancel_sales_intake,
     create_pending_action,
@@ -632,6 +633,46 @@ def _recent_candidate_quantity(prior_history: list, sale_candidate: dict) -> int
             if quantity:
                 return quantity
     return 0
+
+
+def _verified_purchase_candidate_from_tool_calls(message_text: str, result: dict) -> dict:
+    """Recover a concrete sale choice when the model verified one SKU but omitted the marker.
+
+    The language model is allowed to explain the product, but it must not be the
+    source of truth for the sales-form state. When a customer explicitly names
+    a purchase and the same turn checked exactly one SKU, re-check that SKU and
+    start the deterministic intake form. More than one stock lookup means the
+    choice is ambiguous, so we intentionally do nothing here.
+    """
+    normalized = _normalized_text(message_text)
+    expresses_purchase = bool(
+        re.search(
+            r"\b(comprar|compra|pedir|pido|ordenar|llevar|llevo|avanzar|avancemos|proceder)\b",
+            normalized,
+        )
+    )
+    if not expresses_purchase:
+        return {}
+
+    checked_skus = [
+        (call.get("arguments", {}).get("sku") or "").strip()
+        for call in result.get("tool_calls", [])
+        if call.get("name") == "get_stock"
+    ]
+    checked_skus = list(dict.fromkeys(sku for sku in checked_skus if sku))
+    if len(checked_skus) != 1:
+        return {}
+
+    stock = get_stock(checked_skus[0])
+    if stock.get("status") != "in_stock":
+        return {}
+
+    return {
+        "sku": stock["sku"],
+        "product_name": stock["product_name"],
+        "variant": stock.get("variant") or "",
+        "unit_price": stock.get("price"),
+    }
 
 
 def _already_asked_product_clarification(prior_history: list) -> bool:
@@ -1253,6 +1294,15 @@ async def webhook_post(request: Request):
                         "pero todavía no pudo verificarlo en Tiendanube."
                     ),
                 }
+            # DeepSeek can sometimes explain a purchase correctly but omit the
+            # select_sale_candidate call. Do not let that create a fake
+            # text-only checkout flow: if it verified exactly one SKU in this
+            # turn, promote it to the persisted intake form ourselves.
+            if not sale_candidate and SALES_INTAKE_ENABLED:
+                sale_candidate = _verified_purchase_candidate_from_tool_calls(
+                    message_text,
+                    result,
+                )
             if sale_candidate and SALES_INTAKE_ENABLED:
                 try:
                     candidate_quantity = (
