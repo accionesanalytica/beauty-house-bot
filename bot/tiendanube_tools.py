@@ -36,9 +36,6 @@ HEADERS = {
 }
 
 # Business rules agreed with the store owner
-LEAD_TIME_DAYS = "7 a 20 días hábiles"
-
-
 # --------------------------------------------------------------------------
 # Low level client
 # --------------------------------------------------------------------------
@@ -87,10 +84,12 @@ def _describe_variant(variant: Dict[str, Any]) -> str:
 
 def search_products(query: str, limit: int = 5, include_hidden: bool = False) -> List[Dict[str, Any]]:
     """
-    Search products by name. Returns candidates with their variants and stock.
+    Search products by name. Returns candidates to identify a product.
 
-    Hidden products are excluded by default: they are not for sale, so the
-    bot must never offer them to a customer.
+    This deliberately does NOT return price or stock. The agent must use
+    get_stock() for the exact SKU before saying anything about availability or
+    price. Hidden products are excluded by default: they are not for sale, so
+    the bot must never offer them to a customer.
     """
     products = _get("/products", {"q": query, "per_page": limit})
 
@@ -104,8 +103,6 @@ def search_products(query: str, limit: int = 5, include_hidden: bool = False) ->
                 "variant_id": variant.get("id"),
                 "sku": variant.get("sku") or "",
                 "description": _describe_variant(variant),
-                "stock": variant.get("stock"),  # None means unlimited
-                "price": variant.get("price"),
             })
 
         results.append({
@@ -122,10 +119,10 @@ def get_stock(sku: str) -> Dict[str, Any]:
     """
     Return the live availability for a single SKU.
 
-    Three possible states:
+    Four possible states:
         in_stock     -> quantity > 0
         out_of_stock -> quantity == 0
-        made_to_order -> stock is None (unlimited in Tiendanube = encargo)
+        untracked_stock -> stock is None (Tiendanube does not track it)
     """
     products = _get("/products", {"q": sku, "per_page": 10})
 
@@ -137,8 +134,11 @@ def get_stock(sku: str) -> Dict[str, Any]:
             stock = variant.get("stock")
 
             if stock is None:
-                status = "made_to_order"
-                message = "Por encargo. Demora {}.".format(LEAD_TIME_DAYS)
+                status = "untracked_stock"
+                message = (
+                    "No puedo confirmar la disponibilidad automáticamente. "
+                    "Lo consultamos con Isa."
+                )
             elif stock > 0:
                 status = "in_stock"
                 message = "Disponible: {} unidades.".format(stock)
@@ -196,7 +196,8 @@ TOOL_SCHEMAS = [
             "description": (
                 "Busca productos por nombre en el catálogo real de la tienda. "
                 "Usar cuando la clienta menciona un producto pero no se conoce su SKU. "
-                "Devuelve los candidatos con sus variantes y el stock de cada una."
+                "Solo identifica candidatos y variantes: NO confirma stock ni precio. "
+                "Después usá get_stock con el SKU elegido."
             ),
             "parameters": {
                 "type": "object",

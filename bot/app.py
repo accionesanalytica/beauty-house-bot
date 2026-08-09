@@ -1,7 +1,7 @@
 """
 FastAPI webhook para Meta WhatsApp Cloud API.
-Escucha mensajes, busca contexto en Supabase (RAG vectorial),
-y responde usando el agent de DeepSeek.
+Escucha mensajes, registra su historial en Supabase y, por ahora,
+responde con una plantilla de prueba aprobada por Meta.
 """
 
 import os
@@ -19,8 +19,7 @@ import numpy as np
 from google import genai
 from google.genai import types
 
-# TODO: Importar agent cuando esté listo
-# from agent import answer
+from conversation_store import record_inbound_message
 
 load_dotenv()
 
@@ -35,6 +34,10 @@ WHATSAPP_PHONE_ID = os.getenv("PHONE_NUMBER_ID")
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN")
 SUPABASE_DB_URL = os.getenv("SUPABASE_DB_URL")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+
+# Seguridad: hasta completar las pruebas, el webhook conserva la plantilla
+# actual. El modo agent se habilitará explícitamente en una etapa posterior.
+BOT_RESPONSE_MODE = os.getenv("BOT_RESPONSE_MODE", "template").lower()
 
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMS = 768
@@ -137,10 +140,13 @@ def search_similar_products(query: str, limit: int = 3) -> str:
 
         return context
 
-    except Exception as e:
+    except Exception as error:  # noqa: BLE001
 
+        # Database-driver errors can echo the full connection string. Never
+        # write them to logs because it may contain SUPABASE_DB_URL secrets.
         print(
-            f"ERROR en search_similar_products: {e}"
+            "ERROR en search_similar_products "
+            f"(tipo: {type(error).__name__})"
         )
 
         return ""
@@ -310,6 +316,7 @@ async def webhook_post(request: Request):
     msg = messages[0]
 
     customer_phone = msg.get("from")
+    wa_message_id = msg.get("id")
 
     message_text = (
         msg.get("text", {})
@@ -329,12 +336,32 @@ async def webhook_post(request: Request):
         f"{message_text}"
     )
 
+    try:
+        conversation_id, state, duplicate = record_inbound_message(
+            customer_phone=customer_phone,
+            body=message_text,
+            wa_message_id=wa_message_id,
+        )
+        if duplicate:
+            print("[Conversacion] Mensaje duplicado ignorado.")
+            return JSONResponse(content={"ok": True})
+
+        print(
+            f"[Conversacion] Guardado en {conversation_id} "
+            f"(estado: {state})."
+        )
+    except Exception as error:  # noqa: BLE001
+        # Do not block the current template test if the history store is down.
+        # Error details may contain database information, so log only its type.
+        print(f"ERROR guardando conversacion (tipo: {type(error).__name__})")
+
     # ========================================================
-    # RESPUESTA TEMPORAL
+    # RESPUESTA TEMPORAL — MODO SEGURO
     # ========================================================
     #
-    # TODO:
-    # Implementar agent loop con DeepSeek + RAG.
+    # El historial ya queda guardado, pero todavía no se llama al agente.
+    # BOT_RESPONSE_MODE se mantiene en "template" hasta completar una prueba
+    # controlada del flujo conversacional.
     #
 
     # Enviar la plantilla Meta escalacion_isa con {{1}} = 1.

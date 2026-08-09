@@ -11,6 +11,14 @@ node_modules/
 # Logs
 *.log
 npm-debug.log*
+logs/
+
+# Archivos generados localmente
+backups/
+data/catalog.json
+data/catalog_flat.csv
+*.jsonl
+bot/*.save
 
 # Sistema
 .DS_Store
