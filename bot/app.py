@@ -528,13 +528,20 @@ def handle_isa_message(
         return
 
     if action == "approve":
+        set_conversation_state(result["conversation_id"], "ISA")
         send_whatsapp_text(
             ISA_WHATSAPP_NUMBER,
-            "Tomaste el caso #{}. Todavía no se creó ninguna orden: es solo el "
-            "borrador de trabajo para esta prueba.".format(action_id),
+            "Tomaste el caso #{}. Fred deja de responderle a la clienta. Todavía "
+            "no se creó ninguna orden: es solo el borrador de trabajo para esta prueba."
+            .format(action_id),
         )
     else:
-        send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Descartaste el pendiente #{}.".format(action_id))
+        set_conversation_state(result["conversation_id"], "BOT")
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Descartaste el pendiente #{}. Fred vuelve a atender a la clienta."
+            .format(action_id),
+        )
 
     if pending_action_count():
         send_next_pending_to_isa()
