@@ -535,6 +535,9 @@ def _extract_customer_details(text: str) -> tuple:
 
     name_text = text[:email_match.start()]
     name_text = re.sub(r"(?i)\b(nombre|soy|mi mail|email|correo|es)\b\s*:? *", "", name_text)
+    # Cuando la clienta responde el formato compacto ("envío, Ana Pérez,
+    # ana@email.com"), logística no forma parte de su nombre.
+    name_text = re.sub(r"(?i)\b(env[ií]o|retiro|retirar)\b\s*", "", name_text)
     name_text = re.sub(r"[,:;|]+", " ", name_text).strip()
     name_words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", name_text)
     if len(name_words) < 2:
