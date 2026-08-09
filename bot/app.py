@@ -4,11 +4,14 @@ Escucha mensajes, registra su historial en Supabase y, por ahora,
 responde con una plantilla de prueba aprobada por Meta.
 """
 
+import asyncio
 import os
 import re
 import sys
 import unicodedata
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
 
 # Agregar el directorio actual al path para importar agent.py
 sys.path.insert(0, os.path.dirname(__file__))
@@ -29,18 +32,24 @@ from tiendanube_tools import get_stock
 from conversation_store import (
     add_isa_sale_session_details,
     cancel_sales_intake,
+    claim_daily_isa_reminder,
+    claim_requested_isa_reminder,
+    clear_isa_reminder_snooze,
     clear_isa_sale_session,
     create_pending_action,
     get_isa_sale_session,
     get_active_sales_intake,
+    isa_reminders_snoozed,
     load_history,
     list_pending_actions,
     mark_sales_intake_ready,
     pending_action_count,
+    pending_reminder_snapshot,
     record_isa_feedback,
     record_bot_message,
     record_inbound_message,
     resolve_pending_action,
+    release_daily_isa_reminder,
     save_pending_action_checkout,
     set_sales_intake_customer,
     set_sales_intake_fulfillment,
@@ -50,6 +59,7 @@ from conversation_store import (
     set_isa_sale_session_type,
     start_isa_sale_session,
     start_sales_intake,
+    snooze_isa_reminders,
 )
 
 load_dotenv()
@@ -78,6 +88,9 @@ DEMO_APPROVALS_ENABLED = (
     and os.getenv("TIENDANUBE_DRAFT_ORDERS_MODE", "disabled").lower() == "demo"
 )
 LIVE_CHECKOUTS_ENABLED = checkout_enabled()
+ISA_REMINDERS_ENABLED = os.getenv("ISA_REMINDERS_ENABLED", "false").lower() == "true"
+ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
+_reminder_task = None
 
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMS = 768
@@ -309,6 +322,63 @@ def send_isa_pending_notification(pending_count: int) -> bool:
         print("ERROR avisando a Isa: falta ISA_WHATSAPP_NUMBER")
         return False
     return send_escalacion_isa_template(ISA_WHATSAPP_NUMBER, pending_count)
+
+
+def _business_reminder_time(now: datetime) -> bool:
+    """Do not chase Isa at night; she can explicitly ask for a later reminder."""
+    return (now.hour, now.minute) >= (10, 0) and (now.hour, now.minute) < (20, 30)
+
+
+def run_isa_reminder_check(now: datetime = None) -> None:
+    """Send at most two friendly, template-safe reminders per local day."""
+    if not ISA_REMINDERS_ENABLED or not ISA_WHATSAPP_NUMBER:
+        return
+    now = now or datetime.now(ARGENTINA_TZ)
+    snapshot = pending_reminder_snapshot()
+    if not snapshot["count"]:
+        return
+
+    if claim_requested_isa_reminder(ISA_WHATSAPP_NUMBER):
+        if not send_isa_pending_notification(snapshot["count"]):
+            print("ERROR enviando recordatorio solicitado a Isa.")
+        return
+
+    if not _business_reminder_time(now) or isa_reminders_snoozed(ISA_WHATSAPP_NUMBER):
+        return
+    oldest = snapshot["oldest_created_at"]
+    if not oldest:
+        return
+    age = now - oldest.astimezone(ARGENTINA_TZ)
+    kind = "follow_up" if age >= timedelta(hours=2) else "gentle"
+    if kind == "gentle" and age < timedelta(minutes=25):
+        return
+    if not claim_daily_isa_reminder(ISA_WHATSAPP_NUMBER, kind, now.date()):
+        return
+    if not send_isa_pending_notification(snapshot["count"]):
+        release_daily_isa_reminder(ISA_WHATSAPP_NUMBER, kind, now.date())
+        print("ERROR enviando recordatorio automático a Isa.")
+
+
+async def _isa_reminder_loop() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(run_isa_reminder_check)
+        except Exception as error:  # noqa: BLE001
+            print("ERROR en recordatorios de Isa (tipo: {}).".format(type(error).__name__))
+        await asyncio.sleep(300)
+
+
+@app.on_event("startup")
+async def start_isa_reminders() -> None:
+    global _reminder_task
+    if ISA_REMINDERS_ENABLED and _reminder_task is None:
+        _reminder_task = asyncio.create_task(_isa_reminder_loop())
+
+
+@app.on_event("shutdown")
+async def stop_isa_reminders() -> None:
+    if _reminder_task:
+        _reminder_task.cancel()
 
 
 def _is_isa_phone(phone_number: str) -> bool:
@@ -856,6 +926,57 @@ def _isa_feedback_text(message_text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _handle_isa_reminder_request(message_text: str) -> bool:
+    """Let Isa manage reminders in ordinary language, without a separate panel."""
+    normalized = _normalized_text(message_text)
+    now = datetime.now(ARGENTINA_TZ)
+
+    if re.search(r"\b(no me recuerdes|silencia|silencia los recordatorios)\b", normalized):
+        tomorrow = (now + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+        snooze_isa_reminders(ISA_WHATSAPP_NUMBER, tomorrow)
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Dale, no te insisto más hoy. Si sigue pendiente, te lo recuerdo mañana a las 10 😊",
+        )
+        return True
+
+    match = re.search(r"\brecordame en (\d{1,2})\s*(minuto|min|hora|horas|h)\b", normalized)
+    if match:
+        amount = int(match.group(1))
+        minutes = amount if match.group(2).startswith("min") else amount * 60
+        if not 10 <= minutes <= 12 * 60:
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "Puedo recordártelo entre 10 minutos y 12 horas. Por ejemplo: “recordame en 1 hora”.",
+            )
+            return True
+        remind_at = now + timedelta(minutes=minutes)
+        snooze_isa_reminders(ISA_WHATSAPP_NUMBER, remind_at)
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Dale, te lo recuerdo a las {}. Mientras tanto no te molesto 😊".format(
+                remind_at.strftime("%H:%M")
+            ),
+        )
+        return True
+
+    if re.search(r"\b(reactiva|volve a recordar|vuelve a recordar|recordame ahora)\b", normalized):
+        clear_isa_reminder_snooze(ISA_WHATSAPP_NUMBER)
+        snapshot = pending_reminder_snapshot()
+        if snapshot["count"]:
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "Listo, vuelvo a avisarte. Tenés {} pendiente(s); escribime “ver” y te muestro el primero.".format(
+                    snapshot["count"]
+                ),
+            )
+        else:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Listo, no hay pendientes ahora 😊")
+        return True
+
+    return False
+
+
 def _isa_demo_order_request(message_text: str) -> tuple:
     """Parse Isa's explicit demo-only order command."""
     match = re.match(
@@ -1062,6 +1183,9 @@ def handle_isa_message(
                 ISA_WHATSAPP_NUMBER,
                 "No pude guardar ese feedback ahora. Probá enviarlo de nuevo más tarde.",
             )
+        return
+
+    if _handle_isa_reminder_request(message_text):
         return
 
     if _handle_isa_sale_session(message_text, button_reply_id):

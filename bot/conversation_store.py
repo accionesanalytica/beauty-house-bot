@@ -6,6 +6,7 @@ agent. Keeping it separate makes the webhook easier to reason about and test.
 """
 
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
@@ -345,6 +346,159 @@ def pending_action_count() -> int:
         with connection.cursor() as cursor:
             cursor.execute("SELECT count(*) FROM pending_actions WHERE status = 'pending'")
             return int(cursor.fetchone()[0])
+    finally:
+        connection.close()
+
+
+def pending_reminder_snapshot() -> Dict[str, Any]:
+    """Return queue size and the age anchor for non-intrusive reminders."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT count(*), min(created_at)
+                FROM pending_actions
+                WHERE status = 'pending'
+                """
+            )
+            count, oldest = cursor.fetchone()
+    finally:
+        connection.close()
+    return {"count": int(count), "oldest_created_at": oldest}
+
+
+def isa_reminders_snoozed(isa_phone: str) -> bool:
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT snoozed_until > now()
+                FROM isa_reminder_preferences
+                WHERE isa_phone = %s
+                """,
+                (isa_phone,),
+            )
+            row = cursor.fetchone()
+            return bool(row and row[0])
+    finally:
+        connection.close()
+
+
+def snooze_isa_reminders(isa_phone: str, until: datetime) -> None:
+    """Pause automatic reminders until the requested instant."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO isa_reminder_preferences (isa_phone, snoozed_until, requested_reminder_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (isa_phone) DO UPDATE
+                SET snoozed_until = EXCLUDED.snoozed_until,
+                    requested_reminder_at = EXCLUDED.requested_reminder_at,
+                    updated_at = now()
+                """,
+                (isa_phone, until, until),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def clear_isa_reminder_snooze(isa_phone: str) -> None:
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO isa_reminder_preferences (isa_phone, snoozed_until, requested_reminder_at)
+                VALUES (%s, NULL, NULL)
+                ON CONFLICT (isa_phone) DO UPDATE
+                SET snoozed_until = NULL, requested_reminder_at = NULL, updated_at = now()
+                """,
+                (isa_phone,),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def claim_requested_isa_reminder(isa_phone: str) -> bool:
+    """Claim one explicit 'remind me later' request, exactly once."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE isa_reminder_preferences
+                SET requested_reminder_at = NULL, snoozed_until = NULL, updated_at = now()
+                WHERE isa_phone = %s
+                  AND requested_reminder_at IS NOT NULL
+                  AND requested_reminder_at <= now()
+                RETURNING isa_phone
+                """,
+                (isa_phone,),
+            )
+            claimed = cursor.fetchone() is not None
+        connection.commit()
+        return claimed
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def claim_daily_isa_reminder(isa_phone: str, reminder_kind: str, local_date) -> bool:
+    """Atomically reserve one automatic reminder of each kind per local day."""
+    if reminder_kind not in ("gentle", "follow_up"):
+        raise ValueError("Invalid reminder kind")
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO isa_reminder_events (isa_phone, reminder_kind, local_date)
+                VALUES (%s, %s, %s)
+                ON CONFLICT DO NOTHING
+                RETURNING isa_phone
+                """,
+                (isa_phone, reminder_kind, local_date),
+            )
+            claimed = cursor.fetchone() is not None
+        connection.commit()
+        return claimed
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def release_daily_isa_reminder(isa_phone: str, reminder_kind: str, local_date) -> None:
+    """Allow a retry when Meta did not accept a reserved reminder."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM isa_reminder_events
+                WHERE isa_phone = %s AND reminder_kind = %s AND local_date = %s
+                """,
+                (isa_phone, reminder_kind, local_date),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
 
