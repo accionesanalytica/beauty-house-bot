@@ -5,8 +5,10 @@ responde con una plantilla de prueba aprobada por Meta.
 """
 
 import asyncio
+import html
 import os
 import re
+import secrets
 import sys
 import unicodedata
 from datetime import datetime, timedelta
@@ -20,7 +22,7 @@ import psycopg2
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 import numpy as np
 from google import genai
 from google.genai import types
@@ -29,6 +31,10 @@ from agent import answer
 from tiendanube_checkout import CheckoutError, checkout_enabled, create_approved_checkout
 from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
 from tiendanube_tools import get_stock
+from tiendanube_credentials import (
+    TiendanubeCredentialError,
+    save_tiendanube_credential,
+)
 from conversation_store import (
     add_isa_sale_session_details,
     cancel_sales_intake,
@@ -1375,6 +1381,121 @@ def handle_isa_message(
 # ============================================================
 # WEBHOOK — VERIFICACIÓN META
 # ============================================================
+
+
+# ============================================================
+# TIENDANUBE — CONEXIÓN OAUTH ASISTIDA
+# ============================================================
+
+def _oauth_page(title: str, body: str, status_code: int = 200) -> HTMLResponse:
+    """Render a small, non-cacheable status page without exposing credentials."""
+
+    document = """<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><title>{title}</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:680px;margin:48px auto;line-height:1.5;padding:0 20px">
+<h1>{title}</h1>{body}</body></html>""".format(
+        title=html.escape(title), body=body
+    )
+    return HTMLResponse(
+        content=document,
+        status_code=status_code,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
+@app.get("/tiendanube/connect")
+async def tiendanube_connect():
+    """Start a safe owner-authorized Tiendanube OAuth connection."""
+
+    client_id = os.getenv("TIENDANUBE_CLIENT_ID", "").strip()
+    client_secret = os.getenv("TIENDANUBE_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        return _oauth_page(
+            "Conexión no configurada",
+            "<p>Faltan las credenciales de la app de Tiendanube en Railway.</p>",
+            503,
+        )
+
+    state = secrets.token_urlsafe(32)
+    response = RedirectResponse(
+        "https://www.tiendanube.com/apps/{}/authorize?state={}".format(
+            client_id, state
+        ),
+        status_code=302,
+    )
+    response.set_cookie(
+        "fred_tiendanube_oauth_state",
+        state,
+        max_age=600,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/tiendanube/oauth/callback")
+async def tiendanube_oauth_callback(request: Request):
+    """Exchange an authorization code and store the token encrypted."""
+
+    client_id = os.getenv("TIENDANUBE_CLIENT_ID", "").strip()
+    client_secret = os.getenv("TIENDANUBE_CLIENT_SECRET", "").strip()
+    code = request.query_params.get("code", "")
+    state = request.query_params.get("state", "")
+    expected_state = request.cookies.get("fred_tiendanube_oauth_state", "")
+    if not client_id or not client_secret:
+        return _oauth_page("Conexión no configurada", "<p>Faltan credenciales de la app en Railway.</p>", 503)
+    if not code or not expected_state or not secrets.compare_digest(state, expected_state):
+        return _oauth_page(
+            "No se pudo verificar la conexión",
+            "<p>Volvé a iniciar desde el link de conexión de Fred.</p>",
+            400,
+        )
+
+    try:
+        token_response = requests.post(
+            "https://www.tiendanube.com/apps/authorize/token",
+            json={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "grant_type": "authorization_code",
+                "code": code,
+            },
+            timeout=15,
+        )
+        payload = token_response.json()
+        if not token_response.ok:
+            raise ValueError("Respuesta no autorizada")
+        store_id = str(payload.get("user_id", "")).strip()
+        access_token = str(payload.get("access_token", "")).strip()
+        save_tiendanube_credential(
+            store_id,
+            access_token,
+            str(payload.get("scope", "")),
+        )
+    except (
+        requests.RequestException,
+        ValueError,
+        TiendanubeCredentialError,
+        psycopg2.Error,
+    ):
+        return _oauth_page(
+            "No se pudo conectar Tiendanube",
+            "<p>No se modificó la conexión actual. Volvé a intentarlo desde el link de Fred.</p>",
+            400,
+        )
+
+    response = _oauth_page(
+        "Beauty House conectada",
+        "<p>La autorización quedó guardada de forma cifrada y Fred ya puede usarla.</p>"
+        "<p><strong>Tienda verificada:</strong> {}</p>".format(html.escape(store_id)),
+    )
+    response.delete_cookie("fred_tiendanube_oauth_state")
+    return response
 
 @app.get("/webhook")
 async def webhook_get(request: Request):

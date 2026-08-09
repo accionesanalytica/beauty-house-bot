@@ -10,6 +10,11 @@ from typing import Any, Dict
 
 import requests
 
+from tiendanube_credentials import (
+    TiendanubeCredentialError,
+    get_tiendanube_configuration,
+)
+
 
 API_VERSION = "2025-03"
 
@@ -29,18 +34,10 @@ def _configuration() -> Dict[str, str]:
             "El checkout real está apagado. No se creó ningún link ni pedido."
         )
 
-    store_id = os.getenv("TIENDANUBE_STORE_ID", "").strip()
-    access_token = os.getenv("TIENDANUBE_ACCESS_TOKEN", "").strip()
-    user_agent = os.getenv(
-        "TIENDANUBE_USER_AGENT", "BeautyHouseBot (support@example.com)"
-    ).strip()
-    if not store_id or not access_token:
-        raise CheckoutError("Falta la configuración de Tiendanube en Railway.")
-    return {
-        "store_id": store_id,
-        "access_token": access_token,
-        "user_agent": user_agent,
-    }
+    try:
+        return get_tiendanube_configuration()
+    except TiendanubeCredentialError as error:
+        raise CheckoutError("Falta la configuración de Tiendanube en Railway.") from error
 
 
 def _headers(configuration: Dict[str, str]) -> Dict[str, str]:

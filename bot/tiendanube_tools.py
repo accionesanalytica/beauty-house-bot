@@ -13,30 +13,18 @@ The LLM never invents stock. It calls get_stock() and reports what comes back.
 Python 3.9 compatible.
 """
 
-import os
 import re
 import time
 from html import unescape
 from typing import Any, Dict, List, Optional
 
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
+from tiendanube_credentials import (
+    TiendanubeCredentialError,
+    get_tiendanube_configuration,
+)
 
 API_VERSION = "2025-03"
-STORE_ID = os.getenv("TIENDANUBE_STORE_ID")
-ACCESS_TOKEN = os.getenv("TIENDANUBE_ACCESS_TOKEN")
-USER_AGENT = os.getenv("TIENDANUBE_USER_AGENT", "BeautyHouseBot (luisenriqvera@gmail.com)")
-
-BASE_URL = "https://api.tiendanube.com/{}/{}".format(API_VERSION, STORE_ID)
-
-HEADERS = {
-    "Authentication": "bearer {}".format(ACCESS_TOKEN),
-    "Content-Type": "application/json",
-    "User-Agent": USER_AGENT,
-}
-
 # Business rules agreed with the store owner
 # --------------------------------------------------------------------------
 # Low level client
@@ -44,10 +32,22 @@ HEADERS = {
 
 def _get(endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
     """GET with rate limit handling. Read-only."""
-    url = "{}{}".format(BASE_URL, endpoint)
+    try:
+        configuration = get_tiendanube_configuration()
+    except TiendanubeCredentialError as error:
+        raise RuntimeError("No puedo consultar Tiendanube ahora.") from error
+
+    url = "https://api.tiendanube.com/{}/{}{}".format(
+        API_VERSION, configuration["store_id"], endpoint
+    )
+    headers = {
+        "Authentication": "bearer {}".format(configuration["access_token"]),
+        "Content-Type": "application/json",
+        "User-Agent": configuration["user_agent"],
+    }
 
     for attempt in range(4):
-        response = requests.get(url, headers=HEADERS, params=params, timeout=20)
+        response = requests.get(url, headers=headers, params=params, timeout=20)
 
         if response.status_code == 429:
             wait = int(response.headers.get("Retry-After", 5))

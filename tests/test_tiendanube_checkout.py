@@ -21,6 +21,7 @@ class CheckoutTests(unittest.TestCase):
             "TIENDANUBE_STORE_ID": "123",
             "TIENDANUBE_ACCESS_TOKEN": "secret",
             "TIENDANUBE_USER_AGENT": "Fred test",
+            "TIENDANUBE_OAUTH_CREDENTIALS_ENABLED": "false",
         },
         clear=False,
     )
@@ -52,7 +53,14 @@ class CheckoutTests(unittest.TestCase):
         self.assertEqual(payload["payment_status"], "unpaid")
         self.assertEqual(payload["products"], [{"variant_id": 99, "quantity": 4}])
 
-    @patch.dict(os.environ, {"TIENDANUBE_CHECKOUT_MODE": "disabled"}, clear=False)
+    @patch.dict(
+        os.environ,
+        {
+            "TIENDANUBE_CHECKOUT_MODE": "disabled",
+            "TIENDANUBE_OAUTH_CREDENTIALS_ENABLED": "false",
+        },
+        clear=False,
+    )
     def test_cannot_create_checkout_until_explicitly_enabled(self):
         with self.assertRaisesRegex(checkout.CheckoutError, "apagado"):
             checkout.create_approved_checkout(
@@ -69,6 +77,7 @@ class CheckoutTests(unittest.TestCase):
             "TIENDANUBE_CHECKOUT_MODE": "production",
             "TIENDANUBE_STORE_ID": "123",
             "TIENDANUBE_ACCESS_TOKEN": "secret",
+            "TIENDANUBE_OAUTH_CREDENTIALS_ENABLED": "false",
         },
         clear=False,
     )
