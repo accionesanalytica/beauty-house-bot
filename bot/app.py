@@ -26,8 +26,11 @@ from agent import answer
 from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
 from tiendanube_tools import get_stock
 from conversation_store import (
+    add_isa_sale_session_details,
     cancel_sales_intake,
+    clear_isa_sale_session,
     create_pending_action,
+    get_isa_sale_session,
     get_active_sales_intake,
     load_history,
     list_pending_actions,
@@ -42,6 +45,8 @@ from conversation_store import (
     set_sales_intake_product,
     set_sales_intake_quantity,
     set_conversation_state,
+    set_isa_sale_session_type,
+    start_isa_sale_session,
     start_sales_intake,
 )
 
@@ -856,6 +861,141 @@ def _is_demo_command(message_text: str) -> bool:
     return bool(re.match(r"^\s*demo\b", message_text, flags=re.IGNORECASE))
 
 
+ISA_SALE_TYPE_LABELS = {
+    "normal": "Venta normal",
+    "encargo": "Encargo",
+    "venta_mayorista": "Venta mayorista",
+    "otro": "Otro",
+}
+
+
+def _looks_like_isa_sale_request(message_text: str) -> bool:
+    """Understand natural internal requests without requiring a magic command."""
+    normalized = _normalized_text(message_text)
+    return bool(
+        re.search(
+            r"\b(vendi|venta|orden|link de pago|link|cobrar|registrar|pedido)\b",
+            normalized,
+        )
+    )
+
+
+def send_isa_sale_type_menu() -> bool:
+    """Ask Isa to classify an external sale with a WhatsApp list, not syntax."""
+    url = f"https://graph.facebook.com/v26.0/{WHATSAPP_PHONE_ID}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": normalize_whatsapp_recipient(ISA_WHATSAPP_NUMBER),
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {
+                "text": (
+                    "¿Cómo querés registrar esta venta? Elegí una opción y después "
+                    "te pido los datos. Todavía no se crea ningún link."
+                )
+            },
+            "action": {
+                "button": "Elegir tipo",
+                "sections": [
+                    {
+                        "title": "Tipo de venta",
+                        "rows": [
+                            {"id": "sale_type:normal", "title": "Venta normal", "description": "Producto con stock físico"},
+                            {"id": "sale_type:encargo", "title": "Encargo", "description": "Producto a pedir / sin stock físico"},
+                            {"id": "sale_type:venta_mayorista", "title": "Venta mayorista", "description": "Condición comercial especial"},
+                            {"id": "sale_type:otro", "title": "Otro", "description": "Contame el caso y lo clasificamos"},
+                        ],
+                    }
+                ],
+            },
+        },
+    }
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"},
+            timeout=10,
+        )
+        print(f"[Isa] Menú interno HTTP {response.status_code}")
+        response.raise_for_status()
+        return True
+    except Exception as error:  # noqa: BLE001
+        print(f"ERROR enviando menú interno a Isa: {type(error).__name__}")
+        return False
+
+
+def _isa_sale_type_prompt(sale_type: str) -> str:
+    if sale_type == "otro":
+        return (
+            "Listo, marcamos ‘Otro’. Contame brevemente qué pasó y qué necesitás. "
+            "No voy a crear nada hasta que el tipo de venta quede claro."
+        )
+    return (
+        "Perfecto: {}. Ahora pasame en un solo mensaje producto, variante, cantidad "
+        "y nombre/email de la clienta si lo tenés. Voy a armar un borrador para tu "
+        "aprobación; todavía no se crea ningún link."
+    ).format(ISA_SALE_TYPE_LABELS[sale_type])
+
+
+def _handle_isa_sale_session(message_text: str, button_reply_id: str) -> bool:
+    """Advance Isa's internal guided draft. Returns True when it handled input."""
+    if button_reply_id.startswith("sale_type:"):
+        sale_type = button_reply_id.split(":", 1)[1]
+        if sale_type not in ISA_SALE_TYPE_LABELS:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "No reconocí ese tipo. Elegí una opción de la lista.")
+            return True
+        set_isa_sale_session_type(ISA_WHATSAPP_NUMBER, sale_type)
+        send_whatsapp_text(ISA_WHATSAPP_NUMBER, _isa_sale_type_prompt(sale_type))
+        return True
+
+    # Approval/context buttons belong to customer pending actions, never to an
+    # unfinished internal sale draft.
+    if button_reply_id:
+        return False
+
+    session = get_isa_sale_session(ISA_WHATSAPP_NUMBER)
+    if not session:
+        return False
+
+    normalized = _normalized_text(message_text).strip()
+    if re.fullmatch(r"(?:cancelar|cancelalo|cancelar venta|dejalo)", normalized):
+        clear_isa_sale_session(ISA_WHATSAPP_NUMBER)
+        send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Listo, descarté ese borrador interno. No se creó nada.")
+        return True
+
+    if session["status"] == "choose_type":
+        send_isa_sale_type_menu()
+        return True
+
+    if session["status"] == "collect_details":
+        add_isa_sale_session_details(ISA_WHATSAPP_NUMBER, message_text)
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Borrador de {} guardado ✅\n\n{}\n\n"
+            "Todavía no se creó ninguna orden ni link. La próxima fase agrega la "
+            "revisión y tu botón de aprobación."
+            .format(ISA_SALE_TYPE_LABELS[session["sale_type"]], message_text[:600]),
+        )
+        return True
+
+    if session["status"] == "review":
+        if _looks_like_isa_sale_request(message_text):
+            start_isa_sale_session(ISA_WHATSAPP_NUMBER)
+            send_isa_sale_type_menu()
+            return True
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Ese borrador ya está guardado. Por ahora podés escribir ‘cancelar’ para "
+            "descartarlo o mandarme una nueva venta para empezar otra ficha.",
+        )
+        return True
+
+    return False
+
+
 def _pending_action_by_id(action_id: int) -> dict:
     """Read one still-pending card; used before a demo-only side effect."""
     return next(
@@ -911,6 +1051,14 @@ def handle_isa_message(
                 ISA_WHATSAPP_NUMBER,
                 "No pude guardar ese feedback ahora. Probá enviarlo de nuevo más tarde.",
             )
+        return
+
+    if _handle_isa_sale_session(message_text, button_reply_id):
+        return
+
+    if _looks_like_isa_sale_request(message_text):
+        start_isa_sale_session(ISA_WHATSAPP_NUMBER)
+        send_isa_sale_type_menu()
         return
 
     demo_order_request = _isa_demo_order_request(message_text)
@@ -1105,10 +1253,10 @@ async def webhook_post(request: Request):
 
     customer_phone = msg.get("from")
     wa_message_id = msg.get("id")
+    interactive_reply = msg.get("interactive", {})
     button_reply_id = (
-        msg.get("interactive", {})
-        .get("button_reply", {})
-        .get("id", "")
+        interactive_reply.get("button_reply", {}).get("id", "")
+        or interactive_reply.get("list_reply", {}).get("id", "")
     )
 
     message_text = (
@@ -1119,11 +1267,9 @@ async def webhook_post(request: Request):
 
     if not message_text and button_reply_id:
         message_text = (
-            msg.get("interactive", {})
-            .get("button_reply", {})
-            .get("title", "")
-            .strip()
-        )
+            interactive_reply.get("button_reply", {}).get("title", "")
+            or interactive_reply.get("list_reply", {}).get("title", "")
+        ).strip()
 
     if not message_text:
 

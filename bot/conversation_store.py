@@ -470,3 +470,98 @@ def resolve_pending_action(action_id: int, status: str) -> Optional[Dict[str, An
         "payload": row[3] or {},
         "status": status,
     }
+
+
+def start_isa_sale_session(isa_phone: str) -> None:
+    """Start a guided internal sale draft for Isa; never creates an order."""
+    _update_isa_sale_session(isa_phone, "choose_type", sale_type=None, details=None)
+
+
+def set_isa_sale_session_type(isa_phone: str, sale_type: str) -> None:
+    """Persist one of the approved manual-sale categories."""
+    if sale_type not in ("normal", "encargo", "venta_mayorista", "otro"):
+        raise ValueError("Invalid internal sale type")
+    _update_isa_sale_session(isa_phone, "collect_details", sale_type=sale_type)
+
+
+def get_isa_sale_session(isa_phone: str) -> Optional[Dict[str, Any]]:
+    """Return Isa's current guided draft, if any."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status, sale_type, details
+                FROM isa_sale_sessions
+                WHERE isa_phone = %s
+                """,
+                (isa_phone,),
+            )
+            row = cursor.fetchone()
+    finally:
+        connection.close()
+    if not row:
+        return None
+    return {"status": row[0], "sale_type": row[1], "details": row[2]}
+
+
+def add_isa_sale_session_details(isa_phone: str, details: str) -> None:
+    """Store the free-form sale details supplied by Isa for later review."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE isa_sale_sessions
+                SET details = %s, status = 'review', updated_at = now()
+                WHERE isa_phone = %s AND status = 'collect_details'
+                """,
+                (details.strip(), isa_phone),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("No existe un borrador interno esperando datos.")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def clear_isa_sale_session(isa_phone: str) -> None:
+    """Discard an internal draft without affecting customer conversations."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM isa_sale_sessions WHERE isa_phone = %s", (isa_phone,))
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def _update_isa_sale_session(isa_phone: str, status: str, **values: Any) -> None:
+    """Upsert the short-lived internal sale workflow state."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO isa_sale_sessions (isa_phone, status, sale_type, details)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (isa_phone) DO UPDATE
+                SET status = EXCLUDED.status,
+                    sale_type = EXCLUDED.sale_type,
+                    details = EXCLUDED.details,
+                    updated_at = now()
+                """,
+                (isa_phone, status, values.get("sale_type"), values.get("details")),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()

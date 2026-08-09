@@ -145,5 +145,49 @@ class AgentOutputSafetyTests(unittest.TestCase):
         )
 
 
+class IsaInternalSaleFlowTests(unittest.TestCase):
+    @patch.object(app, "send_isa_sale_type_menu", return_value=True)
+    @patch.object(app, "start_isa_sale_session")
+    @patch.object(app, "get_isa_sale_session", return_value=None)
+    def test_natural_external_sale_request_opens_category_menu(
+        self, get_session, start_session, send_menu
+    ):
+        app.handle_isa_message("Vendí unos productos por Instagram, ¿me armás el link?")
+        start_session.assert_called_once_with(app.ISA_WHATSAPP_NUMBER)
+        send_menu.assert_called_once()
+        get_session.assert_called_once_with(app.ISA_WHATSAPP_NUMBER)
+
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "set_isa_sale_session_type")
+    def test_isa_can_choose_encargo_without_writing_a_command(self, set_type, send_message):
+        handled = app._handle_isa_sale_session("Encargo", "sale_type:encargo")
+        self.assertTrue(handled)
+        set_type.assert_called_once_with(app.ISA_WHATSAPP_NUMBER, "encargo")
+        self.assertIn("Encargo", send_message.call_args.args[1])
+
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "add_isa_sale_session_details")
+    @patch.object(
+        app,
+        "get_isa_sale_session",
+        return_value={"status": "collect_details", "sale_type": "venta_mayorista", "details": None},
+    )
+    def test_selected_type_keeps_details_for_review(self, get_session, add_details, send_message):
+        handled = app._handle_isa_sale_session(
+            "Isabel I chocolate x 12, Cliente Ejemplo, cliente@example.com", ""
+        )
+        self.assertTrue(handled)
+        add_details.assert_called_once()
+        self.assertIn("Venta mayorista", send_message.call_args.args[1])
+
+    @patch.object(
+        app,
+        "get_isa_sale_session",
+        return_value={"status": "review", "sale_type": "encargo", "details": "algo"},
+    )
+    def test_customer_approval_button_is_not_captured_by_internal_draft(self, get_session):
+        self.assertFalse(app._handle_isa_sale_session("Tomar caso", "approve:17"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
