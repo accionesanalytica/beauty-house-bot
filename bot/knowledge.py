@@ -8,25 +8,21 @@ Fuentes públicas:
 - https://beautyhousemakeup.com/pedidos-especiales/
 - https://beautyhousemakeup.com/contacto/
 
-Políticas que podés comunicar:
+Políticas que podés comunicar de forma general:
 - Los pedidos están sujetos a disponibilidad de stock.
-- El procesamiento y envío puede demorar hasta 5 días hábiles desde la
-  confirmación del pedido. La entrega posterior depende del transporte elegido.
-- Se aceptan devoluciones dentro de los 7 días corridos de recibido el producto,
-  si está sin uso y con embalaje intacto.
-- Los gastos de devolución los asume la clienta, salvo falla de fabricación o
-  envío incorrecto.
-- Los reembolsos se procesan luego de recibir y revisar el producto devuelto y
-  pueden demorar de 7 a 10 días hábiles. Se realizan al mismo medio de pago.
-- Para pedidos especiales: primero se informa presupuesto, la clienta lo aprueba
-  y paga; recién entonces se procesa. La espera publicada es de 15 a 20 días.
-- Los encargos ya formalizados no tienen devolución monetaria.
-- El local está en Vidal 2680, Belgrano, CABA.
+- Los tiempos de preparación, despacho y entrega dependen de la operación y del
+  transporte elegido; Isa los confirma antes de prometerlos.
+- Cambios, devoluciones, reembolsos, encargos y preventas se revisan según las
+  políticas vigentes y el caso concreto; Isa confirma condiciones y plazos.
+- Para pedidos especiales se informa un presupuesto antes de procesarlos.
 
 Reglas de seguridad:
 - No afirmes promociones, envío gratis, descuentos, cuotas ni medios de pago
   específicos desde esta base: cambian con frecuencia entre páginas. Decí que
   lo verificás antes de confirmarlo.
+- No repitas plazos numéricos, dirección, reglas de transporte, requisitos de
+  devolución ni condiciones de preventa desde una conversación o documento
+  histórico. Si afectan una decisión de la clienta, pedí que Isa los confirme.
 - No uses estas políticas para afirmar stock, precio ni estado de pedido.
 - Si la pregunta no está cubierta con claridad, ofrecé consultarlo con Isa.
 """
