@@ -1468,25 +1468,69 @@ async def tiendanube_oauth_callback(request: Request):
             timeout=15,
         )
         payload = token_response.json()
-        if not token_response.ok:
-            raise ValueError("Respuesta no autorizada")
+    except requests.RequestException:
+        print("[Tiendanube OAuth] No se pudo contactar el endpoint de autorización.")
+        return _oauth_page(
+            "No se pudo conectar Tiendanube",
+            "<p>No se pudo contactar Tiendanube. Probá nuevamente en unos minutos.</p>",
+            502,
+        )
+    except ValueError:
+        print("[Tiendanube OAuth] Respuesta inválida del canje.")
+        return _oauth_page(
+            "Respuesta inválida de Tiendanube",
+            "<p>Volvé a iniciar desde el link de conexión de Fred.</p>",
+            400,
+        )
+
+    if not token_response.ok:
+        print(
+            "[Tiendanube OAuth] Canje rechazado "
+            "(HTTP {}).".format(token_response.status_code)
+        )
+        return _oauth_page(
+            "Tiendanube rechazó la conexión",
+            "<p>Revisá en Railway que <code>TIENDANUBE_CLIENT_ID</code> sea 38765 "
+            "y que <code>TIENDANUBE_CLIENT_SECRET</code> corresponda a esta misma app.</p>",
+            400,
+        )
+
+    try:
         store_id = str(payload.get("user_id", "")).strip()
         access_token = str(payload.get("access_token", "")).strip()
+        expected_store_id = os.getenv("TIENDANUBE_STORE_ID", "").strip()
+        if store_id != expected_store_id:
+            print(
+                "[Tiendanube OAuth] Tienda inesperada: {}.".format(store_id)
+            )
+            return _oauth_page(
+                "Se conectó otra tienda",
+                "<p>Tiendanube devolvió la tienda <strong>{}</strong>, pero Fred espera "
+                "Beauty House (<strong>{}</strong>). No se modificó ninguna credencial.</p>".format(
+                    html.escape(store_id or "sin identificador"),
+                    html.escape(expected_store_id or "sin configurar"),
+                ),
+                400,
+            )
         save_tiendanube_credential(
             store_id,
             access_token,
             str(payload.get("scope", "")),
         )
-    except (
-        requests.RequestException,
-        ValueError,
-        TiendanubeCredentialError,
-        psycopg2.Error,
-    ):
+    except TiendanubeCredentialError:
+        print("[Tiendanube OAuth] La credencial no pudo guardarse de forma segura.")
         return _oauth_page(
-            "No se pudo conectar Tiendanube",
-            "<p>No se modificó la conexión actual. Volvé a intentarlo desde el link de Fred.</p>",
+            "No se pudo guardar la conexión",
+            "<p>Revisá las variables de Tiendanube y Supabase en Railway.</p>",
             400,
+        )
+    except psycopg2.Error:
+        print("[Tiendanube OAuth] Supabase rechazó el guardado de la conexión.")
+        return _oauth_page(
+            "No se pudo guardar la conexión",
+            "<p>La autorización fue válida, pero Fred no pudo guardarla en Supabase. "
+            "Revisemos la conexión de Supabase.</p>",
+            503,
         )
 
     response = _oauth_page(
