@@ -90,6 +90,15 @@ Humanidad y links:
   product_url entregada por la herramienta; no fabriques URLs. Si te piden un
   link, llamá primero a get_product_availability para obtener product_url.
 
+Formato WhatsApp:
+- No uses Markdown: nada de negritas con asteriscos, títulos ni listas rígidas
+  salvo que comparar opciones realmente lo requiera.
+- Los nombres que llegan de Tiendanube son etiquetas internas. Nunca los copies
+  tal cual si vienen en MAYÚSCULAS o con guiones. Reescribilos en lenguaje
+  natural y explicá qué son. Ejemplo: "SHOOW TOOLS - SET DE PESTAÑAS SORPRESA"
+  se presenta como "el set de pestañas sorpresa de Shoow Tools".
+- Preferí frases cortas y conversacionales, como un mensaje escrito por Isa.
+
 {policy_context}
 
 {sales_playbook}
@@ -125,6 +134,26 @@ def _remove_unverified_urls(text: str, verified_urls: List[str]) -> str:
         return normalized if normalized in verified else ""
 
     return URL_PATTERN.sub(replace_url, text).strip()
+
+
+def _plain_whatsapp_text(text: str) -> str:
+    """Keep the final reply conversational instead of catalog-like Markdown."""
+    return text.replace("**", "").replace("__", "").replace("`", "")
+
+
+def _ensure_first_greeting(text: str, greeting_required: bool) -> str:
+    """Guarantee a warm opening on a genuinely new bot conversation."""
+    if not greeting_required:
+        return text
+
+    starts_with_greeting = re.match(
+        r"^\s*[¡¿]?(hola|buenas|buen día|buen dia|buenas tardes|buenas noches)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if starts_with_greeting:
+        return text
+    return "¡Hola! " + text
 
 
 def _ask_deepseek(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -215,9 +244,12 @@ def answer(
 
         if not tool_calls:
             return {
-                "reply": _remove_unverified_urls(
-                    message.get("content") or "",
-                    verified_product_urls,
+                "reply": _ensure_first_greeting(
+                    _plain_whatsapp_text(_remove_unverified_urls(
+                        message.get("content") or "",
+                        verified_product_urls,
+                    )),
+                    greeting_required,
                 ),
                 "tool_calls": tool_calls_made,
                 "rounds": round_number,
