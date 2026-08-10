@@ -19,6 +19,12 @@ _STOP_WORDS = {
     "con", "como", "para", "por", "que", "quiero", "tener", "tienen",
     "tenes", "info", "sobre", "unos", "unas", "del", "las", "los",
     "una", "uno", "the", "and",
+    # Conversational filler must never become an AND filter.  For example,
+    # "mmm no tenés nada color chocolate" should retrieve "chocolate", not
+    # require a product name to contain "mmm", "nada" and "color" too.
+    "mmm", "nada", "algo", "color", "hay", "disponible", "disponibles",
+    "busco", "buscar", "necesito", "momento", "general", "todos", "todo",
+    "dia", "dias", "pestanas", "pestana",
 }
 
 

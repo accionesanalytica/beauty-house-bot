@@ -163,6 +163,7 @@ ENCARGOS_PDF_PATH = (
     Path(__file__).resolve().parent.parent / "assets" / "policies" / "preventa-encargos-vigente.pdf"
 )
 ENCARGOS_PDF_URL = "{}/documents/preventa-encargos.pdf".format(PUBLIC_BASE_URL)
+CUSTOMER_POLICIES_URL = "https://beautyhousemakeup.com/politicas/"
 ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 _reminder_task = None
 
@@ -764,7 +765,11 @@ def _queue_for_isa(
         summary=summary,
         payload=payload,
     )
-    set_conversation_state(conversation_id, "ESCALATED")
+    # A pending question is asynchronous: Fred keeps helping the client while
+    # Isa reviews it.  The only explicit pause is Isa pressing “Pausar a Fred”.
+    # Previously every escalation set ESCALATED and silently ignored any later
+    # customer message, which made normal support feel abandoned.
+    set_conversation_state(conversation_id, "BOT")
     if pending_before == 0:
         action = {
             "id": action_id,
@@ -974,6 +979,24 @@ def _simple_customer_reply(text: str) -> str:
     if re.fullmatch(r"(?:gracias|muchas gracias|genial gracias|perfecto gracias|ok gracias)", normalized):
         return "¡De nada! 😊 Si te surge otra duda, escribime por acá."
     return ""
+
+
+def _lifting_clarification_reply(text: str) -> str:
+    """Keep lifting advice safe without turning it into a human handoff.
+
+    Fred cannot verify compatibility from a photo or a generic style request.
+    A product name or public link gives it a concrete item for a later
+    Tiendanube/knowledge check, while the conversation remains fluid.
+    """
+    normalized = _normalized_text(text)
+    if "lifting" not in normalized:
+        return ""
+    return (
+        "Para orientarte bien sin prometerte algo que no esté confirmado: "
+        "¿tenés el nombre exacto o el link del modelo que te gustaría usar? "
+        "Si todavía no lo elegiste, contame si buscás pestañas de banda o cluster "
+        "y te ayudo a ubicar opciones 😊"
+    )
 
 
 def _customer_access_reply(customer_phone: str) -> str:
@@ -1665,6 +1688,65 @@ def _is_special_conditions_request(message_text: str) -> bool:
     )
 
 
+def _isa_customer_instruction(message_text: str, action: dict) -> str:
+    """Translate a few safe, natural owner instructions into client content.
+
+    This prevents commands such as "mandar políticas en pdf" from being sent
+    literally to a customer.  It is intentionally tiny: all other free-form
+    text remains Isa's reviewed wording.
+    """
+    normalized = _normalized_text(message_text)
+    is_send = bool(re.search(r"\b(manda|mandar|envia|enviar|pasa|pasar|comparti|compartir)\b", normalized))
+    if not is_send:
+        return ""
+
+    if re.search(r"\b(politica|politicas|devolucion|devoluciones|cambio|cambios)\b", normalized):
+        return (
+            "Te comparto las políticas vigentes para que las puedas revisar: "
+            "{}\n\nSi querés, contame brevemente qué pasó con el producto y "
+            "te ayudo a dejar la consulta bien encaminada 😊"
+        ).format(CUSTOMER_POLICIES_URL)
+
+    if action.get("action_type") == "special_sale_request" and re.search(
+        r"\b(condicion|condiciones|encargo|preventa|cotizacion)\b", normalized
+    ):
+        return "__SEND_SPECIAL_CONDITIONS__"
+
+    return ""
+
+
+def _deliver_isa_response(action: dict, message_text: str) -> bool:
+    """Deliver reviewed owner context, then return the chat to normal BOT mode."""
+    customer_text = _isa_customer_instruction(message_text, action) or message_text
+    if customer_text == "__SEND_SPECIAL_CONDITIONS__":
+        _send_special_sale_conditions(action)
+        return True
+
+    if not send_whatsapp_text(action["customer_phone"], customer_text):
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "No pude enviar esa respuesta a la clienta; no la pierdo. Probá mandarla de nuevo.",
+        )
+        return False
+
+    result = resolve_pending_action(action["id"], "approved")
+    if not result:
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "La respuesta llegó a la clienta, pero el pendiente cambió de estado. Revisalo antes de seguir.",
+        )
+        return False
+    set_conversation_state(result["conversation_id"], "BOT")
+    record_bot_message(result["conversation_id"], customer_text)
+    send_whatsapp_text(
+        ISA_WHATSAPP_NUMBER,
+        "Listo, Fred le pasó tu respuesta a la clienta y sigue atendiendo ese chat 😊",
+    )
+    if pending_action_count():
+        send_next_pending_to_isa()
+    return True
+
+
 def _create_demo_link_for_approved_sale(action: dict) -> dict:
     """Create a checkout only in the dedicated demo store.
 
@@ -1738,6 +1820,25 @@ def handle_isa_message(
             _send_special_sale_conditions(special_pending)
             return
 
+    # Isa can also write a simple instruction such as "mandar políticas".
+    # No card hunting is required for this safe, pre-defined delivery.
+    if not button_reply_id:
+        customer_pending = next(
+            (
+                action
+                for action in list_pending_actions(limit=20)
+                if action["action_type"] in (
+                    "bot_fallback",
+                    "human_handoff",
+                    "special_sale_request",
+                )
+            ),
+            None,
+        )
+        if customer_pending and _isa_customer_instruction(message_text, customer_pending):
+            _deliver_isa_response(customer_pending, message_text)
+            return
+
     response_match = re.match(r"^reply_to_fred:(\d+)$", button_reply_id or "")
     if response_match:
         action_id = int(response_match.group(1))
@@ -1787,28 +1888,7 @@ def handle_isa_message(
                 )
             return
 
-        customer_phone = awaiting_response["customer_phone"]
-        if not send_whatsapp_text(customer_phone, message_text):
-            send_whatsapp_text(
-                ISA_WHATSAPP_NUMBER,
-                "No pude enviar esa respuesta a la clienta; no la pierdo. Probá mandarla de nuevo.",
-            )
-            return
-        result = resolve_pending_action(awaiting_response["id"], "approved")
-        if not result:
-            send_whatsapp_text(
-                ISA_WHATSAPP_NUMBER,
-                "La respuesta llegó a la clienta, pero el pendiente cambió de estado. Revisalo antes de seguir.",
-            )
-            return
-        set_conversation_state(result["conversation_id"], "BOT")
-        record_bot_message(result["conversation_id"], message_text)
-        send_whatsapp_text(
-            ISA_WHATSAPP_NUMBER,
-            "Listo, Fred le pasó tu respuesta a la clienta y vuelve a atender ese chat 😊",
-        )
-        if pending_action_count():
-            send_next_pending_to_isa()
+        _deliver_isa_response(awaiting_response, message_text)
         return
 
     if _handle_isa_sale_session(message_text, button_reply_id):
@@ -1935,7 +2015,10 @@ def handle_isa_message(
             send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya fue resuelto.")
             return
         set_conversation_state(result["conversation_id"], "BOT")
-        customer_text = "Dale, sigo por acá 😊 ¿Qué te gustaría resolver?"
+        customer_text = (
+            "Dale, sigo por acá 😊 Ya tengo presente la consulta que veníamos viendo. "
+            "Si querés, retomamos desde ahí; también podés contarme cualquier otra cosa."
+        )
         if send_whatsapp_text(result["payload"].get("customer_phone", ""), customer_text):
             record_bot_message(result["conversation_id"], customer_text)
         send_whatsapp_text(
@@ -2749,6 +2832,12 @@ async def webhook_post(request: Request):
                 record_bot_message(conversation_id, customer_reply)
             return JSONResponse(content={"ok": True})
 
+        lifting_reply = _lifting_clarification_reply(message_text)
+        if lifting_reply:
+            if send_whatsapp_text(customer_phone, lifting_reply):
+                record_bot_message(conversation_id, lifting_reply)
+            return JSONResponse(content={"ok": True})
+
         simple_reply = _simple_customer_reply(message_text)
         if simple_reply:
             if send_whatsapp_text(customer_phone, simple_reply):
@@ -2765,7 +2854,10 @@ async def webhook_post(request: Request):
         )
         if escalation_type:
             if escalation_type == "human_handoff":
-                customer_reply = "Dale, se lo paso a Isa para que te ayude. 😊"
+                customer_reply = (
+                    "Dale, ya se lo consulto a Isa 😊 Mientras tanto seguimos por acá; "
+                    "si me deja una respuesta te la comparto apenas llegue."
+                )
                 summary = "La clienta pidió hablar directamente con Isa."
             else:
                 customer_reply = "Perfecto, se lo paso a Isa para que confirme los detalles de tu compra. 😊"

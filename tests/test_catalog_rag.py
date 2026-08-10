@@ -13,6 +13,7 @@ from catalog_rag import (  # noqa: E402
     format_catalog_context,
     fuse_catalog_candidates,
     lexical_catalog_query,
+    lexical_terms,
 )
 
 
@@ -44,6 +45,12 @@ class CatalogRagTests(unittest.TestCase):
         self.assertEqual(params[-1], 3)
         self.assertIn("%isabel%", params)
         self.assertIn("%chocolate%", params)
+
+    def test_conversational_filler_does_not_hide_a_chocolate_product(self):
+        self.assertEqual(lexical_terms("mmm no tenés nada color chocolate?"), ["chocolate"])
+        sql, params = lexical_catalog_query("mmm no tenés nada color chocolate?", limit=3)
+        self.assertEqual(params, ("%chocolate%", 3))
+        self.assertEqual(sql.lower().count(" like %s"), 1)
 
     def test_lexical_identity_outranks_semantic_candidate(self):
         candidates = fuse_catalog_candidates(

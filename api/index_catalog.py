@@ -21,7 +21,10 @@ Usage:
 
 import argparse
 import csv
+import html
+import json
 import os
+import re
 import sys
 import time
 
@@ -42,6 +45,7 @@ BATCH_SLEEP = 0.1
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CATALOG_PATH = os.path.join(SCRIPT_DIR, "..", "data", "catalog_flat.csv")
+CATALOG_DETAILS_PATH = os.path.join(SCRIPT_DIR, "..", "data", "catalog.json")
 sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "bot"))
 from catalog_rag import build_catalog_content  # noqa: E402
 
@@ -67,9 +71,47 @@ def build_content(row):
     return build_catalog_content(row)
 
 
+def _plain_text(value):
+    """Turn Tiendanube HTML into compact retrieval text, never customer HTML."""
+    value = html.unescape(str(value or ""))
+    value = re.sub(r"<[^>]+>", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _catalog_details_by_product_id():
+    """Optional rich source from the same Tiendanube export as catalog_flat.
+
+    The flat file is enough for exact product identity.  When the detailed
+    export exists, descriptions, brand and public handle make semantic product
+    discovery understand needs such as "natural para todos los días".  Stock
+    and price remain deliberately excluded.
+    """
+    if not os.path.exists(CATALOG_DETAILS_PATH):
+        return {}
+    with open(CATALOG_DETAILS_PATH, encoding="utf-8") as handle:
+        products = json.load(handle)
+    details = {}
+    for product in products:
+        product_id = str(product.get("id") or "")
+        if not product_id:
+            continue
+        description = _plain_text((product.get("description") or {}).get("es"))
+        handle_value = str((product.get("handle") or {}).get("es") or "").strip()
+        details[product_id] = {
+            "description": description,
+            "brand": str(product.get("brand") or "").strip(),
+            "handle": handle_value,
+        }
+    return details
+
+
 def load_catalog():
     with open(CATALOG_PATH, encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle, delimiter=";"))
+
+    details_by_id = _catalog_details_by_product_id()
+    for row in rows:
+        row.update(details_by_id.get(str(row.get("product_id") or ""), {}))
 
     # Only what is actually for sale
     return [r for r in rows if r["published"] == "yes"]

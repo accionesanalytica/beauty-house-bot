@@ -144,7 +144,7 @@ class WebhookHarnessTests(unittest.TestCase):
         retrieve.assert_not_called()
         queue_for_isa.assert_called_once()
         self.assertEqual(queue_for_isa.call_args.args[2], "human_handoff")
-        self.assertIn("se lo paso a Isa", send_message.call_args.args[1])
+        self.assertIn("consulto a Isa", send_message.call_args.args[1])
         record_message.assert_called_once()
 
     @patch.object(app, "_send_service_fallback")
@@ -180,6 +180,20 @@ class WebhookHarnessTests(unittest.TestCase):
         ask_model.assert_not_called()
         retrieve.assert_not_called()
         send_message.assert_not_called()
+
+    def test_lifting_requires_a_model_or_link_without_calling_the_model(self):
+        reply = app._lifting_clarification_reply("Tengo lifting, ¿qué pestañas me recomendás?")
+        self.assertIn("nombre exacto", reply)
+        self.assertIn("link", reply)
+        self.assertEqual(app._lifting_clarification_reply("Busco pestañas naturales"), "")
+
+    def test_isa_policy_instruction_is_translated_not_forwarded_verbatim(self):
+        reply = app._isa_customer_instruction(
+            "mandar políticas en pdf",
+            {"action_type": "human_handoff"},
+        )
+        self.assertIn("beautyhousemakeup.com/politicas", reply)
+        self.assertNotIn("mandar políticas", reply)
 
 
 if __name__ == "__main__":
