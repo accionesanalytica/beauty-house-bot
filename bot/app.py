@@ -1124,11 +1124,24 @@ def _normalized_text(text: str) -> str:
 
 
 def _extract_quantity(text: str) -> int:
-    match = re.search(r"\b(\d{1,2})\s*(?:x|u|unidades?|unidad)?\b", text.lower())
-    if not match:
-        return 0
-    quantity = int(match.group(1))
-    return quantity if 1 <= quantity <= 99 else 0
+    """Extract an explicit purchase quantity, never a product measurement.
+
+    A bare number inside ``8/8/10/12 mm`` is a lash length, not four units.
+    A standalone number is accepted only because it is a natural answer to
+    Fred's direct “¿cuántas unidades?” question.
+    """
+    normalized = _normalized_text(text).strip()
+    patterns = (
+        r"^\s*(\d{1,2})\s*$",
+        r"\b(?:quiero|llevo|pido|pedir|ordenar|serian|son|cantidad)\s+(\d{1,2})\b",
+        r"\b(\d{1,2})\s*(?:x|unidades?|unidad|u|packs?|pares?)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            quantity = int(match.group(1))
+            return quantity if 1 <= quantity <= 99 else 0
+    return 0
 
 
 def _is_sale_confirmation(text: str) -> bool:
@@ -1152,7 +1165,8 @@ def _extract_customer_details(text: str) -> tuple:
     # Prefer an explicit WhatsApp form label. It keeps a friendly message such
     # as "te dejo los datos" from becoming part of the customer's name.
     labeled_name = re.search(
-        r"(?im)^\s*(?:nombre(?:\s+y\s+apellido)?|nombre completo)\s*:\s*([^\r\n,;|]+)",
+        r"(?i)\b(?:nombre(?:\s+y\s+apellido)?|nombre completo)\s*:\s*"
+        r"([^\r\n,;|]+?)(?=\s+(?:email|mail|correo)\s*:|[\r\n,;|]|$)",
         name_text,
     )
     if labeled_name:
@@ -1192,7 +1206,8 @@ def _extract_customer_fields(text: str) -> dict:
         fields["customer_email"] = email_match.group(0).lower()
 
     labeled_name = re.search(
-        r"(?im)^\s*(?:nombre(?:\s+y\s+apellido)?|nombre completo)\s*:\s*([^\r\n,;|]+)",
+        r"(?i)\b(?:nombre(?:\s+y\s+apellido)?|nombre completo)\s*:\s*"
+        r"([^\r\n,;|]+?)(?=\s+(?:email|mail|correo)\s*:|[\r\n,;|]|$)",
         text,
     )
     natural_name = re.search(
@@ -1581,104 +1596,46 @@ def _handle_sales_intake(
     intake: dict,
     prior_history: list,
 ) -> bool:
-    """Advance one safe sales-form step. Returns true when it sent a reply."""
+    """Run the one purchase flow used by every normal checkout.
+
+    A sale is a record of known facts, not a chain of fragile screens.  Each
+    customer message may add or correct any field; Fred then asks only for the
+    next missing fact, or sends the completed record to Isa after confirmation.
+    """
     normalized = _normalized_text(message_text)
     if re.fullmatch(r"(?:cancelar|cancelo|dejalo|no sigo)", normalized):
         cancel_sales_intake(conversation_id)
         reply = "Dale, cancelé esta preparación. Si querés volver a empezar, avisame 😊"
-    elif (updated_intake := _apply_sale_turn_updates(conversation_id, message_text, intake)) != intake:
-        reply = (
-            _sales_summary(updated_intake)
-            if _sale_is_complete(updated_intake)
-            else _sales_missing_step(updated_intake)
-        )
-        if reply == "__FULFILLMENT_BUTTONS__":
-            delivered = send_customer_fulfillment_buttons(customer_phone)
-            stored_reply = "¿Cómo preferís recibir tu compra? [Envío / Retiro]"
-        else:
-            delivered = send_whatsapp_text(customer_phone, reply)
-            stored_reply = reply
-        if delivered:
-            record_bot_message(conversation_id, stored_reply)
-        return True
-    elif _sale_is_complete(intake) and (
-        _sales_fulfillment(message_text)
-        or _extract_customer_fields(message_text)
-        or _extract_customer_details(message_text)
-    ):
-        reply = _sales_summary(intake)
-        if send_whatsapp_text(customer_phone, reply):
-            record_bot_message(conversation_id, reply)
-        return True
-    elif intake["status"] == "product":
+    elif intake["status"] == "product" and not intake.get("selected_sku"):
+        # This fallback only applies when Fred truly has no verified product
+        # yet. Normal checkout always starts with a verified SKU above.
         set_sales_intake_product(conversation_id, message_text)
         reply = "Perfecto. ¿Cuántas unidades querés?"
-    elif intake["status"] == "quantity":
-        quantity = _extract_quantity(message_text)
-        if not quantity:
-            reply = (
-                "Para confirmarlo bien me falta la cantidad. "
-                + _customer_details_prompt(include_quantity=True)
-            )
-        else:
-            set_sales_intake_quantity(conversation_id, quantity)
-            fulfillment = _sales_fulfillment(message_text)
-            customer_details = _extract_customer_details(message_text)
-            if fulfillment:
-                set_sales_intake_fulfillment(conversation_id, fulfillment)
-            if customer_details:
-                customer_name, customer_email = customer_details
-                if fulfillment:
-                    set_sales_intake_customer(conversation_id, customer_name, customer_email)
-                    reply = _sales_summary(get_active_sales_intake(conversation_id))
-                else:
-                    reply = "Me falta confirmar si preferís envío o retiro."
-            elif fulfillment:
-                reply = "Perfecto. " + _customer_details_prompt()
-            else:
-                reply = "Me falta confirmar la entrega. " + _customer_details_prompt()
-    elif intake["status"] == "fulfillment":
-        fulfillment = _sales_fulfillment(message_text)
-        if not fulfillment:
-            reply = "Me falta confirmar si preferís envío o retiro."
-        else:
-            set_sales_intake_fulfillment(conversation_id, fulfillment)
-            customer_details = _extract_customer_details(message_text)
-            if customer_details:
-                customer_name, customer_email = customer_details
-                set_sales_intake_customer(conversation_id, customer_name, customer_email)
-                reply = _sales_summary(get_active_sales_intake(conversation_id))
-            else:
-                reply = "Perfecto. " + _customer_details_prompt()
-    elif intake["status"] == "customer" and not _sale_is_complete(intake):
-        customer_details = _extract_customer_details(message_text)
-        if not customer_details:
-            reply = "Necesito nombre y apellido + un email válido.\n" + _customer_details_prompt()
-        else:
-            customer_name, customer_email = customer_details
-            set_sales_intake_customer(conversation_id, customer_name, customer_email)
-            refreshed = get_active_sales_intake(conversation_id)
-            reply = _sales_summary(refreshed)
-    elif intake["status"] == "confirmation" or _sale_is_complete(intake):
-        if _is_sale_confirmation(message_text):
+    else:
+        updated_intake = _apply_sale_turn_updates(conversation_id, message_text, intake)
+        changed = updated_intake != intake
+
+        if not _sale_is_complete(updated_intake):
+            reply = _sales_missing_step(updated_intake)
+        elif _is_sale_confirmation(message_text):
             mark_sales_intake_ready(conversation_id)
             sale_draft = {
                 "status": "ready_for_isa_review",
                 "items_status": "{} × {}".format(
-                    intake["quantity"], intake["product_request"]
+                    updated_intake["quantity"], updated_intake["product_request"]
                 ),
-                "selected_sku": intake["selected_sku"] or "a confirmar",
-                "selected_variant": intake["selected_variant"] or "a confirmar",
-                "unit_price": str(intake["unit_price"]) if intake["unit_price"] is not None else "a confirmar",
+                "selected_sku": updated_intake["selected_sku"] or "a confirmar",
+                "selected_variant": updated_intake["selected_variant"] or "a confirmar",
+                "unit_price": str(updated_intake["unit_price"]) if updated_intake["unit_price"] is not None else "a confirmar",
                 "products_subtotal": (
-                    str(Decimal(str(intake["unit_price"])) * intake["quantity"])
-                    if intake["unit_price"] is not None
+                    str(Decimal(str(updated_intake["unit_price"])) * updated_intake["quantity"])
+                    if updated_intake["unit_price"] is not None
                     else "a confirmar"
                 ),
-                "delivery_status": "envío" if intake["fulfillment"] == "shipping" else "retiro",
+                "delivery_status": "envío" if updated_intake["fulfillment"] == "shipping" else "retiro",
                 "payment_status": "link pendiente de aprobación de Isa",
-                "customer_name": intake["customer_name"],
-                "customer_email": intake["customer_email"],
+                "customer_name": updated_intake["customer_name"],
+                "customer_email": updated_intake["customer_email"],
                 "order_creation": "disabled until Isa approval",
             }
             _queue_for_isa(
@@ -1691,21 +1648,22 @@ def _handle_sales_intake(
                 sale_draft=sale_draft,
             )
             reply = "Perfecto, ya se lo pasé a Isa para que revise los detalles antes de generar cualquier link 😊"
-        elif re.match(r"^(?:quiero\s+)?(?:cambiar|corregir)(?:lo)?\b", normalized):
-            cancel_sales_intake(conversation_id)
-            reply = (
-                "Dale, descarté ese resumen para corregirlo. Decime qué producto "
-                "y cantidad querés llevar, y lo armamos de nuevo 😊"
-            )
         elif _looks_like_new_customer_request(message_text):
-            # La persona arrancó otra consulta: no la obligamos a terminar un
-            # borrador viejo. Al devolver False, el webhook la procesa con Fred.
+            # A new question releases the draft instead of trapping the
+            # customer inside an old confirmation screen.
             cancel_sales_intake(conversation_id)
             return False
+        elif re.match(r"^(?:quiero\s+)?(?:cambiar|corregir)(?:lo)?\b", normalized):
+            reply = "Claro 😊 Decime qué querés cambiar y actualizo el resumen."
+        elif (
+            changed
+            or _sales_fulfillment(message_text)
+            or _extract_customer_fields(message_text)
+            or _extract_customer_details(message_text)
+        ):
+            reply = _sales_summary(updated_intake)
         else:
             reply = "¿Confirmás el resumen? Respondé “confirmo” o decime si querés corregirlo."
-    else:
-        return False
 
     if reply == "__FULFILLMENT_BUTTONS__":
         if send_customer_fulfillment_buttons(customer_phone):

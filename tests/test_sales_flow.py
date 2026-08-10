@@ -41,6 +41,35 @@ def _intake(status="confirmation"):
 
 
 class SalesFlowTests(unittest.TestCase):
+    def test_lash_measurements_are_not_mistaken_for_purchase_quantity(self):
+        self.assertEqual(app._extract_quantity("Isabel I 8/8/10/12 mm"), 0)
+        self.assertEqual(app._extract_quantity("Quiero 3 Isabel I"), 3)
+        self.assertEqual(app._extract_quantity("3"), 3)
+
+    @patch.object(app, "update_sales_intake_fields")
+    @patch.object(app, "set_sales_intake_customer")
+    @patch.object(app, "set_sales_intake_fulfillment")
+    @patch.object(app, "set_sales_intake_quantity")
+    def test_one_natural_message_completes_all_missing_purchase_fields(
+        self, set_quantity, set_fulfillment, set_customer, update_fields
+    ):
+        intake = _intake(status="fulfillment")
+        intake.update({"quantity": None, "fulfillment": None, "customer_name": None, "customer_email": None})
+        updated = app._apply_sale_turn_updates(
+            11,
+            "Quiero 2 unidades, envío. Nombre: María Pérez. Email: maria@example.com",
+            intake,
+        )
+
+        self.assertTrue(app._sale_is_complete(updated))
+        self.assertEqual(updated["quantity"], 2)
+        self.assertEqual(updated["fulfillment"], "shipping")
+        self.assertEqual(updated["customer_name"], "María Pérez")
+        set_quantity.assert_called_once_with(11, 2)
+        set_fulfillment.assert_called_once_with(11, "shipping")
+        set_customer.assert_called_once_with(11, "María Pérez", "maria@example.com")
+        update_fields.assert_called_once_with(11, "confirmation")
+
     def test_customer_fields_accept_email_without_reasking_for_name(self):
         self.assertEqual(
             app._extract_customer_fields("perdón, mi mail correcto es maria@hotmail.com"),
