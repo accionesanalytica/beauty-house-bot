@@ -1099,9 +1099,24 @@ def _handle_isa_sale_session(message_text: str, button_reply_id: str) -> bool:
         return False
 
     normalized = _normalized_text(message_text).strip()
-    if re.fullmatch(r"(?:cancelar|cancelalo|cancelar venta|dejalo)", normalized):
+    if re.fullmatch(r"(?:cancelar borrador|descartar borrador|cancelar venta)", normalized):
         clear_isa_sale_session(ISA_WHATSAPP_NUMBER)
         send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Listo, descarté ese borrador interno. No se creó nada.")
+        return True
+
+    # "Cancelar" used to silently discard Isa's own draft even when the visible
+    # thing she meant was a customer's pending approval. Keep those actions
+    # deliberately separate: only the card button can return a customer to Fred.
+    if re.fullmatch(r"(?:cancelar|cancelalo|dejalo)", normalized):
+        if pending_action_count():
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "Veo una clienta pendiente. Para devolver ese chat a Fred, tocá “Descartar” "
+                "en su tarjeta. Si querías cerrar solo tu borrador interno, escribí “cancelar borrador”.",
+            )
+        else:
+            clear_isa_sale_session(ISA_WHATSAPP_NUMBER)
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Listo, descarté ese borrador interno. No se creó nada.")
         return True
 
     if session["status"] == "choose_type":
@@ -1126,8 +1141,8 @@ def _handle_isa_sale_session(message_text: str, button_reply_id: str) -> bool:
             return True
         send_whatsapp_text(
             ISA_WHATSAPP_NUMBER,
-            "Ese borrador ya está guardado. Por ahora podés escribir ‘cancelar’ para "
-            "descartarlo o mandarme una nueva venta para empezar otra ficha.",
+            "Ese borrador ya está guardado. Si querés cerrarlo, escribí “cancelar borrador”; "
+            "o mandame una nueva venta para empezar otra ficha.",
         )
         return True
 
