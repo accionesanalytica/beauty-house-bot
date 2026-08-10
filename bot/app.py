@@ -1207,13 +1207,6 @@ def _extract_customer_fields(text: str) -> dict:
     return fields
 
 
-def _mask_email(email: str) -> str:
-    if not email or "@" not in email:
-        return "a confirmar"
-    local, domain = email.split("@", 1)
-    return "{}***@{}".format(local[:1], domain)
-
-
 def _customer_details_prompt(include_quantity: bool = False) -> str:
     """Request checkout data in a small, copyable WhatsApp form."""
     quantity_line = "Cantidad: \n" if include_quantity else ""
@@ -1353,7 +1346,7 @@ def _sales_summary(intake: dict) -> str:
         intake["quantity"],
         fulfillment,
         intake["customer_name"],
-        _mask_email(intake["customer_email"]),
+        intake["customer_email"],
         price_summary,
     )
 

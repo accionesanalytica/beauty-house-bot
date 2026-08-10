@@ -23,7 +23,8 @@ for missing information:
 5. Isa approval
 
 Address, locality and postal code are intentionally collected by Tiendanube's
-checkout, not duplicated in WhatsApp. Customer summaries mask the email.
+checkout, not duplicated in WhatsApp. The customer and Isa both see the full
+email in the sale summary so they can catch a typo before approval.
 
 ## Future boundary
 
