@@ -54,6 +54,7 @@ from tiendanube_events import (
     webhook_signature_is_valid,
 )
 from operations_store import (
+    agent_observability_snapshot,
     claim_daily_operations_report,
     daily_quality_snapshot,
     claim_tiendanube_event,
@@ -2091,10 +2092,47 @@ def _dashboard_csrf_token(username: str, action: str) -> str:
     ).hexdigest()
 
 
+def _dashboard_observability_box(snapshot: dict) -> str:
+    """Render aggregate agent signals only; chats remain in their own view."""
+    labels = {
+        "reply": "Respuestas resueltas",
+        "clarify_product": "Precisiones de producto",
+        "start_sales_intake": "Compras iniciadas",
+        "handoff_to_isa": "Casos enviados a Isa",
+        "service_fallback": "Respuestas seguras",
+    }
+    actions = snapshot.get("actions") or {}
+    action_text = ", ".join(
+        "{}: {}".format(html.escape(labels.get(action, action)), amount)
+        for action, amount in actions.items()
+    ) or "Todavía no hay turnos del agente registrados."
+    cards = "".join(
+        '<div class="card"><div class="value">{}</div><div>{}</div></div>'.format(
+            value, label
+        )
+        for value, label in (
+            (snapshot.get("turns", 0), "Turnos de Fred"),
+            ("{} ms".format(snapshot.get("average_duration_ms", 0)), "Demora promedio"),
+            (snapshot.get("average_tokens", 0), "Tokens promedio"),
+            (snapshot.get("service_fallbacks", 0), "Respuestas seguras"),
+        )
+    )
+    return (
+        "<h2>Calidad y rendimiento de Fred</h2>"
+        '<p class="muted">Agregados de las últimas 24 horas; no incluye texto ni datos de clientas.</p>'
+        '<div class="cards">{}</div><p><strong>Decisiones:</strong> {}</p>'
+    ).format(cards, action_text)
+
+
 @app.get("/admin", response_class=HTMLResponse)
 async def operations_dashboard(request: Request, username: str = Depends(_require_dashboard)):
     """Simple owner-only view of Fred's real conversations and operational state."""
     snapshot = dashboard_snapshot()
+    try:
+        observability = agent_observability_snapshot()
+    except Exception as error:  # noqa: BLE001
+        print("ERROR leyendo observabilidad del panel (tipo: {}).".format(type(error).__name__))
+        observability = {}
     counts = snapshot["last_24h"]
     labels = {
         "active_conversations": "Conversaciones activas",
@@ -2111,8 +2149,15 @@ async def operations_dashboard(request: Request, username: str = Depends(_requir
         for key in labels
     )
     pending = snapshot["pending_by_type"]
+    pending_labels = {
+        "purchase_review": "Compras para aprobar",
+        "human_handoff": "Clientas que pidieron a Isa",
+        "special_sale_request": "Encargos o mayoristas",
+        "bot_fallback": "Casos que Fred no pudo resolver",
+    }
     pending_text = ", ".join(
-        "{}: {}".format(html.escape(str(kind)), amount) for kind, amount in pending.items()
+        "{}: {}".format(html.escape(pending_labels.get(str(kind), str(kind))), amount)
+        for kind, amount in pending.items()
     ) or "Sin pendientes"
     rows = "".join(
         "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><a href=\"/admin/conversations/{}\">Ver chat</a></td></tr>".format(
@@ -2150,9 +2195,14 @@ async def operations_dashboard(request: Request, username: str = Depends(_requir
     return _dashboard_page(
         "Fred | Operación",
         "<h1>Operación de Fred</h1><p class=\"muted\">Datos reales de las últimas 24 horas. Solo para Isa/equipo autorizado.</p>"
-        '<div class="cards">{}</div><p><strong>Cola pendiente:</strong> {}</p>{}'
+        '<div class="cards">{}</div><p><strong>Cola pendiente:</strong> {}</p>{}{}'
         "{}<h2>Conversaciones recientes</h2><table><thead><tr><th>Cliente</th><th>Estado</th><th>Último mensaje</th><th>Vista previa</th><th></th></tr></thead><tbody>{}</tbody></table>".format(
-            cards, pending_text, connection_box, webhook_box + catalog_audit_box, rows
+            cards,
+            pending_text,
+            _dashboard_observability_box(observability),
+            connection_box,
+            webhook_box + catalog_audit_box,
+            rows,
         ),
     )
 

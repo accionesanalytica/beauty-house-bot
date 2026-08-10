@@ -416,8 +416,9 @@ class QualityReviewTests(unittest.TestCase):
 
 
 class DashboardSafetyTests(unittest.TestCase):
+    @patch.object(app, "agent_observability_snapshot")
     @patch.object(app, "dashboard_snapshot")
-    def test_dashboard_exposes_read_only_catalog_audit(self, snapshot):
+    def test_dashboard_exposes_read_only_catalog_audit(self, snapshot, observability):
         snapshot.return_value = {
             "last_24h": {
                 "active_conversations": 0,
@@ -430,9 +431,20 @@ class DashboardSafetyTests(unittest.TestCase):
             "pending_by_type": {},
             "conversations": [],
         }
+        observability.return_value = {
+            "turns": 8,
+            "average_duration_ms": 950,
+            "average_tokens": 120,
+            "service_fallbacks": 1,
+            "actions": {"reply": 5, "handoff_to_isa": 2},
+        }
         request = type("Request", (), {"query_params": {}})()
         response = asyncio.run(app.operations_dashboard(request, username="isa"))
-        self.assertIn("Auditar catálogo", response.body.decode("utf-8"))
+        page = response.body.decode("utf-8")
+        self.assertIn("Auditar catálogo", page)
+        self.assertIn("Calidad y rendimiento de Fred", page)
+        self.assertIn("Respuestas resueltas: 5", page)
+        self.assertIn("950 ms", page)
 
 
 class IsaInternalSaleFlowTests(unittest.TestCase):
