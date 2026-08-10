@@ -26,3 +26,15 @@ Reglas de seguridad:
 - No uses estas políticas para afirmar stock, precio ni estado de pedido.
 - Si la pregunta no está cubierta con claridad, ofrecé consultarlo con Isa.
 """
+
+# Contexto fijo, pequeño y estable. Las condiciones concretas siguen en
+# POLICY_CONTEXT para recuperarlas por tema en la futura capa Knowledge RAG;
+# no se agregan completas a cada turno del agente.
+CORE_POLICY_BOUNDARIES = """\
+Límites de información vigente:
+- Stock, precio, promociones, pagos, plazos, direcciones y estado de pedido se
+  confirman con una fuente actual o con Isa; nunca se deducen de políticas.
+- Reclamos, cambios, devoluciones, reembolsos, comprobantes y excepciones se
+  derivan a Isa sin prometer una solución concreta.
+- No compartas datos bancarios ni datos de otra clienta.
+"""
