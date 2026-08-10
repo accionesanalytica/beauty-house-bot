@@ -241,9 +241,9 @@ class WebhookHarnessTests(unittest.TestCase):
             "Disponibilidad Tiendanube verificada para candidatas recuperadas: "
             "estas opciones tienen stock positivo ahora.\n"
             "- SHOOW TOOLS - ISABEL I (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm "
-            "| Link: https://beautyhousemakeup.com/productos/isabel/\n"
+            "| SKU: ISABEL-CHOCO | Link: https://beautyhousemakeup.com/productos/isabel/\n"
             "- SHOOW TOOLS - TAYLOR (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm "
-            "| Link: https://beautyhousemakeup.com/productos/taylor/"
+            "| SKU: TAYLOR-CHOCO | Link: https://beautyhousemakeup.com/productos/taylor/"
         )
         reply = app._grounded_lash_recommendation(
             live_context,
@@ -259,6 +259,73 @@ class WebhookHarnessTests(unittest.TestCase):
             app._grounded_lash_recommendation(live_context, "Quiero comprar Isabel I chocolate"),
             "",
         )
+
+    @patch.object(app, "get_stock")
+    def test_confirmed_named_choice_bypasses_recommendation_and_starts_sale(self, get_stock):
+        live_context = (
+            "Disponibilidad Tiendanube verificada para candidatas recuperadas:\n"
+            "- SHOOW TOOLS - ISABEL I (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm "
+            "| SKU: ISABEL-CHOCO\n"
+            "- SHOOW TOOLS - TAYLOR (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm "
+            "| SKU: TAYLOR-CHOCO"
+        )
+        get_stock.return_value = {
+            "status": "in_stock",
+            "sku": "ISABEL-CHOCO",
+            "product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
+            "variant": "8/8/10/12 mm",
+            "price": "30000",
+        }
+
+        candidate = app._live_purchase_candidate(
+            live_context,
+            "Me quedo con Isabel I chocolate. Quiero 2 unidades, envío. Nombre: Luis Vera. Email: luis@example.com",
+        )
+
+        self.assertEqual(candidate["sku"], "ISABEL-CHOCO")
+        self.assertEqual(candidate["unit_price"], "30000")
+        get_stock.assert_called_once_with("ISABEL-CHOCO")
+
+    @patch.object(app, "record_agent_turn")
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
+    @patch.object(app, "load_history", return_value=[])
+    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
+    @patch.object(app, "KNOWLEDGE_RAG_ENABLED", False)
+    @patch.object(app, "SALES_INTAKE_ENABLED", True)
+    @patch.object(app, "get_active_sales_intake", return_value=None)
+    def test_purchase_message_outranks_recommendation_card(
+        self, active_intake, history, inbound, send_message, record_message, record_turn
+    ):
+        live_context = (
+            "Disponibilidad Tiendanube verificada para candidatas recuperadas:\n"
+            "- SHOOW TOOLS - ISABEL I (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm "
+            "| SKU: ISABEL-CHOCO"
+        )
+        stock = {
+            "status": "in_stock", "sku": "ISABEL-CHOCO",
+            "product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
+            "variant": "8/8/10/12 mm", "price": "30000",
+        }
+        with patch.object(app, "search_similar_products", return_value="Productos encontrados"), patch.object(
+            app, "_live_candidate_context", return_value=live_context
+        ), patch.object(app, "get_stock", return_value=stock), patch.object(
+            app, "_start_sales_intake", return_value="pedir datos"
+        ) as start_intake, patch.object(
+            app, "_apply_sale_details_from_same_message", return_value="Resumen listo"
+        ), patch.object(app, "answer") as ask_model:
+            response = self._post(
+                "Me quedo con Isabel I chocolate. Quiero 2 unidades, envío. "
+                "Nombre: Luis Vera. Email: luis@example.com",
+                "wamid-direct-purchase",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        ask_model.assert_not_called()
+        self.assertEqual(start_intake.call_args.kwargs["quantity"], 2)
+        self.assertEqual(start_intake.call_args.args[1]["sku"], "ISABEL-CHOCO")
+        send_message.assert_called_once_with(self.PHONE, "Resumen listo")
 
     @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_bot_message")

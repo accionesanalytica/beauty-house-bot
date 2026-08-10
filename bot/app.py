@@ -362,6 +362,9 @@ def _live_candidate_context(catalog_context: str, query: str = "", limit: int = 
         variants = ", ".join(
             variant.get("variant") or "variante única" for variant in in_stock[:3]
         )
+        # A direct purchase can use this already verified SKU to open the
+        # intake form without asking the model to rediscover the same product.
+        verified_sku = in_stock[0].get("sku") if len(in_stock) == 1 else ""
         description = re.sub(r"\s+", " ", availability.get("description") or "").strip()
         product_url = str(availability.get("product_url") or "").strip()
         product_text = _normalized_text(
@@ -370,9 +373,10 @@ def _live_candidate_context(catalog_context: str, query: str = "", limit: int = 
         if requires_lashes and "pestana" not in product_text:
             continue
         verified.append(
-            "- {} | variantes disponibles: {}{}{}".format(
+            "- {} | variantes disponibles: {}{}{}{}".format(
                 availability.get("product_name") or "Producto",
                 variants,
+                " | SKU: {}".format(verified_sku) if verified_sku else "",
                 " | Link: {}".format(product_url) if product_url.startswith("https://") else "",
                 " | Descripción: {}".format(description[:420]) if description else "",
             )
@@ -404,7 +408,7 @@ def _grounded_lash_recommendation(live_context: str, query: str) -> str:
         return ""
 
     candidates = re.findall(
-        r"^-\s*(.*?)\s*\| variantes disponibles:\s*([^|\n]+)(?:\s*\| Link:\s*(https://[^|\s]+))?",
+        r"^-\s*(.*?)\s*\| variantes disponibles:\s*([^|\n]+)(?:\s*\| SKU:\s*[^|\s]+)?(?:\s*\| Link:\s*(https://[^|\s]+))?",
         live_context,
         flags=re.MULTILINE,
     )
@@ -425,6 +429,66 @@ def _grounded_lash_recommendation(live_context: str, query: str) -> str:
         opener,
         "\n".join(options),
     )
+
+
+def _expresses_purchase(text: str) -> bool:
+    """Recognize a purchase decision without mistaking a product question for one."""
+    return bool(
+        re.search(
+            r"\b(comprar|compra|pedir|pido|ordenar|llevar|llevo|avanzar|avancemos|"
+            r"proceder|me quedo con|quiero\s+\d+|necesito\s+\d+)\b",
+            _normalized_text(text),
+        )
+    )
+
+
+def _live_purchase_candidate(live_context: str, message_text: str) -> dict:
+    """Turn one unambiguous, already-live-verified choice into a sale candidate.
+
+    The candidate still goes through the normal persisted intake and Isa's
+    approval. This only removes the unnecessary model round that used to lose
+    a customer's product, quantity and contact details immediately after they
+    had written them in one WhatsApp message.
+    """
+    if not _expresses_purchase(message_text):
+        return {}
+
+    normalized_message = _normalized_text(message_text)
+    candidates = []
+    pattern = (
+        r"^-\s*(.*?)\s*\| variantes disponibles:\s*([^|\n]+)"
+        r"(?:\s*\| SKU:\s*([^|\s]+))?"
+    )
+    for product_name, variant, sku in re.findall(pattern, live_context or "", flags=re.MULTILINE):
+        if not sku:
+            continue
+        short_name = re.sub(r"^SHOOW\s+TOOLS\s*-\s*", "", product_name, flags=re.IGNORECASE)
+        distinctive_words = [
+            word for word in re.findall(r"[a-z0-9]+", _normalized_text(short_name))
+            if len(word) >= 3 and word not in {"chocolate", "pestanas", "pestana"}
+        ]
+        if distinctive_words and all(word in normalized_message for word in distinctive_words):
+            candidates.append((product_name, variant.strip(), sku.strip()))
+
+    # “Chocolate” alone can name either candidate. Only an actual model name
+    # opens a purchase form; otherwise Fred keeps the natural choice question.
+    if len(candidates) != 1:
+        return {}
+
+    product_name, variant, sku = candidates[0]
+    try:
+        stock = get_stock(sku)
+    except Exception as error:  # noqa: BLE001
+        print("ERROR revalidando compra directa (tipo: {}).".format(type(error).__name__))
+        return {}
+    if stock.get("status") != "in_stock":
+        return {}
+    return {
+        "sku": stock.get("sku") or sku,
+        "product_name": stock.get("product_name") or product_name,
+        "variant": stock.get("variant") or variant,
+        "unit_price": stock.get("price"),
+    }
 
 
 def search_knowledge_context(query: str, limit: int = 3, query_embedding=None) -> str:
@@ -3061,10 +3125,22 @@ async def webhook_post(request: Request):
             rag_context = "\n\n".join(
                 context for context in (catalog_context, knowledge_context) if context
             )
-            grounded_reply = _grounded_lash_recommendation(
-                live_candidate_context, catalog_query
+            direct_sale_candidate = _live_purchase_candidate(
+                live_candidate_context, message_text
             )
-            if grounded_reply:
+            grounded_reply = _grounded_lash_recommendation(live_candidate_context, catalog_query)
+            if direct_sale_candidate:
+                # Purchase intent always outranks a recommendation card. The
+                # later common sales block persists this candidate, preserves
+                # same-message details and asks only for the remaining step.
+                result = {
+                    "reply": "Preparando tu compra.",
+                    "sale_candidate": direct_sale_candidate,
+                    "tool_calls": [],
+                    "usage": {},
+                    "model_calls": 0,
+                }
+            elif grounded_reply:
                 # The live store already supplied exactly the facts this
                 # recommendation needs. Avoid spending a model call and avoid
                 # letting a generic search contradict those facts.
