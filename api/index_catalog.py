@@ -42,6 +42,7 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMS = 768          # must match vector(768) in the table
 BATCH_SLEEP = 0.1
+EMBED_BATCH_SIZE = 50
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CATALOG_PATH = os.path.join(SCRIPT_DIR, "..", "data", "catalog_flat.csv")
@@ -64,6 +65,22 @@ def embed(text, task_type="RETRIEVAL_DOCUMENT"):
     )
     vector = np.array(result.embeddings[0].values)
     return (vector / np.linalg.norm(vector)).tolist()
+
+
+def embed_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
+    """Embed a bounded batch so a catalog refresh is not easy to interrupt."""
+    result = gemini.models.embed_content(
+        model=EMBED_MODEL,
+        contents=texts,
+        config=types.EmbedContentConfig(
+            output_dimensionality=EMBED_DIMS,
+            task_type=task_type,
+        ),
+    )
+    return [
+        (np.array(item.values) / np.linalg.norm(np.array(item.values))).tolist()
+        for item in result.embeddings
+    ]
 
 
 def build_content(row):
@@ -121,6 +138,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--start", type=int, default=0, help="0-based offset for resumable batches")
     args = parser.parse_args()
 
     if not DB_URL:
@@ -131,6 +149,8 @@ def main():
         return
 
     rows = load_catalog()
+    if args.start:
+        rows = rows[args.start:]
     if args.limit:
         rows = rows[:args.limit]
 
@@ -150,22 +170,28 @@ def main():
     cursor = connection.cursor()
 
     # Older versions of the table did not persist publication status. Add it
-    # safely, then hide every old row until the current catalog reaffirms it.
+    # safely, but do not hide the prior index before the new run succeeds.
     cursor.execute(
         "ALTER TABLE product_embeddings "
         "ADD COLUMN IF NOT EXISTS published boolean NOT NULL DEFAULT false"
     )
-    cursor.execute("UPDATE product_embeddings SET published = false")
     connection.commit()
 
     done = failed = 0
 
-    for index, row in enumerate(rows, start=1):
-        content = build_content(row)
-
+    for batch_start in range(0, len(rows), EMBED_BATCH_SIZE):
+        batch_rows = rows[batch_start:batch_start + EMBED_BATCH_SIZE]
+        contents = [build_content(row) for row in batch_rows]
         try:
-            vector = embed(content)
+            vectors = embed_batch(contents)
+            if len(vectors) != len(batch_rows):
+                raise RuntimeError("Gemini devolvió una cantidad incompleta de embeddings")
+        except Exception as error:  # noqa: BLE001
+            failed += len(batch_rows)
+            print("  ERROR lote {}/{}: {}".format(batch_start + 1, len(rows), error))
+            continue
 
+        for row, content, vector in zip(batch_rows, contents, vectors):
             cursor.execute(
                 """
                 insert into product_embeddings
@@ -191,19 +217,23 @@ def main():
                     str(vector),
                 ),
             )
-            done += 1
-
-        except Exception as error:  # noqa: BLE001
-            failed += 1
-            print("  ERROR {}: {}".format(row["product_name"][:36], error))
-
-        if index % 50 == 0:
-            connection.commit()
-            print("  {}/{}".format(index, len(rows)))
+        done += len(batch_rows)
+        connection.commit()
+        print("  {}/{}".format(batch_start + len(batch_rows), len(rows)))
 
         time.sleep(BATCH_SLEEP)
 
-    connection.commit()
+    # Only after a complete refresh do we hide variants missing from the
+    # current source catalog. A partial run keeps the previous index usable.
+    if failed == 0 and not args.limit and not args.start:
+        cursor.execute(
+            "UPDATE product_embeddings SET published = false "
+            "WHERE NOT (variant_id = ANY(%s))",
+            ([int(row["variant_id"]) for row in rows],),
+        )
+        connection.commit()
+    elif failed:
+        print("Indice previo conservado: hubo lotes con error.")
     cursor.close()
     connection.close()
 
