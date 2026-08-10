@@ -626,6 +626,29 @@ def resolve_pending_action(action_id: int, status: str) -> Optional[Dict[str, An
     }
 
 
+def wait_for_isa_response(action_id: int) -> bool:
+    """Mark a consultation pending while Fred waits for Isa's written answer."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE pending_actions
+                SET payload = jsonb_set(payload, '{awaiting_isa_response}', 'true'::jsonb, true)
+                WHERE id = %s AND status = 'pending' AND action_type = 'bot_fallback'
+                """,
+                (action_id,),
+            )
+            updated = cursor.rowcount == 1
+        connection.commit()
+        return updated
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def save_pending_action_checkout(action_id: int, checkout: Dict[str, Any]) -> bool:
     """Persist an approved checkout before delivering its link over WhatsApp.
 

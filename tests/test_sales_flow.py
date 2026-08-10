@@ -162,6 +162,20 @@ class AgentOutputSafetyTests(unittest.TestCase):
 
 
 class IsaInternalSaleFlowTests(unittest.TestCase):
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "wait_for_isa_response", return_value=True)
+    @patch.object(
+        app,
+        "_pending_action_by_id",
+        return_value={"id": 31, "action_type": "bot_fallback"},
+    )
+    def test_isa_can_reply_to_fred_with_a_reviewed_answer(
+        self, get_pending, wait_for_reply, send_message
+    ):
+        app.handle_isa_message("", button_reply_id="reply_to_fred:31")
+        wait_for_reply.assert_called_once_with(31)
+        self.assertIn("Escribime la respuesta", send_message.call_args.args[1])
+
     @patch.object(app, "send_isa_sale_type_menu", return_value=True)
     @patch.object(app, "start_isa_sale_session")
     @patch.object(app, "get_isa_sale_session", return_value=None)

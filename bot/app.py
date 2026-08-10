@@ -66,6 +66,7 @@ from conversation_store import (
     start_isa_sale_session,
     start_sales_intake,
     snooze_isa_reminders,
+    wait_for_isa_response,
 )
 
 load_dotenv()
@@ -406,7 +407,7 @@ def _pending_action_text(action: dict) -> str:
     labels = {
         "human_handoff": "Clienta pidió hablar con Isa",
         "purchase_review": "Compra pendiente de confirmación",
-        "bot_fallback": "Fred no pudo resolver la consulta",
+        "bot_fallback": "Fred necesita confirmar una consulta",
     }
     customer_message = action["payload"].get("customer_message", "")
     text = (
@@ -452,26 +453,37 @@ def send_isa_pending_buttons(action: dict) -> bool:
         "Content-Type": "application/json",
     }
     action_id = action["id"]
-    approve_button = {
-        "type": "reply",
-        "reply": {"id": "approve:{}".format(action_id), "title": "Tomar caso"},
-    }
+    buttons = []
     if LIVE_CHECKOUTS_ENABLED and action["action_type"] == "purchase_review":
-        approve_button = {
-            "type": "reply",
-            "reply": {
-                "id": "approve_checkout:{}".format(action_id),
-                "title": "Aprobar compra",
-            },
-        }
+        buttons = [
+            {"type": "reply", "reply": {"id": "approve_checkout:{}".format(action_id), "title": "Aprobar compra"}},
+            {"type": "reply", "reply": {"id": "reject:{}".format(action_id), "title": "Cancelar compra"}},
+            {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver detalles"}},
+        ]
     elif DEMO_APPROVALS_ENABLED and action["action_type"] == "purchase_review":
-        approve_button = {
-            "type": "reply",
-            "reply": {
-                "id": "approve_demo:{}".format(action_id),
-                "title": "Aprobar demo",
-            },
-        }
+        buttons = [
+            {"type": "reply", "reply": {"id": "approve_demo:{}".format(action_id), "title": "Aprobar demo"}},
+            {"type": "reply", "reply": {"id": "reject:{}".format(action_id), "title": "Cancelar compra"}},
+            {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver detalles"}},
+        ]
+    elif action["action_type"] == "bot_fallback":
+        buttons = [
+            {"type": "reply", "reply": {"id": "reply_to_fred:{}".format(action_id), "title": "Responder a Fred"}},
+            {"type": "reply", "reply": {"id": "resume_bot:{}".format(action_id), "title": "Que siga Fred"}},
+            {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
+        ]
+    elif action["action_type"] == "human_handoff":
+        buttons = [
+            {"type": "reply", "reply": {"id": "pause_bot:{}".format(action_id), "title": "Pausar a Fred"}},
+            {"type": "reply", "reply": {"id": "resume_bot:{}".format(action_id), "title": "Que siga Fred"}},
+            {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
+        ]
+    else:
+        buttons = [
+            {"type": "reply", "reply": {"id": "approve:{}".format(action_id), "title": "Tomar caso"}},
+            {"type": "reply", "reply": {"id": "reject:{}".format(action_id), "title": "Volver a Fred"}},
+            {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
+        ]
 
     payload = {
         "messaging_product": "whatsapp",
@@ -482,11 +494,7 @@ def send_isa_pending_buttons(action: dict) -> bool:
             "type": "button",
             "body": {"text": _pending_action_text(action)},
             "action": {
-                "buttons": [
-                    approve_button,
-                    {"type": "reply", "reply": {"id": "reject:{}".format(action_id), "title": "Descartar"}},
-                    {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
-                ]
+                "buttons": buttons
             },
         },
     }
@@ -1228,6 +1236,71 @@ def handle_isa_message(
     if _handle_isa_reminder_request(message_text):
         return
 
+    response_match = re.match(r"^reply_to_fred:(\d+)$", button_reply_id or "")
+    if response_match:
+        action_id = int(response_match.group(1))
+        pending_action = _pending_action_by_id(action_id)
+        if not pending_action or pending_action["action_type"] != "bot_fallback":
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Esa consulta ya no está disponible.")
+            return
+        if wait_for_isa_response(action_id):
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "Perfecto. Escribime la respuesta o dato que querés que Fred le comunique a la clienta. "
+                "Fred se la envía y después retoma el chat.",
+            )
+        else:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "No pude preparar esa consulta para responder ahora.")
+        return
+
+    # Isa's text is intentionally handled before her own internal-sale draft:
+    # once she chose “Responder a Fred”, her next message belongs to the
+    # customer consultation and is delivered verbatim as reviewed information.
+    awaiting_response = next(
+        (
+            action
+            for action in list_pending_actions(limit=20)
+            if action["action_type"] == "bot_fallback"
+            and action.get("payload", {}).get("awaiting_isa_response")
+        ),
+        None,
+    )
+    if awaiting_response and not button_reply_id:
+        normalized = _normalized_text(message_text).strip()
+        if re.fullmatch(r"(?:cancelar|cancelalo|dejalo)", normalized):
+            result = resolve_pending_action(awaiting_response["id"], "rejected")
+            if result:
+                set_conversation_state(result["conversation_id"], "BOT")
+                send_whatsapp_text(
+                    ISA_WHATSAPP_NUMBER,
+                    "Dale, no envié ninguna respuesta de Isa. Fred vuelve a atender a la clienta.",
+                )
+            return
+
+        customer_phone = awaiting_response["customer_phone"]
+        if not send_whatsapp_text(customer_phone, message_text):
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "No pude enviar esa respuesta a la clienta; no la pierdo. Probá mandarla de nuevo.",
+            )
+            return
+        result = resolve_pending_action(awaiting_response["id"], "approved")
+        if not result:
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "La respuesta llegó a la clienta, pero el pendiente cambió de estado. Revisalo antes de seguir.",
+            )
+            return
+        set_conversation_state(result["conversation_id"], "BOT")
+        record_bot_message(result["conversation_id"], message_text)
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Listo, Fred le pasó tu respuesta a la clienta y vuelve a atender ese chat 😊",
+        )
+        if pending_action_count():
+            send_next_pending_to_isa()
+        return
+
     if _handle_isa_sale_session(message_text, button_reply_id):
         return
 
@@ -1270,7 +1343,10 @@ def handle_isa_message(
         )
         return
 
-    match = re.match(r"^(approve|approve_demo|approve_checkout|reject|view):(\d+)$", button_reply_id or "")
+    match = re.match(
+        r"^(approve|approve_demo|approve_checkout|reject|view|take_handoff|pause_bot|resume_bot):(\d+)$",
+        button_reply_id or "",
+    )
     if not match:
         send_next_pending_to_isa()
         return
@@ -1316,6 +1392,38 @@ def handle_isa_message(
             .format(draft_order["id"], draft_order["checkout_url"]),
         )
         print("[Isa] Borrador demo #{} creado desde pendiente #{}.".format(draft_order["id"], action_id))
+        if pending_action_count():
+            send_next_pending_to_isa()
+        return
+
+    if action in ("take_handoff", "pause_bot"):
+        result = resolve_pending_action(action_id, "approved")
+        if not result:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya fue resuelto.")
+            return
+        set_conversation_state(result["conversation_id"], "ISA")
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Listo, Fred queda en pausa para esta clienta. En el número de prueba todavía no hay una bandeja "
+            "compartida para que respondas como Isa; esa capa llega con el número oficial y coexistencia.",
+        )
+        if pending_action_count():
+            send_next_pending_to_isa()
+        return
+
+    if action == "resume_bot":
+        result = resolve_pending_action(action_id, "rejected")
+        if not result:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya fue resuelto.")
+            return
+        set_conversation_state(result["conversation_id"], "BOT")
+        customer_text = "Dale, sigo por acá 😊 ¿Qué te gustaría resolver?"
+        if send_whatsapp_text(result["payload"].get("customer_phone", ""), customer_text):
+            record_bot_message(result["conversation_id"], customer_text)
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Listo, Fred retoma esa conversación.",
+        )
         if pending_action_count():
             send_next_pending_to_isa()
         return
@@ -1404,7 +1512,7 @@ def handle_isa_message(
         set_conversation_state(result["conversation_id"], "BOT")
         send_whatsapp_text(
             ISA_WHATSAPP_NUMBER,
-            "Descartaste el pendiente #{}. Fred vuelve a atender a la clienta."
+            "Cancelaste el pendiente #{}. Fred vuelve a atender a la clienta."
             .format(action_id),
         )
 
