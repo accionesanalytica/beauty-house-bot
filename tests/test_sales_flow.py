@@ -138,6 +138,22 @@ class SalesFlowTests(unittest.TestCase):
             ("Luis Vera", "luis@example.com"),
         )
 
+    def test_natural_customer_intro_does_not_become_customer_name(self):
+        self.assertEqual(
+            app._extract_customer_details(
+                "Hola, te comparto todo: envío, Luis Vera, luis@example.com"
+            ),
+            ("Luis Vera", "luis@example.com"),
+        )
+
+    def test_natural_name_sentence_is_supported(self):
+        self.assertEqual(
+            app._extract_customer_details(
+                "envío, mi nombre es Luis Enrique Vera y mi email es luis@example.com"
+            ),
+            ("Luis Enrique Vera", "luis@example.com"),
+        )
+
     @patch.object(app, "send_whatsapp_text", return_value=True)
     @patch.object(app, "record_bot_message")
     @patch.object(app, "_queue_for_isa")
@@ -330,6 +346,22 @@ class AgentOutputSafetyTests(unittest.TestCase):
         ]
         results = tiendanube_tools.search_available_products("pestañas naturales")
         self.assertEqual([item["name"] for item in results], ["Isabel I Chocolate"])
+
+
+class QualityReviewTests(unittest.TestCase):
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "daily_quality_snapshot")
+    def test_isa_can_request_quality_snapshot_without_ai(self, snapshot, send_message):
+        snapshot.return_value = {
+            "pending_actions": 2,
+            "bot_fallbacks_today": 1,
+            "human_handoffs_today": 1,
+            "special_sales_today": 1,
+            "pending_purchase_reviews": 1,
+        }
+        self.assertTrue(app._handle_isa_quality_review_request("calidad"))
+        self.assertIn("Casos donde Fred pidió ayuda: 1", send_message.call_args.args[1])
+        snapshot.assert_called_once()
 
 
 class IsaInternalSaleFlowTests(unittest.TestCase):

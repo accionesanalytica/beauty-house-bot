@@ -51,6 +51,9 @@ No activar estas variables antes de que Meta apruebe la plantilla.
 - `Aprobar compra`: crea el checkout normal solo después de revisar la ficha.
 - `Enviar condiciones`: envía el PDF vigente de encargos/preventas; no crea cobro ni reserva.
 - `resumen`: envía a Isa el conteo actual de Fred.
+- `calidad`: muestra casos de hoy que conviene revisar (escalaciones,
+  solicitudes de ayuda y compras pendientes). Es un reporte a demanda; no crea
+  una alerta adicional ni usa IA.
 - `recordame en 1 hora` / `no me recuerdes`: controla los recordatorios de pendientes.
 
 ## Resumen automático de las 21:00

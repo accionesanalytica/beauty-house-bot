@@ -286,6 +286,50 @@ def daily_operations_summary() -> Dict[str, int]:
     }
 
 
+def daily_quality_snapshot() -> Dict[str, int]:
+    """Return factual review signals for Fred without invoking any AI service.
+
+    An escalation is not automatically a failure: sometimes it is exactly the
+    safe outcome. These counts simply give Isa a short list to inspect and turn
+    into future improvements.
+    """
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            _ensure_storage(cursor)
+            cursor.execute(
+                """
+                SELECT
+                    (SELECT count(*) FROM pending_actions
+                     WHERE status = 'pending'),
+                    (SELECT count(*) FROM pending_actions
+                     WHERE action_type = 'bot_fallback'
+                       AND (created_at AT TIME ZONE 'America/Argentina/Buenos_Aires')::date =
+                           (now() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date),
+                    (SELECT count(*) FROM pending_actions
+                     WHERE action_type = 'human_handoff'
+                       AND (created_at AT TIME ZONE 'America/Argentina/Buenos_Aires')::date =
+                           (now() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date),
+                    (SELECT count(*) FROM pending_actions
+                     WHERE action_type = 'special_sale_request'
+                       AND (created_at AT TIME ZONE 'America/Argentina/Buenos_Aires')::date =
+                           (now() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date),
+                    (SELECT count(*) FROM pending_actions
+                     WHERE action_type = 'purchase_review' AND status = 'pending')
+                """
+            )
+            row = cursor.fetchone()
+    finally:
+        connection.close()
+    return {
+        "pending_actions": int(row[0]),
+        "bot_fallbacks_today": int(row[1]),
+        "human_handoffs_today": int(row[2]),
+        "special_sales_today": int(row[3]),
+        "pending_purchase_reviews": int(row[4]),
+    }
+
+
 def claim_daily_operations_report(report_day) -> bool:
     """Reserve a calendar-day report so deployments cannot send it twice."""
     connection = _connect()

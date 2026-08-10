@@ -48,6 +48,7 @@ from tiendanube_events import (
 )
 from operations_store import (
     claim_daily_operations_report,
+    daily_quality_snapshot,
     claim_tiendanube_event,
     daily_operations_summary,
     dashboard_conversation,
@@ -845,9 +846,18 @@ def _extract_customer_details(text: str) -> tuple:
     if labeled_name:
         name_text = labeled_name.group(1)
     else:
+        natural_name = re.search(
+            r"(?i)\b(?:mi\s+)?nombre\s+(?:es|ser[ií]a)\s+"
+            r"([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,4}?)"
+            r"(?=\s+(?:y\s+)?(?:mi\s+)?(?:email|mail|correo)\b|[,;\n]|$)",
+            name_text,
+        )
+        if natural_name:
+            name_text = natural_name.group(1)
         name_text = re.sub(
-            r"(?i)^\s*(?:genial\s*[,:;-]*\s*)?(?:te\s+)?(?:dejo|paso|mando)?\s*"
-            r"(?:los\s+)?(?:mis\s+)?datos\s*[:,-]*\s*",
+            r"(?i)^\s*(?:(?:genial|perfecto|dale|hola)\s*[,:;-]*\s*)?"
+            r"(?:(?:te\s+)?(?:dejo|paso|mando|comparto)\s+)?"
+            r"(?:(?:(?:los|mis)\s+)?(?:datos|detalles|informaci[oó]n|info)|todo)\s*[:,-]*\s*",
             "",
             name_text,
         )
@@ -866,7 +876,8 @@ def _customer_details_prompt(include_quantity: bool = False) -> str:
     """Request checkout data in a small, copyable WhatsApp form."""
     quantity_line = "Cantidad: \n" if include_quantity else ""
     return (
-        "¡Buenísimo! Para dejarlo listo, copiá y completá estas líneas:\n"
+        "¡Buenísimo! Para dejarlo listo, copiá y completá estas líneas. "
+        "Así evitamos errores con el link 😊\n"
         "{}"
         "Entrega: envío o retiro\n"
         "Nombre y apellido: \n"
@@ -1248,6 +1259,35 @@ def _handle_isa_operations_summary_request(message_text: str) -> bool:
     return True
 
 
+def _handle_isa_quality_review_request(message_text: str) -> bool:
+    """Give Isa an on-demand quality snapshot; it is observation, not an alert."""
+    normalized = _normalized_text(message_text).strip()
+    if not re.fullmatch(
+        r"(?:calidad|revisar calidad|control de calidad|como estuvo fred|que mejorar)",
+        normalized,
+    ):
+        return False
+    try:
+        snapshot = daily_quality_snapshot()
+    except Exception as error:  # noqa: BLE001
+        print("ERROR armando control de calidad (tipo: {}).".format(type(error).__name__))
+        send_whatsapp_text(ISA_WHATSAPP_NUMBER, "No pude armar el control ahora. Probá de nuevo en unos minutos.")
+        return True
+
+    send_whatsapp_text(
+        ISA_WHATSAPP_NUMBER,
+        "Control de calidad de Fred hoy 😊\n"
+        "• Pendientes abiertos: {pending_actions}\n"
+        "• Casos donde Fred pidió ayuda: {bot_fallbacks_today}\n"
+        "• Clientas que pidieron hablar con Isa: {human_handoffs_today}\n"
+        "• Encargos / preventas / mayoristas: {special_sales_today}\n"
+        "• Compras esperando aprobación: {pending_purchase_reviews}\n\n"
+        "No todo caso escalado es un error: son los chats que más valor tiene revisar. "
+        "Para abrirlos, entrá al panel o escribí “ver”.".format(**snapshot),
+    )
+    return True
+
+
 def _isa_demo_order_request(message_text: str) -> tuple:
     """Parse Isa's explicit demo-only order command."""
     match = re.match(
@@ -1530,6 +1570,9 @@ def handle_isa_message(
         return
 
     if _handle_isa_operations_summary_request(message_text):
+        return
+
+    if _handle_isa_quality_review_request(message_text):
         return
 
     # Isa can use a natural instruction instead of hunting for the card button.
