@@ -363,15 +363,17 @@ def _live_candidate_context(catalog_context: str, query: str = "", limit: int = 
             variant.get("variant") or "variante única" for variant in in_stock[:3]
         )
         description = re.sub(r"\s+", " ", availability.get("description") or "").strip()
+        product_url = str(availability.get("product_url") or "").strip()
         product_text = _normalized_text(
             "{} {}".format(availability.get("product_name") or "", description)
         )
         if requires_lashes and "pestana" not in product_text:
             continue
         verified.append(
-            "- {} | variantes disponibles: {}{}".format(
+            "- {} | variantes disponibles: {}{}{}".format(
                 availability.get("product_name") or "Producto",
                 variants,
+                " | Link: {}".format(product_url) if product_url.startswith("https://") else "",
                 " | Descripción: {}".format(description[:420]) if description else "",
             )
         )
@@ -402,7 +404,7 @@ def _grounded_lash_recommendation(live_context: str, query: str) -> str:
         return ""
 
     candidates = re.findall(
-        r"^-\s*(.*?)\s*\| variantes disponibles:\s*([^|\n]+)",
+        r"^-\s*(.*?)\s*\| variantes disponibles:\s*([^|\n]+)(?:\s*\| Link:\s*(https://[^|\s]+))?",
         live_context,
         flags=re.MULTILINE,
     )
@@ -410,10 +412,13 @@ def _grounded_lash_recommendation(live_context: str, query: str) -> str:
         return ""
 
     options = []
-    for product_name, variants in candidates[:2]:
+    for product_name, variants, product_url in candidates[:2]:
         friendly_name = re.sub(r"^SHOOW\s+TOOLS\s*-\s*", "", product_name, flags=re.IGNORECASE)
         friendly_name = friendly_name.strip().title().replace("(Chocolate)", "(chocolate)")
-        options.append("• {} — {}".format(friendly_name, variants.strip()))
+        option = "• {} — {}".format(friendly_name, variants.strip())
+        if product_url:
+            option = "{}\n{}".format(option, product_url)
+        options.append(option)
 
     opener = "¡Sí! Para un look natural de todos los días, tengo estas opciones en chocolate con stock confirmado:"
     return "{}\n\n{}\n\n¿Cuál te gusta más? Si querés, te cuento la diferencia o avanzamos con la compra 😊".format(

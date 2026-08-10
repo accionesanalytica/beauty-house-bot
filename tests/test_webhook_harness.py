@@ -240,8 +240,10 @@ class WebhookHarnessTests(unittest.TestCase):
         live_context = (
             "Disponibilidad Tiendanube verificada para candidatas recuperadas: "
             "estas opciones tienen stock positivo ahora.\n"
-            "- SHOOW TOOLS - ISABEL I (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm\n"
-            "- SHOOW TOOLS - TAYLOR (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm"
+            "- SHOOW TOOLS - ISABEL I (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm "
+            "| Link: https://beautyhousemakeup.com/productos/isabel/\n"
+            "- SHOOW TOOLS - TAYLOR (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm "
+            "| Link: https://beautyhousemakeup.com/productos/taylor/"
         )
         reply = app._grounded_lash_recommendation(
             live_context,
@@ -250,6 +252,8 @@ class WebhookHarnessTests(unittest.TestCase):
 
         self.assertIn("Isabel I (chocolate)", reply)
         self.assertIn("Taylor (chocolate)", reply)
+        self.assertIn("https://beautyhousemakeup.com/productos/isabel/", reply)
+        self.assertIn("https://beautyhousemakeup.com/productos/taylor/", reply)
         self.assertNotIn("no tengo nada", reply.lower())
         self.assertEqual(
             app._grounded_lash_recommendation(live_context, "Quiero comprar Isabel I chocolate"),
