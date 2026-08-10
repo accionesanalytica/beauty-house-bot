@@ -2749,6 +2749,13 @@ async def webhook_post(request: Request):
 
             sale_candidate = result.get("sale_candidate")
             handoff = result.get("handoff")
+            decision = result.get("decision") or {}
+            print(
+                "[Decision] action={} reason={}".format(
+                    decision.get("action", "unknown"),
+                    decision.get("reason", "unknown"),
+                )
+            )
             special_sale = _is_special_sale_context(message_text, prior_history)
             if special_sale:
                 # This is a hard business boundary, not a model preference.
@@ -2759,11 +2766,15 @@ async def webhook_post(request: Request):
                     "reason": "special_sale_request",
                     "summary": "La clienta consulta por un encargo, preventa, cotización o venta mayorista.",
                 }
+                decision = {
+                    "action": "handoff_to_isa",
+                    "reason": "special_sale_request",
+                }
             # Un fallo de identificación recibe una sola repregunta. Si la
             # clienta ya respondió esa repregunta y aún no podemos verificar el
             # modelo, Isa recibe un caso realmente excepcional y con contexto.
             if (
-                result.get("needs_product_clarification")
+                (result.get("needs_product_clarification") or decision.get("action") == "clarify_product")
                 and not handoff
                 and _already_asked_product_clarification(prior_history)
             ):
