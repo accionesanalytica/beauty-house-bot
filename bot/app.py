@@ -474,8 +474,8 @@ def send_isa_pending_buttons(action: dict) -> bool:
         ]
     elif action["action_type"] == "human_handoff":
         buttons = [
+            {"type": "reply", "reply": {"id": "reply_to_fred:{}".format(action_id), "title": "Responder a Fred"}},
             {"type": "reply", "reply": {"id": "pause_bot:{}".format(action_id), "title": "Pausar a Fred"}},
-            {"type": "reply", "reply": {"id": "resume_bot:{}".format(action_id), "title": "Que siga Fred"}},
             {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
         ]
     else:
@@ -1240,7 +1240,10 @@ def handle_isa_message(
     if response_match:
         action_id = int(response_match.group(1))
         pending_action = _pending_action_by_id(action_id)
-        if not pending_action or pending_action["action_type"] != "bot_fallback":
+        if not pending_action or pending_action["action_type"] not in (
+            "bot_fallback",
+            "human_handoff",
+        ):
             send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Esa consulta ya no está disponible.")
             return
         if wait_for_isa_response(action_id):
@@ -1260,7 +1263,7 @@ def handle_isa_message(
         (
             action
             for action in list_pending_actions(limit=20)
-            if action["action_type"] == "bot_fallback"
+            if action["action_type"] in ("bot_fallback", "human_handoff")
             and action.get("payload", {}).get("awaiting_isa_response")
         ),
         None,

@@ -627,7 +627,7 @@ def resolve_pending_action(action_id: int, status: str) -> Optional[Dict[str, An
 
 
 def wait_for_isa_response(action_id: int) -> bool:
-    """Mark a consultation pending while Fred waits for Isa's written answer."""
+    """Mark an Isa-assisted case while Fred waits for her written answer."""
     connection = _connect()
     try:
         with connection.cursor() as cursor:
@@ -635,7 +635,9 @@ def wait_for_isa_response(action_id: int) -> bool:
                 """
                 UPDATE pending_actions
                 SET payload = jsonb_set(payload, '{awaiting_isa_response}', 'true'::jsonb, true)
-                WHERE id = %s AND status = 'pending' AND action_type = 'bot_fallback'
+                WHERE id = %s
+                  AND status = 'pending'
+                  AND action_type IN ('bot_fallback', 'human_handoff')
                 """,
                 (action_id,),
             )
