@@ -13,6 +13,7 @@ import sys
 import unicodedata
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 # Agregar el directorio actual al path para importar agent.py
@@ -22,7 +23,7 @@ import psycopg2
 import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 import numpy as np
 from google import genai
 from google.genai import types
@@ -96,6 +97,16 @@ DEMO_APPROVALS_ENABLED = (
 )
 LIVE_CHECKOUTS_ENABLED = checkout_enabled()
 ISA_REMINDERS_ENABLED = os.getenv("ISA_REMINDERS_ENABLED", "false").lower() == "true"
+# Client-facing policy document. The Railway public domain is a safe fallback
+# for the current deployment; a custom domain can replace it later without a
+# code change.
+PUBLIC_BASE_URL = os.getenv(
+    "PUBLIC_BASE_URL", "https://beauty-house-bot-production-4af8.up.railway.app"
+).rstrip("/")
+ENCARGOS_PDF_PATH = (
+    Path(__file__).resolve().parent.parent / "assets" / "policies" / "preventa-encargos-vigente.pdf"
+)
+ENCARGOS_PDF_URL = "{}/documents/preventa-encargos.pdf".format(PUBLIC_BASE_URL)
 ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 _reminder_task = None
 
@@ -320,6 +331,34 @@ def send_whatsapp_text(phone_number: str, text: str) -> bool:
         return True
     except Exception as error:  # noqa: BLE001
         print(f"ERROR enviando texto a WhatsApp: {type(error).__name__}")
+        return False
+
+
+def send_whatsapp_document(phone_number: str, document_url: str, filename: str, caption: str) -> bool:
+    """Send a client-facing PDF through WhatsApp Cloud API using a stable URL."""
+    url = f"https://graph.facebook.com/v26.0/{WHATSAPP_PHONE_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": normalize_whatsapp_recipient(phone_number),
+        "type": "document",
+        "document": {
+            "link": document_url,
+            "filename": filename,
+            "caption": caption,
+        },
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=20)
+        print(f"[WhatsApp] Documento HTTP {response.status_code}")
+        response.raise_for_status()
+        return True
+    except Exception as error:  # noqa: BLE001
+        print(f"ERROR enviando documento a WhatsApp: {type(error).__name__}")
         return False
 
 
@@ -1227,21 +1266,32 @@ def _pending_action_by_id(action_id: int) -> dict:
 
 
 def _send_special_sale_conditions(action: dict) -> None:
-    """Send the safe first reply for an encargo without inventing commercial terms."""
+    """Send the owner-approved encargo PDF and a short, clear next step."""
     if action.get("action_type") != "special_sale_request":
         send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente no corresponde a un encargo.")
         return
 
+    if not send_whatsapp_document(
+        action["customer_phone"],
+        ENCARGOS_PDF_URL,
+        "Beauty-House-Preventa-y-Encargos.pdf",
+        "Te compartimos las condiciones vigentes para preventas y encargos.",
+    ):
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "No pude enviar el PDF a la clienta. El pendiente sigue abierto; probá de nuevo.",
+        )
+        return
+
     customer_text = (
-        "¡Gracias por consultarnos! 😊 Para un encargo primero confirmamos con Isa "
-        "la disponibilidad, la cotización final y las condiciones actuales. "
-        "No se reserva ni se genera ningún link hasta que ella lo valide. "
-        "Ya está revisando tu pedido y te confirmamos todo por acá."
+        "¡Gracias por consultarnos! 😊 Te envié el PDF con las condiciones vigentes "
+        "para preventas y encargos. Isa revisa la disponibilidad y te confirma la "
+        "cotización final antes de generar cualquier link o reserva."
     )
     if not send_whatsapp_text(action["customer_phone"], customer_text):
         send_whatsapp_text(
             ISA_WHATSAPP_NUMBER,
-            "No pude enviar las condiciones a la clienta. El pendiente sigue abierto; probá de nuevo.",
+            "El PDF llegó a la clienta, pero no pude enviarle el mensaje de seguimiento. El pendiente sigue abierto.",
         )
         return
 
@@ -1256,7 +1306,7 @@ def _send_special_sale_conditions(action: dict) -> None:
     record_bot_message(result["conversation_id"], customer_text)
     send_whatsapp_text(
         ISA_WHATSAPP_NUMBER,
-        "Listo, Fred le envió las condiciones generales del encargo. Si Isa confirma datos concretos, podés abrir otro pendiente o responder por Fred.",
+        "Listo, Fred le envió el PDF vigente de preventas y encargos. Si querés darle una respuesta puntual, usá “Responder a Fred”.",
     )
     if pending_action_count():
         send_next_pending_to_isa()
@@ -1640,6 +1690,19 @@ def handle_isa_message(
 # ============================================================
 # WEBHOOK — VERIFICACIÓN META
 # ============================================================
+
+
+@app.get("/documents/preventa-encargos.pdf")
+async def download_encargos_policy() -> FileResponse:
+    """Expose the owner-approved encargo PDF for WhatsApp document delivery."""
+    if not ENCARGOS_PDF_PATH.is_file():
+        return JSONResponse(content={"error": "Documento no disponible"}, status_code=503)
+    return FileResponse(
+        path=ENCARGOS_PDF_PATH,
+        media_type="application/pdf",
+        filename="Beauty-House-Preventa-y-Encargos.pdf",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 # ============================================================
