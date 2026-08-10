@@ -168,6 +168,29 @@ class SalesFlowTests(unittest.TestCase):
         self.assertEqual(candidate, {})
         get_stock.assert_not_called()
 
+    def test_encargo_context_is_never_a_normal_checkout(self):
+        self.assertTrue(
+            app._is_special_sale_context(
+                "sí porfa",
+                [
+                    {
+                        "role": "assistant",
+                        "content": "Como es un encargo, Isa confirma las condiciones.",
+                    }
+                ],
+            )
+        )
+        self.assertTrue(app._is_special_sale_context("quiero encargar un labial", []))
+        self.assertFalse(app._is_special_sale_context("quiero comprar 2 Isabel I", []))
+
+    def test_isa_can_request_encargo_conditions_in_plain_language(self):
+        self.assertTrue(
+            app._is_special_conditions_request(
+                "Necesito que le envíes las condiciones de las ventas por encargo"
+            )
+        )
+        self.assertFalse(app._is_special_conditions_request("enviá el link de pago"))
+
 
 class AgentOutputSafetyTests(unittest.TestCase):
     def test_unverified_link_is_removed(self):

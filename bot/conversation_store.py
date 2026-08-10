@@ -637,7 +637,7 @@ def wait_for_isa_response(action_id: int) -> bool:
                 SET payload = jsonb_set(payload, '{awaiting_isa_response}', 'true'::jsonb, true)
                 WHERE id = %s
                   AND status = 'pending'
-                  AND action_type IN ('bot_fallback', 'human_handoff')
+                  AND action_type IN ('bot_fallback', 'human_handoff', 'special_sale_request')
                 """,
                 (action_id,),
             )

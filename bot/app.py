@@ -407,6 +407,7 @@ def _pending_action_text(action: dict) -> str:
     labels = {
         "human_handoff": "Clienta pidió hablar con Isa",
         "purchase_review": "Compra pendiente de confirmación",
+        "special_sale_request": "Encargo o cotización pendiente de Isa",
         "bot_fallback": "Fred necesita confirmar una consulta",
     }
     customer_message = action["payload"].get("customer_message", "")
@@ -470,6 +471,12 @@ def send_isa_pending_buttons(action: dict) -> bool:
         buttons = [
             {"type": "reply", "reply": {"id": "reply_to_fred:{}".format(action_id), "title": "Responder a Fred"}},
             {"type": "reply", "reply": {"id": "resume_bot:{}".format(action_id), "title": "Que siga Fred"}},
+            {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
+        ]
+    elif action["action_type"] == "special_sale_request":
+        buttons = [
+            {"type": "reply", "reply": {"id": "send_special_conditions:{}".format(action_id), "title": "Enviar condiciones"}},
+            {"type": "reply", "reply": {"id": "reply_to_fred:{}".format(action_id), "title": "Responder a Fred"}},
             {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
         ]
     elif action["action_type"] == "human_handoff":
@@ -537,6 +544,7 @@ def _queue_for_isa(
             "payment_status": "por confirmar",
             "order_creation": "disabled",
         }
+    if action_type in ("purchase_review", "special_sale_request"):
         payload["conversation_context"] = [
             {
                 "speaker": "Clienta" if item.get("role") == "user" else "Fred",
@@ -601,6 +609,17 @@ def _customer_escalation_type(message_text: str, has_bot_history: bool) -> str:
     ):
         return "purchase_review"
     return ""
+
+
+def _is_special_sale_context(message_text: str, prior_history: list) -> bool:
+    """Keep encargo/preventa/mayorista out of the normal checkout flow."""
+    recent_text = " ".join(
+        item.get("content", "") for item in (prior_history or [])[-6:]
+    )
+    normalized = _normalized_text("{} {}".format(recent_text, message_text))
+    return bool(
+        re.search(r"\b(encargo|encargar|preventa|mayorista|cotizaci[oó]n)\b", normalized)
+    )
 
 
 def _needs_purchase_clarification(message_text: str, prior_history: list) -> bool:
@@ -1207,6 +1226,50 @@ def _pending_action_by_id(action_id: int) -> dict:
     )
 
 
+def _send_special_sale_conditions(action: dict) -> None:
+    """Send the safe first reply for an encargo without inventing commercial terms."""
+    if action.get("action_type") != "special_sale_request":
+        send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente no corresponde a un encargo.")
+        return
+
+    customer_text = (
+        "¡Gracias por consultarnos! 😊 Para un encargo primero confirmamos con Isa "
+        "la disponibilidad, la cotización final y las condiciones actuales. "
+        "No se reserva ni se genera ningún link hasta que ella lo valide. "
+        "Ya está revisando tu pedido y te confirmamos todo por acá."
+    )
+    if not send_whatsapp_text(action["customer_phone"], customer_text):
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "No pude enviar las condiciones a la clienta. El pendiente sigue abierto; probá de nuevo.",
+        )
+        return
+
+    result = resolve_pending_action(action["id"], "approved")
+    if not result:
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Las condiciones llegaron a la clienta, pero el pendiente cambió de estado. Revisalo antes de seguir.",
+        )
+        return
+    set_conversation_state(result["conversation_id"], "BOT")
+    record_bot_message(result["conversation_id"], customer_text)
+    send_whatsapp_text(
+        ISA_WHATSAPP_NUMBER,
+        "Listo, Fred le envió las condiciones generales del encargo. Si Isa confirma datos concretos, podés abrir otro pendiente o responder por Fred.",
+    )
+    if pending_action_count():
+        send_next_pending_to_isa()
+
+
+def _is_special_conditions_request(message_text: str) -> bool:
+    normalized = _normalized_text(message_text)
+    return bool(
+        re.search(r"\b(condiciones?|informacion)\b", normalized)
+        and re.search(r"\b(encargo|encargos|preventa|cotizacion)\b", normalized)
+    )
+
+
 def _create_demo_link_for_approved_sale(action: dict) -> dict:
     """Create a checkout only in the dedicated demo store.
 
@@ -1259,6 +1322,21 @@ def handle_isa_message(
     if _handle_isa_reminder_request(message_text):
         return
 
+    # Isa can use a natural instruction instead of hunting for the card button.
+    # It only acts when an actual encargo/cotización is pending.
+    if not button_reply_id and _is_special_conditions_request(message_text):
+        special_pending = next(
+            (
+                action
+                for action in list_pending_actions(limit=20)
+                if action["action_type"] == "special_sale_request"
+            ),
+            None,
+        )
+        if special_pending:
+            _send_special_sale_conditions(special_pending)
+            return
+
     response_match = re.match(r"^reply_to_fred:(\d+)$", button_reply_id or "")
     if response_match:
         action_id = int(response_match.group(1))
@@ -1266,6 +1344,7 @@ def handle_isa_message(
         if not pending_action or pending_action["action_type"] not in (
             "bot_fallback",
             "human_handoff",
+            "special_sale_request",
         ):
             send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Esa consulta ya no está disponible.")
             return
@@ -1286,7 +1365,11 @@ def handle_isa_message(
         (
             action
             for action in list_pending_actions(limit=20)
-            if action["action_type"] in ("bot_fallback", "human_handoff")
+            if action["action_type"] in (
+                "bot_fallback",
+                "human_handoff",
+                "special_sale_request",
+            )
             and action.get("payload", {}).get("awaiting_isa_response")
         ),
         None,
@@ -1370,7 +1453,7 @@ def handle_isa_message(
         return
 
     match = re.match(
-        r"^(approve|approve_demo|approve_checkout|reject|view|take_handoff|pause_bot|resume_bot):(\d+)$",
+        r"^(approve|approve_demo|approve_checkout|send_special_conditions|reject|view|take_handoff|pause_bot|resume_bot):(\d+)$",
         button_reply_id or "",
     )
     if not match:
@@ -1385,6 +1468,14 @@ def handle_isa_message(
             send_isa_pending_buttons(actions[0])
         else:
             send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya no está disponible.")
+        return
+
+    if action == "send_special_conditions":
+        pending_action = _pending_action_by_id(action_id)
+        if not pending_action:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya no está disponible.")
+            return
+        _send_special_sale_conditions(pending_action)
         return
 
     if action == "approve_demo":
@@ -2022,13 +2113,20 @@ async def webhook_post(request: Request):
                     }
 
             if handoff:
-                action_type = (
-                    "purchase_review"
-                    if handoff.get("reason") == "purchase_intent"
-                    else "human_handoff"
-                    if handoff.get("reason") == "human_request"
-                    else "bot_fallback"
-                )
+                if (
+                    handoff.get("reason") == "special_sale_request"
+                    or _is_special_sale_context(message_text, prior_history)
+                ):
+                    # An encargo/cotización can have no published SKU, price or
+                    # stock yet. It must reach Isa as a consultation, never as
+                    # a normal cart approval.
+                    action_type = "special_sale_request"
+                elif handoff.get("reason") == "purchase_intent":
+                    action_type = "purchase_review"
+                elif handoff.get("reason") == "human_request":
+                    action_type = "human_handoff"
+                else:
+                    action_type = "bot_fallback"
                 if action_type == "purchase_review" and SALES_INTAKE_ENABLED:
                     reply = _start_sales_intake(conversation_id)
                 else:
