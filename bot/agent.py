@@ -29,6 +29,12 @@ from decision_schema import build_effective_decision, validate_model_decision
 from knowledge import CORE_POLICY_BOUNDARIES
 from sales_playbook import CORE_SALES_CONTEXT
 from tiendanube_tools import AVAILABLE_TOOLS, TOOL_SCHEMAS
+from tool_guardrails import (
+    MAX_TOOL_CALLS_PER_ROUND,
+    MAX_TOOL_CALLS_PER_TURN,
+    bounded_customer_reply,
+    validate_tool_arguments,
+)
 
 load_dotenv()
 
@@ -205,8 +211,9 @@ def _run_tool(name: str, arguments: Dict[str, Any]) -> Any:
     try:
         return function(**arguments)
     except Exception as error:  # noqa: BLE001
-        # The model needs to know it failed so it can tell the customer
-        return {"error": str(error)}
+        # Do not echo provider/database details into the model context.
+        print("ERROR en herramienta {} (tipo: {})".format(name, type(error).__name__))
+        return {"error": "La consulta no está disponible ahora. No inventes datos; ofrecé verificarlo con Isa."}
 
 
 def _remove_unverified_urls(text: str, verified_urls: List[str]) -> str:
@@ -320,6 +327,8 @@ def answer(
     verified_in_stock_skus: Dict[str, Dict[str, Any]] = {}
     sale_candidate: Optional[Dict[str, str]] = None
     proposed_decision: Optional[Dict[str, str]] = None
+    executed_tool_calls = set()
+    tool_call_count = 0
     usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     for round_number in range(MAX_TOOL_ROUNDS):
@@ -335,10 +344,10 @@ def answer(
             )
             return {
                 "reply": _ensure_first_greeting(
-                    _plain_whatsapp_text(_remove_unverified_urls(
+                    bounded_customer_reply(_plain_whatsapp_text(_remove_unverified_urls(
                         message.get("content") or "",
                         verified_product_urls,
-                    )),
+                    ))),
                     greeting_required,
                 ),
                 "tool_calls": tool_calls_made,
@@ -366,19 +375,30 @@ def answer(
             ],
         })
 
-        for call in tool_calls:
-            name = call["function"]["name"]
+        for call_index, call in enumerate(tool_calls, start=1):
+            name = call.get("function", {}).get("name", "")
 
             try:
-                arguments = json.loads(call["function"]["arguments"])
-            except json.JSONDecodeError:
+                arguments = json.loads(call.get("function", {}).get("arguments", ""))
+            except (TypeError, json.JSONDecodeError):
                 arguments = {}
+
+            sanitized_arguments, validation_error = validate_tool_arguments(name, arguments)
+            fingerprint = "{}:{}".format(
+                name, json.dumps(sanitized_arguments or arguments, sort_keys=True, default=str)
+            )
 
             if verbose:
                 print("  -> {}({})".format(name, arguments))
 
-            if name == "select_sale_candidate":
-                candidate_sku = (arguments.get("sku") or "").strip().lower()
+            if call_index > MAX_TOOL_CALLS_PER_ROUND or tool_call_count >= MAX_TOOL_CALLS_PER_TURN:
+                result = {"error": "Límite de herramientas alcanzado. Pedí una sola aclaración o escalá a Isa."}
+            elif validation_error:
+                result = {"error": validation_error}
+            elif fingerprint in executed_tool_calls:
+                result = {"error": "Consulta repetida en este turno. Usá el resultado anterior."}
+            elif name == "select_sale_candidate":
+                candidate_sku = (sanitized_arguments.get("sku") or "").strip().lower()
                 if candidate_sku not in verified_in_stock_skus:
                     result = {
                         "error": (
@@ -386,15 +406,23 @@ def answer(
                         )
                     }
                 else:
-                    result = _run_tool(name, arguments)
+                    result = _run_tool(name, sanitized_arguments)
             else:
-                result = _run_tool(name, arguments)
-            tool_calls_made.append({"name": name, "arguments": arguments})
+                result = _run_tool(name, sanitized_arguments)
 
-            if name == "request_isa_handoff":
+            if not validation_error and call_index <= MAX_TOOL_CALLS_PER_ROUND and tool_call_count < MAX_TOOL_CALLS_PER_TURN:
+                executed_tool_calls.add(fingerprint)
+                tool_call_count += 1
+            tool_calls_made.append({"name": name, "arguments": sanitized_arguments or arguments})
+
+            if (
+                name == "request_isa_handoff"
+                and isinstance(result, dict)
+                and result.get("handoff_requested")
+            ):
                 handoff_request = {
-                    "reason": arguments.get("reason", "unable_to_verify"),
-                    "summary": arguments.get("summary", ""),
+                    "reason": (sanitized_arguments or {}).get("reason", "unable_to_verify"),
+                    "summary": (sanitized_arguments or {}).get("summary", ""),
                 }
 
             if name == "set_turn_decision" and isinstance(result, dict):
@@ -420,7 +448,7 @@ def answer(
 
             messages.append({
                 "role": "tool",
-                "tool_call_id": call["id"],
+                "tool_call_id": call.get("id", "invalid-tool-call"),
                 "content": json.dumps(result, ensure_ascii=False, default=str),
             })
 
