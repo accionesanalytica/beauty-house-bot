@@ -22,6 +22,7 @@ import app  # noqa: E402
 import agent  # noqa: E402
 from tiendanube_events import webhook_signature_is_valid  # noqa: E402
 import tiendanube_events  # noqa: E402
+import tiendanube_tools  # noqa: E402
 
 
 def _intake(status="confirmation"):
@@ -39,6 +40,11 @@ def _intake(status="confirmation"):
 
 
 class SalesFlowTests(unittest.TestCase):
+    def test_confirmation_tolerates_typo_but_not_a_correction_sentence(self):
+        self.assertTrue(app._is_sale_confirmation("si confimo"))
+        self.assertTrue(app._is_sale_confirmation("confirmo"))
+        self.assertFalse(app._is_sale_confirmation("si quiero corregirlo"))
+
     @patch.dict(os.environ, {"TIENDANUBE_CLIENT_SECRET": "test-secret"})
     def test_tiendanube_webhook_signature_rejects_tampering(self):
         import hashlib
@@ -257,6 +263,14 @@ class SalesFlowTests(unittest.TestCase):
         self.assertTrue(app._is_special_sale_context("quiero encargar un labial", []))
         self.assertFalse(app._is_special_sale_context("quiero comprar 2 Isabel I", []))
 
+    def test_old_encargo_history_does_not_block_a_new_normal_purchase(self):
+        history = [
+            {"role": "assistant", "content": "Te envié las condiciones del encargo."},
+            {"role": "user", "content": "gracias"},
+            {"role": "assistant", "content": "¡De nada!"},
+        ]
+        self.assertFalse(app._is_special_sale_context("quiero comprar 2 Isabel I", history))
+
     def test_isa_can_request_encargo_conditions_in_plain_language(self):
         self.assertTrue(
             app._is_special_conditions_request(
@@ -267,6 +281,25 @@ class SalesFlowTests(unittest.TestCase):
 
 
 class AgentOutputSafetyTests(unittest.TestCase):
+    def test_social_messages_do_not_need_an_ai_call(self):
+        self.assertEqual(app._simple_customer_reply("hola"), "¡Hola! 😊 ¿En qué te puedo ayudar?")
+        self.assertIn("De nada", app._simple_customer_reply("muchas gracias"))
+        self.assertEqual(app._simple_customer_reply("Hola, busco pestañas"), "")
+
+    def test_agent_has_a_bounded_number_of_model_rounds(self):
+        self.assertLessEqual(agent.MAX_TOOL_ROUNDS, 5)
+
+    @patch.object(agent, "_ask_deepseek")
+    def test_agent_reports_usage_without_sending_an_extra_call(self, ask_deepseek):
+        ask_deepseek.return_value = {
+            "content": "Te ayudo con eso 😊",
+            "_fred_usage": {"prompt_tokens": 120, "completion_tokens": 15, "total_tokens": 135},
+        }
+        result = agent.answer("consulta", history=[])
+        self.assertEqual(result["model_calls"], 1)
+        self.assertEqual(result["usage"]["total_tokens"], 135)
+        ask_deepseek.assert_called_once()
+
     def test_unverified_link_is_removed(self):
         self.assertEqual(
             agent._remove_unverified_urls("Mirá https://inventado.test/producto", []),
@@ -278,6 +311,25 @@ class AgentOutputSafetyTests(unittest.TestCase):
             agent._plain_whatsapp_text("**Isabel I**"),
             "Isabel I",
         )
+
+    @patch.object(tiendanube_tools, "_get")
+    def test_generic_recommendation_excludes_surprise_sets(self, get_products):
+        get_products.return_value = [
+            {
+                "id": 1,
+                "published": True,
+                "name": {"es": "Set de pestañas sorpresa"},
+                "variants": [{"sku": "SURPRISE", "stock": 9, "values": []}],
+            },
+            {
+                "id": 2,
+                "published": True,
+                "name": {"es": "Isabel I Chocolate"},
+                "variants": [{"sku": "ISABEL", "stock": 3, "values": []}],
+            },
+        ]
+        results = tiendanube_tools.search_available_products("pestañas naturales")
+        self.assertEqual([item["name"] for item in results], ["Isabel I Chocolate"])
 
 
 class IsaInternalSaleFlowTests(unittest.TestCase):

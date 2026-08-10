@@ -11,7 +11,7 @@ ni con una única respuesta bonita. Se revisa en dos capas:
 
 ## Casos curados
 
-`tests/fred_eval_cases.py` contiene 30 escenarios inspirados en consultas de
+`tests/fred_eval_cases.py` contiene 50 escenarios inspirados en consultas de
 asesoría, preventa, seguimiento, pagos, mayorista, logística, cambios y
 devoluciones. No contiene nombres, teléfonos, direcciones, importes bancarios
 ni transcripciones reales.
@@ -24,7 +24,7 @@ Pruebas locales sin costo ni APIs:
 python -m unittest discover -s tests -v
 ```
 
-Vista previa de los 30 casos:
+Vista previa de los 50 casos:
 
 ```bash
 python tests/run_fred_live_evals.py
@@ -50,7 +50,7 @@ regla antes de abrir el flujo.
 
 ## Regla de apertura controlada
 
-Antes de exponer Fred a más clientas, correr los 30 casos y revisar los que
+Antes de exponer Fred a más clientas, correr los 50 casos y revisar los que
 involucran recomendaciones, preventa, pagos y reclamos. Después habilitarlo
 primero para un volumen bajo, revisando diariamente las conversaciones y los
 pendientes de Isa.

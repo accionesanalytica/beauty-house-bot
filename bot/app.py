@@ -753,14 +753,24 @@ def _customer_escalation_type(message_text: str, has_bot_history: bool) -> str:
 
 
 def _is_special_sale_context(message_text: str, prior_history: list) -> bool:
-    """Keep encargo/preventa/mayorista out of the normal checkout flow."""
-    recent_text = " ".join(
-        item.get("content", "") for item in (prior_history or [])[-6:]
+    """Keep a live special-sale thread out of normal checkout, not stale history."""
+    normalized_current = _normalized_text(message_text)
+    special_words = r"\b(encargo|encargar|preventa|mayorista|cotizacion)\b"
+    if re.search(special_words, normalized_current):
+        return True
+
+    # “Sí, porfa” retains the immediately preceding encargo context, but an
+    # unrelated purchase several turns later must be allowed to start normally.
+    last_assistant_text = next(
+        (
+            _normalized_text(item.get("content", ""))
+            for item in reversed(prior_history or [])
+            if item.get("role") == "assistant"
+        ),
+        "",
     )
-    normalized = _normalized_text("{} {}".format(recent_text, message_text))
-    return bool(
-        re.search(r"\b(encargo|encargar|preventa|mayorista|cotizaci[oó]n)\b", normalized)
-    )
+    is_short_affirmation = bool(re.fullmatch(r"(?:si|si porfa|dale|ok|perfecto)", normalized_current.strip()))
+    return bool(is_short_affirmation and re.search(special_words, last_assistant_text))
 
 
 def _needs_purchase_clarification(message_text: str, prior_history: list) -> bool:
@@ -806,6 +816,18 @@ def _extract_quantity(text: str) -> int:
         return 0
     quantity = int(match.group(1))
     return quantity if 1 <= quantity <= 99 else 0
+
+
+def _is_sale_confirmation(text: str) -> bool:
+    """Accept a normal WhatsApp confirmation, but not a new correction request."""
+    normalized = _normalized_text(text).strip()
+    return bool(
+        re.fullmatch(
+            r"(?:si(?:\s*[,\-]?\s*(?:confirmo|confimo|dale|ok|okay|listo))?|"
+            r"confirmo|confimo|confirmar|dale|ok|okay|listo)",
+            normalized,
+        )
+    )
 
 
 def _extract_customer_details(text: str) -> tuple:
@@ -868,6 +890,16 @@ def _looks_like_new_customer_request(text: str) -> bool:
         re.match(r"^(hola|buenas|buen dia|buenas tardes)\b", normalized)
         or re.search(r"\b(busco|quisiera saber|tienen|tenes|me recomendas)\b", normalized)
     )
+
+
+def _simple_customer_reply(text: str) -> str:
+    """Resolve social-only messages locally; no model or catalog lookup needed."""
+    normalized = _normalized_text(text).strip()
+    if re.fullmatch(r"(?:hola|holaa+|buenas|buen dia|buenas tardes|buenas noches|hello)", normalized):
+        return "¡Hola! 😊 ¿En qué te puedo ayudar?"
+    if re.fullmatch(r"(?:gracias|muchas gracias|genial gracias|perfecto gracias|ok gracias)", normalized):
+        return "¡De nada! 😊 Si te surge otra duda, escribime por acá."
+    return ""
 
 
 def _sales_summary(intake: dict) -> str:
@@ -1084,7 +1116,7 @@ def _handle_sales_intake(
             refreshed = get_active_sales_intake(conversation_id)
             reply = _sales_summary(refreshed)
     elif intake["status"] == "confirmation":
-        if re.match(r"^(si|confirmo|confirmar|dale|ok)\b", normalized):
+        if _is_sale_confirmation(message_text):
             mark_sales_intake_ready(conversation_id)
             sale_draft = {
                 "status": "ready_for_isa_review",
@@ -2421,6 +2453,13 @@ async def webhook_post(request: Request):
                 record_bot_message(conversation_id, customer_reply)
             return JSONResponse(content={"ok": True})
 
+        simple_reply = _simple_customer_reply(message_text)
+        if simple_reply:
+            if send_whatsapp_text(customer_phone, simple_reply):
+                record_bot_message(conversation_id, simple_reply)
+            print("[IA] Mensaje social resuelto sin modelo.")
+            return JSONResponse(content={"ok": True})
+
         escalation_type = _customer_escalation_type(
             message_text,
             has_bot_history=any(
@@ -2460,12 +2499,30 @@ async def webhook_post(request: Request):
                 ),
                 verbose=False,
             )
+            usage = result.get("usage") or {}
+            print(
+                "[IA] llamadas={} prompt_tokens={} completion_tokens={}".format(
+                    result.get("model_calls", 0),
+                    usage.get("prompt_tokens", 0),
+                    usage.get("completion_tokens", 0),
+                )
+            )
             reply = (result.get("reply") or "").strip()
             if not reply:
                 raise RuntimeError("El agente no devolvió texto.")
 
             sale_candidate = result.get("sale_candidate")
             handoff = result.get("handoff")
+            special_sale = _is_special_sale_context(message_text, prior_history)
+            if special_sale:
+                # This is a hard business boundary, not a model preference.
+                # A product may exist in the catalog, but an encargo/preventa/
+                # wholesale request is still not a normal checkout.
+                sale_candidate = None
+                handoff = {
+                    "reason": "special_sale_request",
+                    "summary": "La clienta consulta por un encargo, preventa, cotización o venta mayorista.",
+                }
             # Un fallo de identificación recibe una sola repregunta. Si la
             # clienta ya respondió esa repregunta y aún no podemos verificar el
             # modelo, Isa recibe un caso realmente excepcional y con contexto.

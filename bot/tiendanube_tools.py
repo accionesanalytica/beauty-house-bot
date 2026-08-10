@@ -133,10 +133,17 @@ def search_available_products(query: str, limit: int = 5) -> List[Dict[str, Any]
     is deliberately excluded because it is not confirmed availability.
     """
     products = _get("/products", {"q": query, "per_page": 50})
+    # A surprise set cannot responsibly answer a request for a specific effect
+    # (natural, cat eye, etc.). It remains discoverable only when the customer
+    # actually asks for a surprise/variety product.
+    allow_surprise = "sorpresa" in query.lower()
     results = []
 
     for product in products:
         if not product.get("published", False):
+            continue
+        product_name = _localized(product.get("name"))
+        if not allow_surprise and "sorpresa" in product_name.lower():
             continue
 
         available_variants = []
@@ -153,7 +160,7 @@ def search_available_products(query: str, limit: int = 5) -> List[Dict[str, Any]
         if available_variants:
             results.append({
                 "product_id": product.get("id"),
-                "name": _localized(product.get("name")),
+                "name": product_name,
                 "variants": available_variants,
             })
 
