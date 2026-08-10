@@ -34,6 +34,11 @@ from google import genai
 from google.genai import types
 
 from agent import answer
+from catalog_rag import (
+    format_catalog_context,
+    fuse_catalog_candidates,
+    lexical_catalog_query,
+)
 from tiendanube_checkout import CheckoutError, checkout_enabled, create_approved_checkout
 from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
 from tiendanube_tools import catalog_health_audit, get_stock
@@ -193,8 +198,11 @@ def embed_text(text: str, task_type: str = "RETRIEVAL_QUERY") -> list:
 
 def search_similar_products(query: str, limit: int = 3) -> str:
     """
-    Busca productos similares en Supabase usando búsqueda vectorial.
-    Devuelve un string con el contexto para el agent.
+    Busca identidad de producto con recuperación híbrida en Supabase.
+
+    Primero prioriza coincidencias léxicas acotadas (nombre/variante/SKU) y
+    luego combina candidatas semánticas que superan un umbral. Nunca devuelve
+    stock o precio: esos datos siguen siendo responsabilidad de Tiendanube.
     """
 
     try:
@@ -205,6 +213,14 @@ def search_similar_products(query: str, limit: int = 3) -> str:
 
         conn = psycopg2.connect(SUPABASE_DB_URL)
         cursor = conn.cursor()
+
+        lexical_rows = []
+        lexical_search = lexical_catalog_query(query, limit)
+        if lexical_search:
+            cursor.execute(*lexical_search)
+            lexical_rows = [
+                _catalog_row_from_tuple(row) for row in cursor.fetchall()
+            ]
 
         cursor.execute(
             """
@@ -223,39 +239,21 @@ def search_similar_products(query: str, limit: int = 3) -> str:
             (
                 str(embedding),
                 str(embedding),
-                limit,
+                max(limit * 4, 8),
             ),
         )
 
-        results = cursor.fetchall()
+        semantic_rows = [
+            _catalog_row_from_tuple(row) for row in cursor.fetchall()
+        ]
 
         cursor.close()
         conn.close()
 
-        if not results:
-            return ""
-
-        context = "Productos encontrados:\n"
-
-        for row in results:
-
-            (
-                product_id,
-                variant_id,
-                sku,
-                product_name,
-                variant,
-                similarity,
-            ) = row
-
-            context += (
-                f"- product_id: {product_id}; {product_name} "
-                f"(SKU: {sku or 'N/A'}) "
-                f"Variante: {variant or 'default'} "
-                f"(similitud: {similarity:.2f})\n"
-            )
-
-        return context
+        candidates = fuse_catalog_candidates(
+            lexical_rows, semantic_rows, limit=limit
+        )
+        return format_catalog_context(candidates)
 
     except Exception as error:  # noqa: BLE001
 
@@ -267,6 +265,26 @@ def search_similar_products(query: str, limit: int = 3) -> str:
         )
 
         return ""
+
+
+def _catalog_row_from_tuple(row):
+    """Adapt the database tuple to the pure catalog retrieval helpers."""
+    (
+        product_id,
+        variant_id,
+        sku,
+        product_name,
+        variant,
+        similarity,
+    ) = row
+    return {
+        "product_id": product_id,
+        "variant_id": variant_id,
+        "sku": sku,
+        "product_name": product_name,
+        "variant": variant,
+        "similarity": similarity,
+    }
 
 
 # ============================================================

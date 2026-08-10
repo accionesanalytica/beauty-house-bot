@@ -22,6 +22,7 @@ Usage:
 import argparse
 import csv
 import os
+import sys
 import time
 
 import numpy as np
@@ -41,6 +42,8 @@ BATCH_SLEEP = 0.1
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CATALOG_PATH = os.path.join(SCRIPT_DIR, "..", "data", "catalog_flat.csv")
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "bot"))
+from catalog_rag import build_catalog_content  # noqa: E402
 
 gemini = genai.Client(api_key=GEMINI_KEY)
 
@@ -60,19 +63,8 @@ def embed(text, task_type="RETRIEVAL_DOCUMENT"):
 
 
 def build_content(row):
-    """
-    Text that gets embedded. Identity only, never stock.
-
-    Includes the SKU so a customer quoting a code still matches.
-    """
-    parts = [row["product_name"]]
-
-    if row["variant_values"].strip():
-        parts.append("Variante: {}".format(row["variant_values"]))
-    if row["sku"].strip():
-        parts.append("SKU: {}".format(row["sku"]))
-
-    return ". ".join(parts)
+    """Compatibility wrapper used by the indexer and its dry-run preview."""
+    return build_catalog_content(row)
 
 
 def load_catalog():
