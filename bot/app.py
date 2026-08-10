@@ -1413,17 +1413,30 @@ async def tiendanube_connect():
 
     client_id = os.getenv("TIENDANUBE_CLIENT_ID", "").strip()
     client_secret = os.getenv("TIENDANUBE_CLIENT_SECRET", "").strip()
+    # The generic Tiendanube authorization URL can reuse the Partner demo-store
+    # session. Start from the real store's admin domain instead, so the owner
+    # authorizes the intended store while the state cookie still protects the
+    # callback.
+    store_domain = os.getenv(
+        "TIENDANUBE_STORE_DOMAIN", "beautyhouse5.mitiendanube.com"
+    ).strip().lower()
     if not client_id or not client_secret:
         return _oauth_page(
             "Conexión no configurada",
             "<p>Faltan las credenciales de la app de Tiendanube en Railway.</p>",
             503,
         )
+    if not re.fullmatch(r"[a-z0-9-]+\.mitiendanube\.com", store_domain):
+        return _oauth_page(
+            "Dominio de tienda inválido",
+            "<p>Revisá <code>TIENDANUBE_STORE_DOMAIN</code> en Railway.</p>",
+            503,
+        )
 
     state = secrets.token_urlsafe(32)
     response = RedirectResponse(
-        "https://www.tiendanube.com/apps/{}/authorize?state={}".format(
-            client_id, state
+        "https://{}/admin/apps/{}/authorize?state={}".format(
+            store_domain, client_id, state
         ),
         status_code=302,
     )

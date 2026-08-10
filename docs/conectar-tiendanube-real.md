@@ -6,6 +6,7 @@ cifrado en Supabase. Esto evita copiar tokens temporales o usar la tienda demo.
 ## Requisitos en Railway
 
 - `TIENDANUBE_STORE_ID=2060155` (Beauty House).
+- `TIENDANUBE_STORE_DOMAIN=beautyhouse5.mitiendanube.com`.
 - `TIENDANUBE_CLIENT_ID` y `TIENDANUBE_CLIENT_SECRET` de la app de Partners.
 - `SUPABASE_DB_URL`.
 - `TIENDANUBE_CHECKOUT_MODE=production` solo cuando se quiera crear links
@@ -27,6 +28,10 @@ primero el token OAuth cifrado cuando existe.
 Fred rechaza la conexión si el identificador recibido no coincide con
 `TIENDANUBE_STORE_ID`; así una autorización de la tienda demo no puede
 reemplazar las credenciales de producción.
+
+El inicio de conexión abre el administrador de la tienda indicada en
+`TIENDANUBE_STORE_DOMAIN`, no el selector genérico de Partners. Esto evita que
+una sesión de la tienda demo vuelva a autorizar el token equivocado.
 
 ## Qué se guarda
 
