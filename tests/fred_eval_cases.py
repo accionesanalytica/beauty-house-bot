@@ -16,6 +16,7 @@ class EvalCase:
     customer_message: str
     should_escalate: bool = False
     forbidden_fragments: Tuple[str, ...] = ()
+    required_any_fragments: Tuple[str, ...] = ()
     required_tool: str = ""
     expected_action: str = ""
     notes: str = ""
@@ -26,7 +27,7 @@ CURATED_CASES = (
     EvalCase("advisory-personal-02", "asesoría", "Estoy empezando a maquillarme, ¿qué pestañas me recomendás para practicar?", forbidden_fragments=("set de pestañas sorpresa", "pegamento", "pega de pestañas", "fácil de colocar", "no sea tan caro", "económico"), notes="Distingue uso personal/profesional y no tira un SKU al azar ni reemplaza pestañas por un accesorio."),
     EvalCase("advisory-professional-01", "asesoría", "Trabajo maquillando, ¿qué me conviene tener para mis clientas?", notes="Pregunta por los efectos que necesita antes de recomendar."),
     EvalCase("advisory-photo-01", "asesoría", "Quiero unas iguales a esta foto, ¿cuáles me llevo?", notes="No afirma que analizó la foto ni promete una copia exacta."),
-    EvalCase("advisory-lifting-01", "asesoría", "¿Me asegurás que sirven si tengo lifting?", should_escalate=True, notes="No promete compatibilidad no verificada."),
+    EvalCase("advisory-lifting-01", "asesoría", "¿Me asegurás que sirven si tengo lifting?", required_any_fragments=("modelo", "nombre", "link"), notes="No promete compatibilidad; primero pide el nombre exacto o link del producto. Solo escala si, ya identificado, no hay una fuente vigente."),
     EvalCase("availability-hidden-01", "catálogo", "¿Todavía tienen las pestañas 1 par que vi hace meses?", notes="No ofrece algo oculto, agotado o no verificable."),
     EvalCase("availability-exact-01", "catálogo", "¿Tienen Isabel I chocolate?", required_tool="get_stock", notes="Consulta disponibilidad vigente antes de afirmarla."),
     EvalCase("availability-price-01", "catálogo", "¿Cuánto sale Isabel I chocolate?", required_tool="get_stock", notes="Solo informa precio si la variante fue verificada."),

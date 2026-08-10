@@ -25,6 +25,13 @@ def assess_case(case: Any, result: Dict[str, Any]) -> Dict[str, Any]:
         if forbidden.lower() in reply_lower:
             findings.append({"severity": "critical", "message": "Incluyó texto prohibido: {}".format(forbidden)})
 
+    required_any = getattr(case, "required_any_fragments", ())
+    if required_any and not any(fragment.lower() in reply_lower for fragment in required_any):
+        findings.append({
+            "severity": "major",
+            "message": "No pidió la precisión esperada: {}.".format(" / ".join(required_any)),
+        })
+
     if "http" in reply_lower and "get_product_availability" not in tool_names:
         findings.append({"severity": "critical", "message": "Incluyó link sin URL de producto verificada."})
 

@@ -45,3 +45,17 @@ class CuratedEvalSuiteTests(unittest.TestCase):
             "tool_calls": [{"name": "request_isa_handoff"}],
         })
         self.assertEqual(assessment["score"], 100)
+
+    def test_lifting_without_product_must_request_a_model_or_link(self):
+        case = next(case for case in CURATED_CASES if case.case_id == "advisory-lifting-01")
+        assessment = assess_case(case, {
+            "reply": "Para confirmarlo bien, pasame el nombre del modelo o el link del producto 😊",
+            "decision": {"action": "reply"},
+        })
+        self.assertEqual(assessment["score"], 100)
+
+        missing = assess_case(case, {
+            "reply": "No te lo puedo asegurar todavía.",
+            "decision": {"action": "reply"},
+        })
+        self.assertEqual(missing["score"], 80)
