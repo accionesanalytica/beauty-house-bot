@@ -37,6 +37,32 @@ def _ensure_storage(cursor) -> None:
     )
     cursor.execute(
         """
+        CREATE TABLE IF NOT EXISTS fred_turn_observations (
+            id BIGSERIAL PRIMARY KEY,
+            source_message_id TEXT UNIQUE,
+            conversation_id BIGINT NOT NULL,
+            action TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            tool_names JSONB NOT NULL DEFAULT '[]'::jsonb,
+            catalog_context_used BOOLEAN NOT NULL DEFAULT false,
+            knowledge_context_used BOOLEAN NOT NULL DEFAULT false,
+            model_calls INTEGER NOT NULL DEFAULT 0,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS fred_turn_observations_created_idx
+        ON fred_turn_observations (created_at DESC)
+        """
+    )
+    cursor.execute(
+        """
         CREATE INDEX IF NOT EXISTS tiendanube_webhook_events_received_idx
         ON tiendanube_webhook_events (received_at DESC)
         """
@@ -327,6 +353,102 @@ def daily_quality_snapshot() -> Dict[str, int]:
         "human_handoffs_today": int(row[2]),
         "special_sales_today": int(row[3]),
         "pending_purchase_reviews": int(row[4]),
+    }
+
+
+def record_agent_turn(
+    *,
+    source_message_id: str,
+    conversation_id: int,
+    action: str,
+    reason: str,
+    outcome: str,
+    tool_names: List[str],
+    catalog_context_used: bool,
+    knowledge_context_used: bool,
+    model_calls: int,
+    prompt_tokens: int,
+    completion_tokens: int,
+    duration_ms: int,
+) -> bool:
+    """Persist safe turn telemetry once, without customer text or secrets."""
+    allowed_actions = {
+        "reply", "clarify_product", "start_sales_intake", "handoff_to_isa", "service_fallback",
+    }
+    allowed_outcomes = {"replied", "queued_for_isa", "send_failed", "service_fallback"}
+    if action not in allowed_actions or outcome not in allowed_outcomes:
+        raise ValueError("Observación de turno inválida")
+
+    def positive_int(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    safe_tool_names = [str(name)[:80] for name in tool_names if str(name)[:80]]
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            _ensure_storage(cursor)
+            cursor.execute(
+                """
+                INSERT INTO fred_turn_observations (
+                    source_message_id, conversation_id, action, reason, outcome,
+                    tool_names, catalog_context_used, knowledge_context_used,
+                    model_calls, prompt_tokens, completion_tokens, duration_ms
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (source_message_id) DO NOTHING
+                """,
+                (
+                    (source_message_id or None), int(conversation_id), action, str(reason)[:80], outcome,
+                    Json(safe_tool_names), bool(catalog_context_used), bool(knowledge_context_used),
+                    positive_int(model_calls), positive_int(prompt_tokens),
+                    positive_int(completion_tokens), positive_int(duration_ms),
+                ),
+            )
+            inserted = cursor.rowcount == 1
+        connection.commit()
+        return inserted
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def agent_observability_snapshot() -> Dict[str, Any]:
+    """Read-only operational telemetry for a future owner dashboard."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            _ensure_storage(cursor)
+            cursor.execute(
+                """
+                SELECT count(*), COALESCE(round(avg(duration_ms)), 0),
+                       COALESCE(round(avg(prompt_tokens + completion_tokens)), 0),
+                       count(*) FILTER (WHERE outcome = 'service_fallback')
+                FROM fred_turn_observations
+                WHERE created_at >= now() - interval '24 hours'
+                """
+            )
+            totals = cursor.fetchone()
+            cursor.execute(
+                """
+                SELECT action, count(*)
+                FROM fred_turn_observations
+                WHERE created_at >= now() - interval '24 hours'
+                GROUP BY action ORDER BY action
+                """
+            )
+            actions = {row[0]: int(row[1]) for row in cursor.fetchall()}
+    finally:
+        connection.close()
+    return {
+        "turns": int(totals[0]),
+        "average_duration_ms": int(totals[1]),
+        "average_tokens": int(totals[2]),
+        "service_fallbacks": int(totals[3]),
+        "actions": actions,
     }
 
 

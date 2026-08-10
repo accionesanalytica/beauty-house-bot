@@ -75,13 +75,14 @@ class WebhookHarnessTests(unittest.TestCase):
         send_message.assert_called_once_with(self.PHONE, "¡Hola! 😊 ¿En qué te puedo ayudar?")
         record_message.assert_called_once_with(7, "¡Hola! 😊 ¿En qué te puedo ayudar?")
 
+    @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_bot_message")
     @patch.object(app, "send_whatsapp_text", return_value=True)
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
     @patch.object(app, "load_history", return_value=[{"role": "user", "content": "Busco algo natural"}])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
     def test_standard_turn_builds_context_then_delivers_agent_reply(
-        self, history, inbound, send_message, record_message
+        self, history, inbound, send_message, record_message, record_turn
     ):
         agent_result = {
             "reply": "Encontré una opción que puede servirte 😊",
@@ -100,6 +101,31 @@ class WebhookHarnessTests(unittest.TestCase):
         self.assertTrue(ask_model.call_args.kwargs["greeting_required"])
         send_message.assert_called_once_with(self.PHONE, agent_result["reply"])
         record_message.assert_called_once_with(7, agent_result["reply"])
+        record_turn.assert_called_once()
+        observation = record_turn.call_args.kwargs
+        self.assertEqual(observation["source_message_id"], "wamid-standard")
+        self.assertEqual(observation["conversation_id"], 7)
+        self.assertEqual(observation["action"], "reply")
+        self.assertEqual(observation["outcome"], "replied")
+        self.assertTrue(observation["catalog_context_used"])
+        self.assertFalse(observation["knowledge_context_used"])
+        self.assertGreaterEqual(observation["duration_ms"], 0)
+
+    @patch.object(app, "record_agent_turn", side_effect=RuntimeError("database unavailable"))
+    def test_observability_failure_is_non_blocking(self, record_turn):
+        app._record_agent_turn_safely(
+            wa_message_id="wamid-observation-failure",
+            conversation_id=7,
+            result={"tool_calls": [], "usage": {}},
+            action="reply",
+            reason="normal_response",
+            outcome="replied",
+            catalog_context_used=False,
+            knowledge_context_used=False,
+            duration_ms=10,
+        )
+
+        record_turn.assert_called_once()
 
     @patch.object(app, "record_bot_message")
     @patch.object(app, "send_whatsapp_text", return_value=True)
@@ -122,11 +148,12 @@ class WebhookHarnessTests(unittest.TestCase):
         record_message.assert_called_once()
 
     @patch.object(app, "_send_service_fallback")
+    @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
     @patch.object(app, "load_history", return_value=[])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
     def test_agent_error_uses_safe_service_fallback(
-        self, history, inbound, fallback
+        self, history, inbound, record_turn, fallback
     ):
         with patch.object(app, "search_similar_products", return_value="") as retrieve, patch.object(
             app, "answer", side_effect=RuntimeError("provider unavailable")
@@ -137,6 +164,7 @@ class WebhookHarnessTests(unittest.TestCase):
         retrieve.assert_called_once()
         fallback.assert_called_once()
         self.assertEqual(fallback.call_args.args[0:3], (self.PHONE, 7, "¿Tenés Isabel I?"))
+        self.assertEqual(record_turn.call_args.kwargs["action"], "service_fallback")
 
     @patch.object(app, "send_whatsapp_text")
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", True))

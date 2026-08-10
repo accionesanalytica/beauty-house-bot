@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import sys
+import time
 import unicodedata
 from urllib.parse import parse_qs
 from datetime import datetime, timedelta
@@ -62,6 +63,7 @@ from operations_store import (
     finish_daily_operations_report,
     finish_tiendanube_event,
     fred_checkout_for_order,
+    record_agent_turn,
 )
 from conversation_store import (
     add_isa_sale_session_details,
@@ -1073,6 +1075,41 @@ def _recent_candidate_quantity(prior_history: list, sale_candidate: dict) -> int
             if quantity:
                 return quantity
     return 0
+
+
+def _record_agent_turn_safely(
+    *,
+    wa_message_id: str,
+    conversation_id: int,
+    result: dict,
+    action: str,
+    reason: str,
+    outcome: str,
+    catalog_context_used: bool,
+    knowledge_context_used: bool,
+    duration_ms: int,
+) -> None:
+    """Telemetry must never block an answer or expose a storage error."""
+    usage = result.get("usage") or {}
+    try:
+        record_agent_turn(
+            source_message_id=wa_message_id or "",
+            conversation_id=conversation_id,
+            action=action,
+            reason=reason or "unknown",
+            outcome=outcome,
+            tool_names=[
+                call.get("name", "") for call in result.get("tool_calls", [])
+            ],
+            catalog_context_used=catalog_context_used,
+            knowledge_context_used=knowledge_context_used,
+            model_calls=result.get("model_calls", 0),
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            duration_ms=duration_ms,
+        )
+    except Exception as error:  # noqa: BLE001
+        print("ERROR guardando observabilidad (tipo: {})".format(type(error).__name__))
 
 
 def _verified_purchase_candidate_from_tool_calls(message_text: str, result: dict) -> dict:
@@ -2696,6 +2733,12 @@ async def webhook_post(request: Request):
                 record_bot_message(conversation_id, customer_reply)
             return JSONResponse(content={"ok": True})
 
+        # Observability starts here, after deterministic shortcuts and before
+        # retrieval/model work. It intentionally measures only agent turns.
+        agent_turn_started = time.monotonic()
+        catalog_context = ""
+        knowledge_context = ""
+        result = {}
         try:
             # With Knowledge RAG off, preserve the established catalog path.
             # When it is enabled, both retrievers share one embedding rather
@@ -2848,14 +2891,47 @@ async def webhook_post(request: Request):
                         conversation_context=prior_history,
                     )
 
-            if send_whatsapp_text(customer_phone, reply):
+            delivered = send_whatsapp_text(customer_phone, reply)
+            if delivered:
                 record_bot_message(conversation_id, reply)
                 print("[Conversacion] Respuesta del agente guardada.")
+
+            effective_action = (
+                "handoff_to_isa" if handoff
+                else "start_sales_intake" if sale_candidate
+                else decision.get("action", "reply")
+            )
+            effective_reason = (
+                handoff.get("reason") if handoff
+                else decision.get("reason", "normal_response")
+            )
+            _record_agent_turn_safely(
+                wa_message_id=wa_message_id,
+                conversation_id=conversation_id,
+                result=result,
+                action=effective_action,
+                reason=effective_reason,
+                outcome="replied" if delivered else "send_failed",
+                catalog_context_used=bool(catalog_context),
+                knowledge_context_used=bool(knowledge_context),
+                duration_ms=round((time.monotonic() - agent_turn_started) * 1000),
+            )
         except Exception as error:  # noqa: BLE001
             print(f"ERROR respondiendo con agente (tipo: {type(error).__name__})")
             _send_service_fallback(
                 customer_phone, conversation_id, message_text, prior_history,
                 "Fred no pudo completar una respuesta verificada.",
+            )
+            _record_agent_turn_safely(
+                wa_message_id=wa_message_id,
+                conversation_id=conversation_id,
+                result=result,
+                action="service_fallback",
+                reason="agent_error",
+                outcome="service_fallback",
+                catalog_context_used=bool(catalog_context),
+                knowledge_context_used=bool(knowledge_context),
+                duration_ms=round((time.monotonic() - agent_turn_started) * 1000),
             )
 
         return JSONResponse(content={"ok": True})
