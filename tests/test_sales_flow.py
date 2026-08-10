@@ -42,6 +42,22 @@ class SalesFlowTests(unittest.TestCase):
             ("Luis Vera", "luis@example.com"),
         )
 
+    def test_labeled_customer_details_exclude_intro_words(self):
+        self.assertEqual(
+            app._extract_customer_details(
+                "genial te dejo los datos:\nEntrega: envío\nNombre y apellido: Luis Vera\nEmail: luis@example.com"
+            ),
+            ("Luis Vera", "luis@example.com"),
+        )
+
+    def test_unlabeled_intro_words_do_not_become_customer_name(self):
+        self.assertEqual(
+            app._extract_customer_details(
+                "genial te dejo los datos: envio, Luis Vera, luis@example.com"
+            ),
+            ("Luis Vera", "luis@example.com"),
+        )
+
     @patch.object(app, "send_whatsapp_text", return_value=True)
     @patch.object(app, "record_bot_message")
     @patch.object(app, "_queue_for_isa")

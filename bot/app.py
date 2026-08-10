@@ -646,6 +646,21 @@ def _extract_customer_details(text: str) -> tuple:
         return ()
 
     name_text = text[:email_match.start()]
+    # Prefer an explicit WhatsApp form label. It keeps a friendly message such
+    # as "te dejo los datos" from becoming part of the customer's name.
+    labeled_name = re.search(
+        r"(?im)^\s*(?:nombre(?:\s+y\s+apellido)?|nombre completo)\s*:\s*([^\r\n,;|]+)",
+        name_text,
+    )
+    if labeled_name:
+        name_text = labeled_name.group(1)
+    else:
+        name_text = re.sub(
+            r"(?i)^\s*(?:genial\s*[,:;-]*\s*)?(?:te\s+)?(?:dejo|paso|mando)?\s*"
+            r"(?:los\s+)?(?:mis\s+)?datos\s*[:,-]*\s*",
+            "",
+            name_text,
+        )
     name_text = re.sub(r"(?i)\b(nombre|soy|mi mail|email|correo|es)\b\s*:? *", "", name_text)
     # Cuando la clienta responde el formato compacto ("envío, Ana Pérez,
     # ana@email.com"), logística no forma parte de su nombre.
@@ -655,6 +670,18 @@ def _extract_customer_details(text: str) -> tuple:
     if len(name_words) < 2:
         return ()
     return " ".join(name_words[:5]), email_match.group(0).lower()
+
+
+def _customer_details_prompt(include_quantity: bool = False) -> str:
+    """Request checkout data in a small, copyable WhatsApp form."""
+    quantity_line = "Cantidad: \n" if include_quantity else ""
+    return (
+        "¡Buenísimo! Para dejarlo listo, copiá y completá estas líneas:\n"
+        "{}"
+        "Entrega: envío o retiro\n"
+        "Nombre y apellido: \n"
+        "Email: "
+    ).format(quantity_line)
 
 
 def _sales_fulfillment(text: str) -> str:
@@ -794,16 +821,8 @@ def _start_sales_intake(
             quantity=quantity or None,
         )
         if quantity:
-            return (
-                "¡Buenísimo! Para avanzar de una, pasame en un solo mensaje: "
-                "si preferís envío o retiro, tu nombre y apellido, y tu email.\n"
-                "Ejemplo: envío, Ana Pérez, ana@email.com"
-            )
-        return (
-            "¡Buenísimo! Para avanzar de una, pasame en un solo mensaje: "
-            "cantidad, si preferís envío o retiro, tu nombre y apellido, y tu email.\n"
-            "Ejemplo: 2 unidades, envío, Ana Pérez, ana@email.com"
-        )
+            return _customer_details_prompt()
+        return _customer_details_prompt(include_quantity=True)
 
     start_sales_intake(conversation_id)
     return (
@@ -831,8 +850,8 @@ def _handle_sales_intake(
         quantity = _extract_quantity(message_text)
         if not quantity:
             reply = (
-                "Para confirmarlo bien me falta la cantidad. Si querés, pasame "
-                "todo junto: cantidad, envío o retiro, nombre y apellido, y email."
+                "Para confirmarlo bien me falta la cantidad. "
+                + _customer_details_prompt(include_quantity=True)
             )
         else:
             set_sales_intake_quantity(conversation_id, quantity)
@@ -848,9 +867,9 @@ def _handle_sales_intake(
                 else:
                     reply = "Me falta confirmar si preferís envío o retiro."
             elif fulfillment:
-                reply = "Perfecto. Me falta tu nombre y apellido junto con tu email."
+                reply = "Perfecto. " + _customer_details_prompt()
             else:
-                reply = "Me falta confirmar si preferís envío o retiro, más tu nombre y apellido con email."
+                reply = "Me falta confirmar la entrega. " + _customer_details_prompt()
     elif intake["status"] == "fulfillment":
         fulfillment = _sales_fulfillment(message_text)
         if not fulfillment:
@@ -863,11 +882,11 @@ def _handle_sales_intake(
                 set_sales_intake_customer(conversation_id, customer_name, customer_email)
                 reply = _sales_summary(get_active_sales_intake(conversation_id))
             else:
-                reply = "Perfecto. Me falta tu nombre y apellido junto con tu email."
+                reply = "Perfecto. " + _customer_details_prompt()
     elif intake["status"] == "customer":
         customer_details = _extract_customer_details(message_text)
         if not customer_details:
-            reply = "Necesito nombre y apellido + un email válido. Ejemplo: Ana Pérez, ana@email.com"
+            reply = "Necesito nombre y apellido + un email válido.\n" + _customer_details_prompt()
         else:
             customer_name, customer_email = customer_details
             set_sales_intake_customer(conversation_id, customer_name, customer_email)
