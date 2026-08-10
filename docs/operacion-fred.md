@@ -21,6 +21,24 @@ Se protege con autenticación de usuario y contraseña. Configurar en Railway:
 
 El panel permite ver conversaciones, estados, pendientes, checkouts aprobados y pagos confirmados en las últimas 24 horas. No reemplaza Tiendanube para gestión de pedidos.
 
+También incluye **Auditar catálogo**. Es una lectura manual que marca SKU
+duplicados, productos publicados sin SKU, stock no controlado y productos
+ocultos con stock. No corrige ni modifica Tiendanube: Isa decide cada ajuste.
+
+## Apertura controlada
+
+Por defecto Fred opera normalmente. Para abrirlo a una muestra chica o frenarlo
+sin cambiar código, Railway admite:
+
+- `FRED_CUSTOMER_MODE=open` — atención normal (valor por defecto).
+- `FRED_CUSTOMER_MODE=allowlist` y `FRED_BETA_ALLOWED_PHONES=54911...,54911...`
+  — solo esos teléfonos llegan al agente; el resto recibe un aviso neutro.
+- `FRED_CUSTOMER_MODE=paused` — nadie llega al agente; Fred responde que está
+  haciendo un ajuste breve. Es el freno de emergencia para revisar un problema.
+
+Un cambio de variable provoca deploy en Railway. Estas variables no crean
+órdenes, no cambian stock y no consumen IA para los teléfonos bloqueados.
+
 ## Pago confirmado por Tiendanube
 
 Fred puede recibir el evento `order/paid` de Tiendanube. Cada evento se valida con la firma de la app y se guarda una sola vez aunque Tiendanube lo reintente.

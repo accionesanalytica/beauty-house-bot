@@ -281,6 +281,76 @@ def get_order_status(order_number: str) -> Dict[str, Any]:
     }
 
 
+def catalog_health_audit(max_pages: int = 30) -> Dict[str, Any]:
+    """Read the catalog and flag operational risks without changing it.
+
+    This is deliberately a diagnostic, not a stock reconciliation. A zero
+    stock product can be intentional; the audit only helps the owner decide
+    what deserves review before exposing it to sales automation.
+    """
+    if max_pages < 1:
+        raise ValueError("max_pages debe ser positivo")
+
+    totals = {
+        "products_scanned": 0,
+        "variants_scanned": 0,
+        "published_without_sku": 0,
+        "published_untracked_stock": 0,
+        "hidden_with_positive_stock": 0,
+        "published_out_of_stock": 0,
+        "duplicate_skus": 0,
+    }
+    samples = {
+        "published_without_sku": [],
+        "published_untracked_stock": [],
+        "hidden_with_positive_stock": [],
+        "duplicate_skus": [],
+    }
+    seen_skus: Dict[str, List[str]] = {}
+
+    for page in range(1, max_pages + 1):
+        products = _get("/products", {"page": page, "per_page": 50})
+        if not products:
+            break
+        for product in products:
+            totals["products_scanned"] += 1
+            product_name = _localized(product.get("name")) or "Producto sin nombre"
+            published = bool(product.get("published", False))
+            for variant in product.get("variants", []):
+                totals["variants_scanned"] += 1
+                sku = (variant.get("sku") or "").strip()
+                stock = variant.get("stock")
+                label = "{} · {}".format(product_name, _describe_variant(variant) or "variante única")
+
+                if published and not sku:
+                    totals["published_without_sku"] += 1
+                    if len(samples["published_without_sku"]) < 5:
+                        samples["published_without_sku"].append(label)
+                if published and stock is None:
+                    totals["published_untracked_stock"] += 1
+                    if len(samples["published_untracked_stock"]) < 5:
+                        samples["published_untracked_stock"].append(label)
+                if not published and isinstance(stock, (int, float)) and stock > 0:
+                    totals["hidden_with_positive_stock"] += 1
+                    if len(samples["hidden_with_positive_stock"]) < 5:
+                        samples["hidden_with_positive_stock"].append(label)
+                if published and isinstance(stock, (int, float)) and stock == 0:
+                    totals["published_out_of_stock"] += 1
+                if sku:
+                    seen_skus.setdefault(sku.upper(), []).append(label)
+        if len(products) < 50:
+            break
+
+    duplicate_groups = [
+        (sku, labels) for sku, labels in seen_skus.items() if len(labels) > 1
+    ]
+    totals["duplicate_skus"] = len(duplicate_groups)
+    for sku, labels in duplicate_groups[:5]:
+        samples["duplicate_skus"].append("{}: {}".format(sku, " | ".join(labels[:3])))
+
+    return {"totals": totals, "samples": samples}
+
+
 # --------------------------------------------------------------------------
 # Schemas for the LLM (OpenAI-compatible, works with DeepSeek)
 # --------------------------------------------------------------------------

@@ -36,7 +36,7 @@ from google.genai import types
 from agent import answer
 from tiendanube_checkout import CheckoutError, checkout_enabled, create_approved_checkout
 from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
-from tiendanube_tools import get_stock
+from tiendanube_tools import catalog_health_audit, get_stock
 from tiendanube_credentials import (
     TiendanubeCredentialError,
     save_tiendanube_credential,
@@ -109,6 +109,15 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 # Seguridad: hasta completar las pruebas, el webhook conserva la plantilla
 # actual. El modo agent se habilitará explícitamente en una etapa posterior.
 BOT_RESPONSE_MODE = os.getenv("BOT_RESPONSE_MODE", "template").lower()
+# Opening Fred can be gradual without editing code. "open" preserves normal
+# production behavior; "allowlist" answers only listed test phones; "paused"
+# gives a neutral maintenance reply and never calls the agent.
+FRED_CUSTOMER_MODE = os.getenv("FRED_CUSTOMER_MODE", "open").strip().lower()
+FRED_BETA_ALLOWED_PHONES = {
+    re.sub(r"\D", "", phone)
+    for phone in os.getenv("FRED_BETA_ALLOWED_PHONES", "").split(",")
+    if re.sub(r"\D", "", phone)
+}
 ISA_WHATSAPP_NUMBER = os.getenv("ISA_WHATSAPP_NUMBER", "")
 SALES_INTAKE_ENABLED = os.getenv("SALES_INTAKE_ENABLED", "false").lower() == "true"
 # Segunda llave explícita: incluso si existen credenciales demo, una aprobación
@@ -911,6 +920,56 @@ def _simple_customer_reply(text: str) -> str:
     if re.fullmatch(r"(?:gracias|muchas gracias|genial gracias|perfecto gracias|ok gracias)", normalized):
         return "¡De nada! 😊 Si te surge otra duda, escribime por acá."
     return ""
+
+
+def _customer_access_reply(customer_phone: str) -> str:
+    """Return a no-AI reply when Fred is deliberately limited or paused."""
+    normalized_phone = re.sub(r"\D", "", customer_phone)
+    if FRED_CUSTOMER_MODE == "paused":
+        return "Estamos haciendo un ajuste breve en la atención por acá. Probá de nuevo en unos minutos 😊"
+    if FRED_CUSTOMER_MODE == "allowlist" and normalized_phone not in FRED_BETA_ALLOWED_PHONES:
+        return "Estamos terminando de habilitar la atención por este número. En breve te respondemos por acá 😊"
+    return ""
+
+
+def _send_service_fallback(
+    customer_phone: str,
+    conversation_id: int,
+    message_text: str,
+    prior_history: list,
+    summary: str,
+) -> None:
+    """Fail safely: do not invent a commercial answer when a dependency fails."""
+    queued = False
+    if conversation_id:
+        try:
+            _queue_for_isa(
+                conversation_id,
+                customer_phone,
+                "bot_fallback",
+                summary,
+                message_text,
+                conversation_context=prior_history,
+            )
+            queued = True
+        except Exception as error:  # noqa: BLE001
+            print("ERROR guardando fallback para Isa (tipo: {}).".format(type(error).__name__))
+
+    if queued:
+        reply = (
+            "Uy, ahora no puedo consultar esto bien y prefiero no darte un dato incorrecto. "
+            "Ya se lo dejé a Isa para que te responda por este mismo chat 😊"
+        )
+    else:
+        reply = (
+            "Uy, ahora no puedo consultar esto bien y prefiero no darte un dato incorrecto. "
+            "Probá de nuevo en unos minutos, porfa 😊"
+        )
+    if send_whatsapp_text(customer_phone, reply) and conversation_id:
+        try:
+            record_bot_message(conversation_id, reply)
+        except Exception as error:  # noqa: BLE001
+            print("ERROR guardando respuesta de contingencia (tipo: {}).".format(type(error).__name__))
 
 
 def _sales_summary(intake: dict) -> str:
@@ -1994,12 +2053,18 @@ async def operations_dashboard(request: Request, username: str = Depends(_requir
         "activo" if TIENDANUBE_WEBHOOKS_ENABLED else "apagado (primero agregá TIENDANUBE_WEBHOOKS_ENABLED=true en Railway)",
         _dashboard_csrf_token(username, "connect-payments"),
     )
+    catalog_audit_box = (
+        '<h2>Salud del catálogo</h2><p class="muted">Revisa riesgos de venta sin cambiar Tiendanube.</p>'
+        '<form method="post" action="/admin/tiendanube/catalog-audit">'
+        '<input type="hidden" name="csrf" value="{}">'
+        '<button type="submit">Auditar catálogo</button></form>'
+    ).format(_dashboard_csrf_token(username, "catalog-audit"))
     return _dashboard_page(
         "Fred | Operación",
         "<h1>Operación de Fred</h1><p class=\"muted\">Datos reales de las últimas 24 horas. Solo para Isa/equipo autorizado.</p>"
         '<div class="cards">{}</div><p><strong>Cola pendiente:</strong> {}</p>{}'
         "{}<h2>Conversaciones recientes</h2><table><thead><tr><th>Cliente</th><th>Estado</th><th>Último mensaje</th><th>Vista previa</th><th></th></tr></thead><tbody>{}</tbody></table>".format(
-            cards, pending_text, connection_box, webhook_box, rows
+            cards, pending_text, connection_box, webhook_box + catalog_audit_box, rows
         ),
     )
 
@@ -2020,6 +2085,56 @@ async def connect_tiendanube_payments(request: Request, username: str = Depends(
         print("ERROR registrando webhook Tiendanube (tipo: {}).".format(type(error).__name__))
         outcome = "error"
     return RedirectResponse("/admin?connection=" + outcome, status_code=303)
+
+
+@app.post("/admin/tiendanube/catalog-audit", response_class=HTMLResponse)
+async def audit_tiendanube_catalog(request: Request, username: str = Depends(_require_dashboard)):
+    """Run an owner-triggered, read-only catalog health report."""
+    body = (await request.body()).decode("utf-8", errors="replace")
+    csrf = parse_qs(body).get("csrf", [""])[0]
+    expected = _dashboard_csrf_token(username, "catalog-audit")
+    if not secrets.compare_digest(csrf, expected):
+        raise HTTPException(status_code=403, detail="Acción privada no verificada")
+    try:
+        audit = catalog_health_audit()
+    except Exception as error:  # noqa: BLE001
+        print("ERROR auditando catálogo (tipo: {}).".format(type(error).__name__))
+        return _dashboard_page(
+            "Fred | Auditoría de catálogo",
+            '<p><a href="/admin">← Volver al panel</a></p><h1>No pude leer el catálogo</h1>'
+            '<p>La auditoría no modificó nada. Revisá la conexión de Tiendanube e intentá de nuevo.</p>',
+        )
+
+    labels = {
+        "products_scanned": "Productos revisados",
+        "variants_scanned": "Variantes revisadas",
+        "published_without_sku": "Publicadas sin SKU",
+        "published_untracked_stock": "Publicadas sin stock controlado",
+        "hidden_with_positive_stock": "Ocultas con stock positivo",
+        "published_out_of_stock": "Publicadas sin stock",
+        "duplicate_skus": "SKU duplicados",
+    }
+    rows = "".join(
+        "<tr><td>{}</td><td>{}</td></tr>".format(
+            html.escape(label), audit["totals"][key]
+        )
+        for key, label in labels.items()
+    )
+    examples = "".join(
+        "<h3>{}</h3><p>{}</p>".format(
+            html.escape(labels[key]),
+            html.escape(" · ".join(values) or "Sin ejemplos"),
+        )
+        for key, values in audit["samples"].items()
+    )
+    return _dashboard_page(
+        "Fred | Auditoría de catálogo",
+        '<p><a href="/admin">← Volver al panel</a></p><h1>Auditoría de catálogo</h1>'
+        '<p class="muted">Solo lectura: este reporte no modificó productos ni stock.</p>'
+        '<table><thead><tr><th>Señal</th><th>Cantidad</th></tr></thead><tbody>{}</tbody></table>{}'.format(
+            rows, examples
+        ),
+    )
 
 
 @app.get("/admin/conversations/{conversation_id}", response_class=HTMLResponse)
@@ -2411,6 +2526,8 @@ async def webhook_post(request: Request):
         f"{message_text}"
     )
 
+    conversation_id = 0
+    state = "BOT"
     prior_history = []
     history_available = True
     if BOT_RESPONSE_MODE == "agent":
@@ -2446,11 +2563,18 @@ async def webhook_post(request: Request):
     # ========================================================
 
     if BOT_RESPONSE_MODE == "agent":
+        access_reply = _customer_access_reply(customer_phone)
+        if access_reply:
+            if send_whatsapp_text(customer_phone, access_reply) and conversation_id:
+                record_bot_message(conversation_id, access_reply)
+            print("[Operacion] Fred limitado por FRED_CUSTOMER_MODE={}.".format(FRED_CUSTOMER_MODE))
+            return JSONResponse(content={"ok": True})
+
         # A database outage must not turn into a stateless AI conversation.
         if not history_available:
-            send_whatsapp_text(
-                customer_phone,
-                "Perdón, no pude procesar tu consulta ahora. Se la paso a Isa.",
+            _send_service_fallback(
+                customer_phone, conversation_id, message_text, prior_history,
+                "Fred no pudo acceder al historial de conversación.",
             )
             return JSONResponse(content={"ok": True})
 
@@ -2471,19 +2595,10 @@ async def webhook_post(request: Request):
                     return JSONResponse(content={"ok": True})
             except Exception as error:  # noqa: BLE001
                 print(f"ERROR en ficha de venta (tipo: {type(error).__name__})")
-                customer_reply = (
-                    "Perdón, no pude preparar esos datos ahora. Se lo paso a Isa para revisarlo."
-                )
-                _queue_for_isa(
-                    conversation_id,
-                    customer_phone,
-                    "bot_fallback",
+                _send_service_fallback(
+                    customer_phone, conversation_id, message_text, prior_history,
                     "Fred no pudo guardar la ficha de venta.",
-                    message_text,
-                    conversation_context=prior_history,
                 )
-                if send_whatsapp_text(customer_phone, customer_reply):
-                    record_bot_message(conversation_id, customer_reply)
                 return JSONResponse(content={"ok": True})
 
         if _needs_purchase_clarification(message_text, prior_history):
@@ -2649,20 +2764,10 @@ async def webhook_post(request: Request):
                 print("[Conversacion] Respuesta del agente guardada.")
         except Exception as error:  # noqa: BLE001
             print(f"ERROR respondiendo con agente (tipo: {type(error).__name__})")
-            customer_reply = "Perdón, no pude resolverlo ahora. Se la paso a Isa."
-            _queue_for_isa(
-                conversation_id,
-                customer_phone,
-                "bot_fallback",
+            _send_service_fallback(
+                customer_phone, conversation_id, message_text, prior_history,
                 "Fred no pudo completar una respuesta verificada.",
-                message_text,
-                conversation_context=prior_history,
             )
-            if send_whatsapp_text(
-                customer_phone,
-                customer_reply,
-            ):
-                record_bot_message(conversation_id, customer_reply)
 
         return JSONResponse(content={"ok": True})
 

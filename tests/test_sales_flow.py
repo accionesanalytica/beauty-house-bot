@@ -5,6 +5,7 @@ the small decisions that must always behave the same way, independently of
 how a language model phrases an answer.
 """
 
+import asyncio
 import os
 import sys
 import unittest
@@ -157,6 +158,19 @@ class SalesFlowTests(unittest.TestCase):
     @patch.object(app, "send_whatsapp_text", return_value=True)
     @patch.object(app, "record_bot_message")
     @patch.object(app, "_queue_for_isa")
+    def test_service_fallback_is_honest_and_queues_when_storage_works(
+        self, queue_for_isa, record_message, send_message
+    ):
+        app._send_service_fallback(
+            "5491111111111", 7, "consulta", [], "Servicio no disponible"
+        )
+        self.assertIn("prefiero no darte un dato incorrecto", send_message.call_args.args[1])
+        queue_for_isa.assert_called_once()
+        record_message.assert_called_once()
+
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "_queue_for_isa")
     @patch.object(app, "mark_sales_intake_ready")
     def test_confirmo_creates_pending_review_not_a_new_form(
         self, mark_ready, queue_for_isa, record_message, send_message
@@ -297,6 +311,16 @@ class SalesFlowTests(unittest.TestCase):
 
 
 class AgentOutputSafetyTests(unittest.TestCase):
+    @patch.object(app, "FRED_BETA_ALLOWED_PHONES", {"5491111111111"})
+    @patch.object(app, "FRED_CUSTOMER_MODE", "allowlist")
+    def test_allowlist_blocks_unknown_phone_without_ai(self):
+        self.assertEqual(app._customer_access_reply("5491111111111"), "")
+        self.assertIn("terminando de habilitar", app._customer_access_reply("5491222222222"))
+
+    @patch.object(app, "FRED_CUSTOMER_MODE", "paused")
+    def test_paused_mode_never_reaches_agent(self):
+        self.assertIn("ajuste breve", app._customer_access_reply("5491111111111"))
+
     def test_social_messages_do_not_need_an_ai_call(self):
         self.assertEqual(app._simple_customer_reply("hola"), "¡Hola! 😊 ¿En qué te puedo ayudar?")
         self.assertIn("De nada", app._simple_customer_reply("muchas gracias"))
@@ -347,6 +371,33 @@ class AgentOutputSafetyTests(unittest.TestCase):
         results = tiendanube_tools.search_available_products("pestañas naturales")
         self.assertEqual([item["name"] for item in results], ["Isabel I Chocolate"])
 
+    @patch.object(tiendanube_tools, "_get")
+    def test_catalog_audit_is_read_only_and_finds_sellability_risks(self, get_products):
+        get_products.side_effect = [
+            [
+                {
+                    "published": True,
+                    "name": {"es": "Producto publicado"},
+                    "variants": [
+                        {"sku": "", "stock": 3, "values": []},
+                        {"sku": "DUP", "stock": None, "values": []},
+                    ],
+                },
+                {
+                    "published": False,
+                    "name": {"es": "Producto oculto"},
+                    "variants": [{"sku": "DUP", "stock": 2, "values": []}],
+                },
+            ],
+            [],
+        ]
+        audit = tiendanube_tools.catalog_health_audit()
+        self.assertEqual(audit["totals"]["published_without_sku"], 1)
+        self.assertEqual(audit["totals"]["published_untracked_stock"], 1)
+        self.assertEqual(audit["totals"]["hidden_with_positive_stock"], 1)
+        self.assertEqual(audit["totals"]["duplicate_skus"], 1)
+        self.assertTrue(get_products.called)
+
 
 class QualityReviewTests(unittest.TestCase):
     @patch.object(app, "send_whatsapp_text", return_value=True)
@@ -362,6 +413,26 @@ class QualityReviewTests(unittest.TestCase):
         self.assertTrue(app._handle_isa_quality_review_request("calidad"))
         self.assertIn("Casos donde Fred pidió ayuda: 1", send_message.call_args.args[1])
         snapshot.assert_called_once()
+
+
+class DashboardSafetyTests(unittest.TestCase):
+    @patch.object(app, "dashboard_snapshot")
+    def test_dashboard_exposes_read_only_catalog_audit(self, snapshot):
+        snapshot.return_value = {
+            "last_24h": {
+                "active_conversations": 0,
+                "customer_messages": 0,
+                "fred_messages": 0,
+                "pending_actions": 0,
+                "approved_checkouts": 0,
+                "fred_paid_orders": 0,
+            },
+            "pending_by_type": {},
+            "conversations": [],
+        }
+        request = type("Request", (), {"query_params": {}})()
+        response = asyncio.run(app.operations_dashboard(request, username="isa"))
+        self.assertIn("Auditar catálogo", response.body.decode("utf-8"))
 
 
 class IsaInternalSaleFlowTests(unittest.TestCase):
