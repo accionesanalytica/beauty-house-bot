@@ -384,6 +384,44 @@ def _live_candidate_context(catalog_context: str, query: str = "", limit: int = 
     ).format("\n".join(verified))
 
 
+def _grounded_lash_recommendation(live_context: str, query: str) -> str:
+    """Give a reliable first recommendation when live catalog facts are exact.
+
+    This deliberately bypasses the language model only for the narrow, common
+    case where a customer asks for natural chocolate lashes and Tiendanube has
+    already confirmed them. It prevents a generic tool query from contradicting
+    the verified options with a false "no stock" reply.
+    """
+    normalized_query = _normalized_text(query)
+    if not (
+        "pestana" in normalized_query
+        and "chocolate" in normalized_query
+        and any(term in normalized_query for term in ("busco", "natural", "todos los dias"))
+        and "Disponibilidad Tiendanube verificada" in (live_context or "")
+    ):
+        return ""
+
+    candidates = re.findall(
+        r"^-\s*(.*?)\s*\| variantes disponibles:\s*([^|\n]+)",
+        live_context,
+        flags=re.MULTILINE,
+    )
+    if not candidates:
+        return ""
+
+    options = []
+    for product_name, variants in candidates[:2]:
+        friendly_name = re.sub(r"^SHOOW\s+TOOLS\s*-\s*", "", product_name, flags=re.IGNORECASE)
+        friendly_name = friendly_name.strip().title().replace("(Chocolate)", "(chocolate)")
+        options.append("• {} — {}".format(friendly_name, variants.strip()))
+
+    opener = "¡Sí! Para un look natural de todos los días, tengo estas opciones en chocolate con stock confirmado:"
+    return "{}\n\n{}\n\n¿Cuál te gusta más? Si querés, te cuento la diferencia o avanzamos con la compra 😊".format(
+        opener,
+        "\n".join(options),
+    )
+
+
 def search_knowledge_context(query: str, limit: int = 3, query_embedding=None) -> str:
     """Retrieve only reviewed knowledge when the feature is explicitly enabled."""
     if not KNOWLEDGE_RAG_ENABLED:
@@ -3018,16 +3056,30 @@ async def webhook_post(request: Request):
             rag_context = "\n\n".join(
                 context for context in (catalog_context, knowledge_context) if context
             )
-            result = answer(
-                message_text,
-                history=prior_history,
-                rag_context=rag_context,
-                greeting_required=not any(
-                    message.get("role") == "assistant"
-                    for message in prior_history
-                ),
-                verbose=False,
+            grounded_reply = _grounded_lash_recommendation(
+                live_candidate_context, catalog_query
             )
+            if grounded_reply:
+                # The live store already supplied exactly the facts this
+                # recommendation needs. Avoid spending a model call and avoid
+                # letting a generic search contradict those facts.
+                result = {
+                    "reply": grounded_reply,
+                    "tool_calls": [],
+                    "usage": {},
+                    "model_calls": 0,
+                }
+            else:
+                result = answer(
+                    message_text,
+                    history=prior_history,
+                    rag_context=rag_context,
+                    greeting_required=not any(
+                        message.get("role") == "assistant"
+                        for message in prior_history
+                    ),
+                    verbose=False,
+                )
             usage = result.get("usage") or {}
             print(
                 "[IA] llamadas={} prompt_tokens={} completion_tokens={}".format(

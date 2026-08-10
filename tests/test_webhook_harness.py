@@ -236,6 +236,26 @@ class WebhookHarnessTests(unittest.TestCase):
         self.assertNotIn("Pomada", context)
         self.assertIn("tienen stock positivo", context)
 
+    def test_verified_chocolate_lashes_cannot_fall_back_to_no_stock_copy(self):
+        live_context = (
+            "Disponibilidad Tiendanube verificada para candidatas recuperadas: "
+            "estas opciones tienen stock positivo ahora.\n"
+            "- SHOOW TOOLS - ISABEL I (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm\n"
+            "- SHOOW TOOLS - TAYLOR (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm"
+        )
+        reply = app._grounded_lash_recommendation(
+            live_context,
+            "Busco pestañas naturales para todos los días. Si hay chocolate, mejor.",
+        )
+
+        self.assertIn("Isabel I (chocolate)", reply)
+        self.assertIn("Taylor (chocolate)", reply)
+        self.assertNotIn("no tengo nada", reply.lower())
+        self.assertEqual(
+            app._grounded_lash_recommendation(live_context, "Quiero comprar Isabel I chocolate"),
+            "",
+        )
+
     @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_bot_message")
     @patch.object(app, "send_whatsapp_text", return_value=True)
