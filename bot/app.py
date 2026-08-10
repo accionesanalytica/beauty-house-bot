@@ -39,6 +39,7 @@ from catalog_rag import (
     fuse_catalog_candidates,
     lexical_catalog_query,
 )
+from knowledge_rag import approved_knowledge_rows, format_knowledge_context
 from tiendanube_checkout import CheckoutError, checkout_enabled, create_approved_checkout
 from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
 from tiendanube_tools import catalog_health_audit, get_stock
@@ -110,6 +111,7 @@ WHATSAPP_PHONE_ID = os.getenv("PHONE_NUMBER_ID")
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN")
 SUPABASE_DB_URL = os.getenv("SUPABASE_DB_URL")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+KNOWLEDGE_RAG_ENABLED = os.getenv("KNOWLEDGE_RAG_ENABLED", "false").lower() == "true"
 
 # Seguridad: hasta completar las pruebas, el webhook conserva la plantilla
 # actual. El modo agent se habilitará explícitamente en una etapa posterior.
@@ -196,7 +198,7 @@ def embed_text(text: str, task_type: str = "RETRIEVAL_QUERY") -> list:
 # BÚSQUEDA RAG EN SUPABASE
 # ============================================================
 
-def search_similar_products(query: str, limit: int = 3) -> str:
+def search_similar_products(query: str, limit: int = 3, query_embedding=None) -> str:
     """
     Busca identidad de producto con recuperación híbrida en Supabase.
 
@@ -206,10 +208,7 @@ def search_similar_products(query: str, limit: int = 3) -> str:
     """
 
     try:
-        embedding = embed_text(
-            query,
-            task_type="RETRIEVAL_QUERY"
-        )
+        embedding = query_embedding or embed_text(query, task_type="RETRIEVAL_QUERY")
 
         conn = psycopg2.connect(SUPABASE_DB_URL)
         cursor = conn.cursor()
@@ -285,6 +284,40 @@ def _catalog_row_from_tuple(row):
         "variant": variant,
         "similarity": similarity,
     }
+
+
+def search_knowledge_context(query: str, limit: int = 3, query_embedding=None) -> str:
+    """Retrieve only reviewed knowledge when the feature is explicitly enabled."""
+    if not KNOWLEDGE_RAG_ENABLED:
+        return ""
+    try:
+        embedding = query_embedding or embed_text(query, task_type="RETRIEVAL_QUERY")
+        conn = psycopg2.connect(SUPABASE_DB_URL)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT source_id, section, content, status, active,
+                   1 - (embedding <=> %s::vector) AS similarity
+            FROM knowledge_chunks
+            WHERE active = true AND status = 'approved'
+            ORDER BY embedding <=> %s::vector
+            LIMIT %s
+            """,
+            (str(embedding), str(embedding), limit * 3),
+        )
+        rows = [
+            {
+                "source_id": row[0], "section": row[1], "content": row[2],
+                "status": row[3], "active": row[4], "similarity": row[5],
+            }
+            for row in cursor.fetchall()
+        ]
+        cursor.close()
+        conn.close()
+        return format_knowledge_context(approved_knowledge_rows(rows, limit=limit))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR en search_knowledge_context (tipo: {})".format(type(error).__name__))
+        return ""
 
 
 # ============================================================
@@ -2664,7 +2697,34 @@ async def webhook_post(request: Request):
             return JSONResponse(content={"ok": True})
 
         try:
-            rag_context = search_similar_products(message_text)
+            # With Knowledge RAG off, preserve the established catalog path.
+            # When it is enabled, both retrievers share one embedding rather
+            # than paying for two calls. Retrieval is optional: an embedding
+            # outage must not stop a normal agent reply.
+            if not KNOWLEDGE_RAG_ENABLED:
+                catalog_context = search_similar_products(message_text)
+                knowledge_context = ""
+            else:
+                try:
+                    query_embedding = embed_text(
+                        message_text, task_type="RETRIEVAL_QUERY"
+                    )
+                except Exception as error:  # noqa: BLE001
+                    print("ERROR generando embedding (tipo: {})".format(type(error).__name__))
+                    query_embedding = None
+
+                catalog_context = ""
+                knowledge_context = ""
+                if query_embedding is not None:
+                    catalog_context = search_similar_products(
+                        message_text, query_embedding=query_embedding
+                    )
+                    knowledge_context = search_knowledge_context(
+                        message_text, query_embedding=query_embedding
+                    )
+            rag_context = "\n\n".join(
+                context for context in (catalog_context, knowledge_context) if context
+            )
             result = answer(
                 message_text,
                 history=prior_history,
