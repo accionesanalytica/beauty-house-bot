@@ -2983,9 +2983,6 @@ async def webhook_post(request: Request):
             catalog_query = _catalog_retrieval_query(message_text, prior_history)
             if not KNOWLEDGE_RAG_ENABLED:
                 catalog_context = search_similar_products(catalog_query)
-                live_candidate_context = _live_candidate_context(catalog_context, catalog_query)
-                if live_candidate_context:
-                    catalog_context = "{}\n\n{}".format(catalog_context, live_candidate_context)
                 knowledge_context = ""
             else:
                 try:
@@ -3002,9 +2999,6 @@ async def webhook_post(request: Request):
                     catalog_context = search_similar_products(
                         catalog_query, query_embedding=query_embedding
                     )
-                    live_candidate_context = _live_candidate_context(catalog_context, catalog_query)
-                    if live_candidate_context:
-                        catalog_context = "{}\n\n{}".format(catalog_context, live_candidate_context)
                     knowledge_context = search_knowledge_context(
                         message_text,
                         query_embedding=(
@@ -3012,6 +3006,15 @@ async def webhook_post(request: Request):
                             else None
                         ),
                     )
+                else:
+                    # Knowledge is optional. A temporary embedding/provider
+                    # outage must still leave Fred with lexical retrieval and
+                    # live Tiendanube verification for commercial answers.
+                    catalog_context = search_similar_products(catalog_query)
+
+            live_candidate_context = _live_candidate_context(catalog_context, catalog_query)
+            if live_candidate_context:
+                catalog_context = "{}\n\n{}".format(catalog_context, live_candidate_context)
             rag_context = "\n\n".join(
                 context for context in (catalog_context, knowledge_context) if context
             )

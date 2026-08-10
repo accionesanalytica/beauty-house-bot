@@ -236,6 +236,29 @@ class WebhookHarnessTests(unittest.TestCase):
         self.assertNotIn("Pomada", context)
         self.assertIn("tienen stock positivo", context)
 
+    @patch.object(app, "record_agent_turn")
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
+    @patch.object(app, "load_history", return_value=[])
+    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
+    @patch.object(app, "KNOWLEDGE_RAG_ENABLED", True)
+    def test_embedding_outage_falls_back_to_lexical_catalog(
+        self, history, inbound, send_message, record_message, record_turn
+    ):
+        """Knowledge RAG must not turn a catalog answer into an empty answer."""
+        agent_result = {"reply": "Sí, encontré opciones 😊", "tool_calls": [], "usage": {}}
+        with patch.object(app, "embed_text", side_effect=RuntimeError("unavailable")), patch.object(
+            app, "search_similar_products", return_value="Productos encontrados: Isabel I"
+        ) as retrieve, patch.object(
+            app, "_live_candidate_context", return_value="Disponibilidad Tiendanube verificada"
+        ), patch.object(app, "answer", return_value=agent_result):
+            response = self._post("Busco pestañas chocolate", "wamid-embedding-outage")
+
+        self.assertEqual(response.status_code, 200)
+        retrieve.assert_called_once_with("Busco pestañas chocolate")
+        send_message.assert_called_once_with(self.PHONE, agent_result["reply"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
