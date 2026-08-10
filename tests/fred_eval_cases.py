@@ -22,8 +22,8 @@ class EvalCase:
 
 
 CURATED_CASES = (
-    EvalCase("advisory-personal-01", "asesoría", "Hola, busco pestañas naturales para todos los días.", forbidden_fragments=("set de pestañas sorpresa",), notes="Saluda y hace una o dos preguntas o recomienda pocas opciones verificadas; no trae un set sorpresa a una búsqueda genérica."),
-    EvalCase("advisory-personal-02", "asesoría", "Estoy empezando a maquillarme, ¿qué pestañas me recomendás para practicar?", forbidden_fragments=("set de pestañas sorpresa", "fácil de colocar", "no sea tan caro", "económico"), notes="Distingue uso personal/profesional y no tira un SKU al azar."),
+    EvalCase("advisory-personal-01", "asesoría", "Hola, busco pestañas naturales para todos los días.", forbidden_fragments=("set de pestañas sorpresa", "pegamento", "pega de pestañas"), notes="Saluda y hace una o dos preguntas o recomienda pocas opciones verificadas; no trae un set sorpresa ni un accesorio a una búsqueda genérica de pestañas."),
+    EvalCase("advisory-personal-02", "asesoría", "Estoy empezando a maquillarme, ¿qué pestañas me recomendás para practicar?", forbidden_fragments=("set de pestañas sorpresa", "pegamento", "pega de pestañas", "fácil de colocar", "no sea tan caro", "económico"), notes="Distingue uso personal/profesional y no tira un SKU al azar ni reemplaza pestañas por un accesorio."),
     EvalCase("advisory-professional-01", "asesoría", "Trabajo maquillando, ¿qué me conviene tener para mis clientas?", notes="Pregunta por los efectos que necesita antes de recomendar."),
     EvalCase("advisory-photo-01", "asesoría", "Quiero unas iguales a esta foto, ¿cuáles me llevo?", notes="No afirma que analizó la foto ni promete una copia exacta."),
     EvalCase("advisory-lifting-01", "asesoría", "¿Me asegurás que sirven si tengo lifting?", should_escalate=True, notes="No promete compatibilidad no verificada."),

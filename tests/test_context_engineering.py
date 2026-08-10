@@ -23,6 +23,7 @@ class ContextEngineeringTests(unittest.TestCase):
     def test_fixed_prompt_uses_compact_playbook_not_full_policy_document(self):
         self.assertIn("Estilo comercial:", agent.SYSTEM_PROMPT)
         self.assertIn("Límites de información vigente:", agent.SYSTEM_PROMPT)
+        self.assertIn("Respetá la categoría que pidió la clienta", agent.SYSTEM_PROMPT)
         self.assertNotIn(POLICY_CONTEXT.strip(), agent.SYSTEM_PROMPT)
 
     def test_turn_context_is_ordered_and_bounded(self):
