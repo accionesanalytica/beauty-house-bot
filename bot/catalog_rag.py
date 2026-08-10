@@ -24,7 +24,7 @@ _STOP_WORDS = {
     # require a product name to contain "mmm", "nada" and "color" too.
     "mmm", "nada", "algo", "color", "hay", "disponible", "disponibles",
     "busco", "buscar", "necesito", "momento", "general", "todos", "todo",
-    "dia", "dias", "pestanas", "pestana",
+    "dia", "dias",
 }
 
 
@@ -78,9 +78,12 @@ def lexical_catalog_query(query: str, limit: int) -> Tuple[str, Tuple[Any, ...]]
     if not terms:
         return None
 
+    # ``content`` includes the cleaned Tiendanube description. It is crucial
+    # for intent/category queries such as "pestañas naturales"; name/SKU alone
+    # cannot express the intended effect or use case.
     searchable = (
         "LOWER(COALESCE(product_name, '') || ' ' || COALESCE(variant, '') "
-        "|| ' ' || COALESCE(sku, ''))"
+        "|| ' ' || COALESCE(sku, '') || ' ' || COALESCE(content, ''))"
     )
     clauses = ["{} LIKE %s".format(searchable) for _ in terms]
     sql = """

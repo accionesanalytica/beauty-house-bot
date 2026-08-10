@@ -195,6 +195,47 @@ class WebhookHarnessTests(unittest.TestCase):
         self.assertIn("beautyhousemakeup.com/politicas", reply)
         self.assertNotIn("mandar políticas", reply)
 
+    @patch.object(app, "get_product_availability")
+    @patch.object(app, "search_available_products")
+    def test_chocolate_lashes_use_live_filtered_candidates(self, search_available, availability):
+        """A common colour must not make Fred recommend lip or brow products."""
+        search_available.return_value = [
+            {"product_id": 11, "name": "ISABEL I (CHOCOLATE)"},
+            {"product_id": 12, "name": "TAYLOR (CHOCOLATE)"},
+            {"product_id": 13, "name": "Pomada de cejas Chocolate"},
+        ]
+        availability.side_effect = [
+            {
+                "found": True,
+                "product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
+                "description": "Pestañas de banda con acabado natural.",
+                "variants": [{"variant": "8/8/10/12 mm", "status": "in_stock"}],
+            },
+            {
+                "found": True,
+                "product_name": "SHOOW TOOLS - TAYLOR (CHOCOLATE)",
+                "description": "Pestañas de banda suaves para uso diario.",
+                "variants": [{"variant": "8/8/10/12 mm", "status": "in_stock"}],
+            },
+            {
+                "found": True,
+                "product_name": "Pomada de cejas Chocolate",
+                "description": "Producto para cejas.",
+                "variants": [{"variant": "Única", "status": "in_stock"}],
+            },
+        ]
+
+        context = app._live_candidate_context(
+            "Productos recuperados: Pomada de cejas.",
+            "Busco pestañas naturales para todos los días, en chocolate.",
+        )
+
+        search_available.assert_called_once_with("chocolate", limit=10)
+        self.assertIn("ISABEL I", context)
+        self.assertIn("TAYLOR", context)
+        self.assertNotIn("Pomada", context)
+        self.assertIn("tienen stock positivo", context)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

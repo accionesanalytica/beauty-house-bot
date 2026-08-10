@@ -43,7 +43,12 @@ from catalog_rag import (
 from knowledge_rag import approved_knowledge_rows, format_knowledge_context
 from tiendanube_checkout import CheckoutError, checkout_enabled, create_approved_checkout
 from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
-from tiendanube_tools import catalog_health_audit, get_stock
+from tiendanube_tools import (
+    catalog_health_audit,
+    get_product_availability,
+    get_stock,
+    search_available_products,
+)
 from tiendanube_credentials import (
     TiendanubeCredentialError,
     save_tiendanube_credential,
@@ -254,8 +259,16 @@ def search_similar_products(query: str, limit: int = 3, query_embedding=None) ->
         conn.close()
 
         candidates = fuse_catalog_candidates(
-            lexical_rows, semantic_rows, limit=limit
+            lexical_rows, semantic_rows, limit=limit * 2
         )
+        # Wholesale packs are valid only when the customer explicitly asks for
+        # wholesale. A normal retail recommendation must not surface them.
+        if "mayorista" not in _normalized_text(query):
+            candidates = [
+                item for item in candidates
+                if "mayorista" not in _normalized_text(item.product_name)
+            ]
+        candidates = candidates[:limit]
         return format_catalog_context(candidates)
 
     except Exception as error:  # noqa: BLE001
@@ -288,6 +301,87 @@ def _catalog_row_from_tuple(row):
         "variant": variant,
         "similarity": similarity,
     }
+
+
+def _catalog_retrieval_query(message_text: str, prior_history: list) -> str:
+    """Keep a short product/category reference through natural follow-ups."""
+    normalized = _normalized_text(message_text)
+    follow_up_markers = ("chocolate", "color", "esa", "ese", "otra", "otro", "tambien")
+    if not any(marker in normalized for marker in follow_up_markers):
+        return message_text
+    previous_customer = next(
+        (
+            str(item.get("content") or "").strip()
+            for item in reversed(prior_history or [])
+            if item.get("role") == "user" and str(item.get("content") or "").strip()
+        ),
+        "",
+    )
+    return "{} {}".format(previous_customer, message_text).strip() if previous_customer else message_text
+
+
+def _live_candidate_context(catalog_context: str, query: str = "", limit: int = 3) -> str:
+    """Verify RAG candidates before the model writes a recommendation."""
+    normalized_query = _normalized_text(query)
+    requires_lashes = "pestana" in normalized_query
+    product_ids = []
+
+    # Color is an attribute, not an identity: querying the exact color in the
+    # live store is more reliable than asking vectors to distinguish lashes
+    # from every lipstick, brow product or liner that can be "chocolate".
+    if requires_lashes and "chocolate" in normalized_query:
+        try:
+            for product in search_available_products("chocolate", limit=10):
+                product_id = str(product.get("product_id") or "")
+                if product_id and product_id not in product_ids:
+                    product_ids.append(product_id)
+        except Exception as error:  # noqa: BLE001
+            print("ERROR buscando color en Tiendanube (tipo: {}).".format(type(error).__name__))
+
+    for match in re.findall(r"product_id:\s*(\d+)", catalog_context or ""):
+        if match not in product_ids:
+            product_ids.append(match)
+        if len(product_ids) >= limit:
+            break
+
+    verified = []
+    for product_id in product_ids:
+        try:
+            availability = get_product_availability(int(product_id))
+        except Exception as error:  # noqa: BLE001
+            print("ERROR verificando candidata Tiendanube (tipo: {}).".format(type(error).__name__))
+            continue
+        if not availability.get("found"):
+            continue
+        in_stock = [
+            variant for variant in availability.get("variants", [])
+            if variant.get("status") == "in_stock"
+        ]
+        if not in_stock:
+            continue
+        variants = ", ".join(
+            variant.get("variant") or "variante única" for variant in in_stock[:3]
+        )
+        description = re.sub(r"\s+", " ", availability.get("description") or "").strip()
+        product_text = _normalized_text(
+            "{} {}".format(availability.get("product_name") or "", description)
+        )
+        if requires_lashes and "pestana" not in product_text:
+            continue
+        verified.append(
+            "- {} | variantes disponibles: {}{}".format(
+                availability.get("product_name") or "Producto",
+                variants,
+                " | Descripción: {}".format(description[:420]) if description else "",
+            )
+        )
+    if not verified:
+        return ""
+    return (
+        "Disponibilidad Tiendanube verificada para candidatas recuperadas: "
+        "estas opciones tienen stock positivo ahora. No digas que no hay stock "
+        "ni las reemplaces por otra categoría.\n{}"
+    ).format("\n".join(verified))
 
 
 def search_knowledge_context(query: str, limit: int = 3, query_embedding=None) -> str:
@@ -2886,13 +2980,17 @@ async def webhook_post(request: Request):
             # When it is enabled, both retrievers share one embedding rather
             # than paying for two calls. Retrieval is optional: an embedding
             # outage must not stop a normal agent reply.
+            catalog_query = _catalog_retrieval_query(message_text, prior_history)
             if not KNOWLEDGE_RAG_ENABLED:
-                catalog_context = search_similar_products(message_text)
+                catalog_context = search_similar_products(catalog_query)
+                live_candidate_context = _live_candidate_context(catalog_context, catalog_query)
+                if live_candidate_context:
+                    catalog_context = "{}\n\n{}".format(catalog_context, live_candidate_context)
                 knowledge_context = ""
             else:
                 try:
                     query_embedding = embed_text(
-                        message_text, task_type="RETRIEVAL_QUERY"
+                        catalog_query, task_type="RETRIEVAL_QUERY"
                     )
                 except Exception as error:  # noqa: BLE001
                     print("ERROR generando embedding (tipo: {})".format(type(error).__name__))
@@ -2902,10 +3000,17 @@ async def webhook_post(request: Request):
                 knowledge_context = ""
                 if query_embedding is not None:
                     catalog_context = search_similar_products(
-                        message_text, query_embedding=query_embedding
+                        catalog_query, query_embedding=query_embedding
                     )
+                    live_candidate_context = _live_candidate_context(catalog_context, catalog_query)
+                    if live_candidate_context:
+                        catalog_context = "{}\n\n{}".format(catalog_context, live_candidate_context)
                     knowledge_context = search_knowledge_context(
-                        message_text, query_embedding=query_embedding
+                        message_text,
+                        query_embedding=(
+                            query_embedding if catalog_query == message_text
+                            else None
+                        ),
                     )
             rag_context = "\n\n".join(
                 context for context in (catalog_context, knowledge_context) if context

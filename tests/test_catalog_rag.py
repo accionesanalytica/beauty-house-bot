@@ -52,6 +52,12 @@ class CatalogRagTests(unittest.TestCase):
         self.assertEqual(params, ("%chocolate%", 3))
         self.assertEqual(sql.lower().count(" like %s"), 1)
 
+    def test_category_terms_are_not_treated_as_filler(self):
+        sql, params = lexical_catalog_query("Busco pestañas naturales", limit=3)
+        self.assertIn("%pestanas%", params)
+        self.assertIn("%naturales%", params)
+        self.assertIn("COALESCE(content, '')", sql)
+
     def test_lexical_identity_outranks_semantic_candidate(self):
         candidates = fuse_catalog_candidates(
             [{"variant_id": 1, "product_name": "Isabel I Chocolate", "similarity": 0}],
