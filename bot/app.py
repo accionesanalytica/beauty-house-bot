@@ -1552,8 +1552,11 @@ def _apply_sale_turn_updates(conversation_id: int, message_text: str, intake: di
             values.pop("customer_name"),
             values.pop("customer_email"),
         )
-    if values:
-        update_sales_intake_fields(conversation_id, next_status, **values)
+    # The small legacy setters move through intermediate statuses (quantity ->
+    # fulfillment -> customer). A correction to an otherwise complete order
+    # must finish in confirmation again; otherwise “sí, confirmo” would ask
+    # for contact data a second time.
+    update_sales_intake_fields(conversation_id, next_status, **values)
     return merged
 
 
@@ -1647,7 +1650,7 @@ def _handle_sales_intake(
                 reply = _sales_summary(get_active_sales_intake(conversation_id))
             else:
                 reply = "Perfecto. " + _customer_details_prompt()
-    elif intake["status"] == "customer":
+    elif intake["status"] == "customer" and not _sale_is_complete(intake):
         customer_details = _extract_customer_details(message_text)
         if not customer_details:
             reply = "Necesito nombre y apellido + un email válido.\n" + _customer_details_prompt()
@@ -1656,7 +1659,7 @@ def _handle_sales_intake(
             set_sales_intake_customer(conversation_id, customer_name, customer_email)
             refreshed = get_active_sales_intake(conversation_id)
             reply = _sales_summary(refreshed)
-    elif intake["status"] == "confirmation":
+    elif intake["status"] == "confirmation" or _sale_is_complete(intake):
         if _is_sale_confirmation(message_text):
             mark_sales_intake_ready(conversation_id)
             sale_draft = {

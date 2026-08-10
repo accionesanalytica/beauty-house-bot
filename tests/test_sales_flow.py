@@ -47,13 +47,15 @@ class SalesFlowTests(unittest.TestCase):
             {"customer_email": "maria@hotmail.com"},
         )
 
+    @patch.object(app, "update_sales_intake_fields")
     @patch.object(app, "set_sales_intake_quantity")
-    def test_latest_explicit_quantity_replaces_prior_quantity(self, set_quantity):
+    def test_latest_explicit_quantity_replaces_prior_quantity(self, set_quantity, update_fields):
         updated = app._apply_sale_turn_updates(
             11, "perdón, son 3", _intake()
         )
         self.assertEqual(updated["quantity"], 3)
         set_quantity.assert_called_once_with(11, 3)
+        update_fields.assert_called_once_with(11, "confirmation")
 
     def test_missing_fulfillment_uses_closed_choice_step(self):
         intake = _intake()
@@ -208,6 +210,27 @@ class SalesFlowTests(unittest.TestCase):
         self.assertEqual(queue_for_isa.call_args.args[2], "purchase_review")
         self.assertIn("ya se lo pasé a Isa", send_message.call_args.args[1])
         record_message.assert_called_once()
+
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "_queue_for_isa")
+    @patch.object(app, "mark_sales_intake_ready")
+    def test_complete_draft_confirms_even_if_legacy_status_is_customer(
+        self, mark_ready, queue_for_isa, record_message, send_message
+    ):
+        """Corrections must not make a completed order request contact data again."""
+        handled = app._handle_sales_intake(
+            11,
+            "5491111111111",
+            "Sí, confirmo",
+            _intake(status="customer"),
+            [],
+        )
+
+        self.assertTrue(handled)
+        mark_ready.assert_called_once_with(11)
+        queue_for_isa.assert_called_once()
+        self.assertIn("ya se lo pasé a Isa", send_message.call_args.args[1])
 
     @patch.object(app, "send_whatsapp_text", return_value=True)
     @patch.object(app, "record_bot_message")
