@@ -8,6 +8,7 @@ how a language model phrases an answer.
 import os
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ sys.path.insert(0, str(BOT_DIR))
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 import app  # noqa: E402
 import agent  # noqa: E402
+from tiendanube_events import webhook_signature_is_valid  # noqa: E402
 
 
 def _intake(status="confirmation"):
@@ -36,6 +38,65 @@ def _intake(status="confirmation"):
 
 
 class SalesFlowTests(unittest.TestCase):
+    @patch.dict(os.environ, {"TIENDANUBE_CLIENT_SECRET": "test-secret"})
+    def test_tiendanube_webhook_signature_rejects_tampering(self):
+        import hashlib
+        import hmac
+
+        body = b'{"store_id":"2060155","event":"order/paid","id":123}'
+        signature = hmac.new(b"test-secret", body, hashlib.sha256).hexdigest()
+        self.assertTrue(webhook_signature_is_valid(body, signature))
+        self.assertFalse(webhook_signature_is_valid(body + b"x", signature))
+
+    @patch.object(app, "finish_daily_operations_report")
+    @patch.object(app, "send_whatsapp_template", return_value=True)
+    @patch.object(app, "daily_operations_summary")
+    @patch.object(app, "claim_daily_operations_report", return_value=True)
+    @patch.object(app, "DAILY_SUMMARY_TEMPLATE_NAME", "resumen_diario")
+    @patch.object(app, "DAILY_SUMMARY_ENABLED", True)
+    @patch.object(app, "ISA_WHATSAPP_NUMBER", "5491124548738")
+    def test_daily_summary_uses_four_values_once_ready(
+        self, claim, get_summary, send_template, finish
+    ):
+        get_summary.return_value = {
+            "conversations": 12,
+            "approved_checkouts": 3,
+            "paid_orders": 2,
+            "pending": 1,
+        }
+        app.run_daily_operations_report(datetime(2026, 8, 9, 21, 0, tzinfo=app.ARGENTINA_TZ))
+        send_template.assert_called_once_with(
+            "5491124548738", "resumen_diario", app.DAILY_SUMMARY_TEMPLATE_LANGUAGE,
+            [12, 3, 2, 1],
+        )
+        finish.assert_called_once()
+
+    @patch.object(app, "finish_tiendanube_event")
+    @patch.object(app, "fred_checkout_for_order")
+    @patch.object(app, "fetch_paid_order")
+    def test_paid_event_not_owned_by_fred_is_ignored(self, fetch_order, lookup_checkout, finish):
+        lookup_checkout.return_value = None
+        app._process_tiendanube_paid_order("event-1", "101")
+        fetch_order.assert_called_once_with("101")
+        finish.assert_called_once_with("event-1", "ignored")
+
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_template", return_value=True)
+    @patch.object(app, "finish_tiendanube_event")
+    @patch.object(app, "fred_checkout_for_order")
+    @patch.object(app, "fetch_paid_order")
+    @patch.object(app, "PAYMENT_CONFIRMED_TEMPLATE_NAME", "pago_confirmado")
+    def test_paid_fred_order_uses_template_not_free_text(
+        self, fetch_order, lookup_checkout, finish, send_template, record_message
+    ):
+        lookup_checkout.return_value = {"customer_phone": "5491111111111", "conversation_id": 7}
+        app._process_tiendanube_paid_order("event-2", "102")
+        send_template.assert_called_once_with(
+            "5491111111111", "pago_confirmado", app.PAYMENT_CONFIRMED_TEMPLATE_LANGUAGE, ["102"]
+        )
+        record_message.assert_called_once()
+        finish.assert_called_once_with("event-2", "processed")
+
     def test_compact_customer_details_excludes_fulfillment_word(self):
         self.assertEqual(
             app._extract_customer_details("envío, Luis Vera, luis@example.com"),
@@ -224,8 +285,9 @@ class IsaInternalSaleFlowTests(unittest.TestCase):
     @patch.object(app, "send_isa_sale_type_menu", return_value=True)
     @patch.object(app, "start_isa_sale_session")
     @patch.object(app, "get_isa_sale_session", return_value=None)
+    @patch.object(app, "list_pending_actions", return_value=[])
     def test_natural_external_sale_request_opens_category_menu(
-        self, get_session, start_session, send_menu
+        self, list_pending, get_session, start_session, send_menu
     ):
         app.handle_isa_message("Vendí unos productos por Instagram, ¿me armás el link?")
         start_session.assert_called_once_with(app.ISA_WHATSAPP_NUMBER)

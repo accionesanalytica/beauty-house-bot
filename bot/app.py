@@ -6,6 +6,7 @@ responde con una plantilla de prueba aprobada por Meta.
 
 import asyncio
 import html
+import json
 import os
 import re
 import secrets
@@ -22,8 +23,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 import psycopg2
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 import numpy as np
 from google import genai
 from google.genai import types
@@ -35,6 +37,17 @@ from tiendanube_tools import get_stock
 from tiendanube_credentials import (
     TiendanubeCredentialError,
     save_tiendanube_credential,
+)
+from tiendanube_events import fetch_paid_order, webhook_signature_is_valid
+from operations_store import (
+    claim_daily_operations_report,
+    claim_tiendanube_event,
+    daily_operations_summary,
+    dashboard_conversation,
+    dashboard_snapshot,
+    finish_daily_operations_report,
+    finish_tiendanube_event,
+    fred_checkout_for_order,
 )
 from conversation_store import (
     add_isa_sale_session_details,
@@ -73,6 +86,7 @@ from conversation_store import (
 load_dotenv()
 
 app = FastAPI()
+dashboard_security = HTTPBasic(auto_error=False)
 
 # ============================================================
 # CONFIGURACIÓN
@@ -97,6 +111,21 @@ DEMO_APPROVALS_ENABLED = (
 )
 LIVE_CHECKOUTS_ENABLED = checkout_enabled()
 ISA_REMINDERS_ENABLED = os.getenv("ISA_REMINDERS_ENABLED", "false").lower() == "true"
+ADMIN_DASHBOARD_USERNAME = os.getenv("ADMIN_DASHBOARD_USERNAME", "").strip()
+ADMIN_DASHBOARD_PASSWORD = os.getenv("ADMIN_DASHBOARD_PASSWORD", "")
+TIENDANUBE_WEBHOOKS_ENABLED = (
+    os.getenv("TIENDANUBE_WEBHOOKS_ENABLED", "false").lower() == "true"
+)
+# A payment can arrive outside Meta's 24-hour customer-service window.  Never
+# send it as free-form text: activate this only after an approved Meta template
+# with the supplied name exists.
+PAYMENT_CONFIRMED_TEMPLATE_NAME = os.getenv("PAYMENT_CONFIRMED_TEMPLATE_NAME", "").strip()
+PAYMENT_CONFIRMED_TEMPLATE_LANGUAGE = os.getenv(
+    "PAYMENT_CONFIRMED_TEMPLATE_LANGUAGE", "es_AR"
+).strip()
+DAILY_SUMMARY_ENABLED = os.getenv("DAILY_SUMMARY_ENABLED", "false").lower() == "true"
+DAILY_SUMMARY_TEMPLATE_NAME = os.getenv("DAILY_SUMMARY_TEMPLATE_NAME", "").strip()
+DAILY_SUMMARY_TEMPLATE_LANGUAGE = os.getenv("DAILY_SUMMARY_TEMPLATE_LANGUAGE", "es_AR").strip()
 # Client-facing policy document. The Railway public domain is a safe fallback
 # for the current deployment; a custom domain can replace it later without a
 # code change.
@@ -334,6 +363,37 @@ def send_whatsapp_text(phone_number: str, text: str) -> bool:
         return False
 
 
+def send_whatsapp_template(phone_number: str, template_name: str, language: str, body_values=None) -> bool:
+    """Send an approved Meta template, including outside the 24-hour window."""
+    if not template_name:
+        return False
+    template = {"name": template_name, "language": {"code": language}}
+    if body_values:
+        template["components"] = [{
+            "type": "body",
+            "parameters": [{"type": "text", "text": str(value)} for value in body_values],
+        }]
+    try:
+        response = requests.post(
+            f"https://graph.facebook.com/v26.0/{WHATSAPP_PHONE_ID}/messages",
+            json={
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": normalize_whatsapp_recipient(phone_number),
+                "type": "template",
+                "template": template,
+            },
+            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"},
+            timeout=10,
+        )
+        print(f"[WhatsApp] Plantilla HTTP {response.status_code}")
+        response.raise_for_status()
+        return True
+    except Exception as error:  # noqa: BLE001
+        print(f"ERROR enviando plantilla a WhatsApp: {type(error).__name__}")
+        return False
+
+
 def send_whatsapp_document(phone_number: str, document_url: str, filename: str, caption: str) -> bool:
     """Send a client-facing PDF through WhatsApp Cloud API using a stable URL."""
     url = f"https://graph.facebook.com/v26.0/{WHATSAPP_PHONE_ID}/messages"
@@ -405,10 +465,45 @@ def run_isa_reminder_check(now: datetime = None) -> None:
         print("ERROR enviando recordatorio automático a Isa.")
 
 
+def run_daily_operations_report(now: datetime = None) -> None:
+    """Send the owner-approved 21:00 summary template once per Argentina day."""
+    if not (
+        DAILY_SUMMARY_ENABLED
+        and ISA_WHATSAPP_NUMBER
+        and DAILY_SUMMARY_TEMPLATE_NAME
+    ):
+        return
+    now = now or datetime.now(ARGENTINA_TZ)
+    if now.hour < 21:
+        return
+    report_day = now.date()
+    try:
+        if not claim_daily_operations_report(report_day):
+            return
+        summary = daily_operations_summary()
+        delivered = send_whatsapp_template(
+            ISA_WHATSAPP_NUMBER,
+            DAILY_SUMMARY_TEMPLATE_NAME,
+            DAILY_SUMMARY_TEMPLATE_LANGUAGE,
+            [
+                summary["conversations"],
+                summary["approved_checkouts"],
+                summary["paid_orders"],
+                summary["pending"],
+            ],
+        )
+        finish_daily_operations_report(report_day, delivered)
+        if not delivered:
+            print("ERROR enviando resumen diario de Fred.")
+    except Exception as error:  # noqa: BLE001
+        print("ERROR preparando resumen diario de Fred (tipo: {}).".format(type(error).__name__))
+
+
 async def _isa_reminder_loop() -> None:
     while True:
         try:
             await asyncio.to_thread(run_isa_reminder_check)
+            await asyncio.to_thread(run_daily_operations_report)
         except Exception as error:  # noqa: BLE001
             print("ERROR en recordatorios de Isa (tipo: {}).".format(type(error).__name__))
         await asyncio.sleep(300)
@@ -1091,6 +1186,29 @@ def _handle_isa_reminder_request(message_text: str) -> bool:
     return False
 
 
+def _handle_isa_operations_summary_request(message_text: str) -> bool:
+    """Give Isa an on-demand factual summary without waiting for 21:00."""
+    normalized = _normalized_text(message_text)
+    if not re.fullmatch(r"(?:resumen|resumen de hoy|como vamos|como va fred|estado)", normalized):
+        return False
+    try:
+        summary = daily_operations_summary()
+    except Exception as error:  # noqa: BLE001
+        print("ERROR armando resumen operativo (tipo: {}).".format(type(error).__name__))
+        send_whatsapp_text(ISA_WHATSAPP_NUMBER, "No pude armar el resumen ahora. Probá de nuevo en unos minutos.")
+        return True
+    send_whatsapp_text(
+        ISA_WHATSAPP_NUMBER,
+        "Resumen de Fred hoy 😊\n"
+        "• Conversaciones atendidas: {conversations}\n"
+        "• Checkouts aprobados: {approved_checkouts}\n"
+        "• Pagos confirmados por Tiendanube: {paid_orders}\n"
+        "• Pendientes para revisar: {pending}\n\n"
+        "Para ver los chats completos, entrá al panel privado de Fred.".format(**summary),
+    )
+    return True
+
+
 def _isa_demo_order_request(message_text: str) -> tuple:
     """Parse Isa's explicit demo-only order command."""
     match = re.match(
@@ -1370,6 +1488,9 @@ def handle_isa_message(
         return
 
     if _handle_isa_reminder_request(message_text):
+        return
+
+    if _handle_isa_operations_summary_request(message_text):
         return
 
     # Isa can use a natural instruction instead of hunting for the card button.
@@ -1690,6 +1811,177 @@ def handle_isa_message(
 # ============================================================
 # WEBHOOK — VERIFICACIÓN META
 # ============================================================
+
+
+def _require_dashboard(credentials: HTTPBasicCredentials = Depends(dashboard_security)) -> str:
+    """Protect owner-only operational data without exposing it in a public route."""
+    if not ADMIN_DASHBOARD_USERNAME or not ADMIN_DASHBOARD_PASSWORD or not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Panel privado no autorizado",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    valid_user = secrets.compare_digest(credentials.username, ADMIN_DASHBOARD_USERNAME)
+    valid_password = secrets.compare_digest(credentials.password, ADMIN_DASHBOARD_PASSWORD)
+    if not (valid_user and valid_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Panel privado no autorizado",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+def _dashboard_page(title: str, body: str) -> HTMLResponse:
+    return HTMLResponse(
+        """<!doctype html><html lang="es"><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>{}</title><style>
+        body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#fafafa;color:#17212b;max-width:1100px;margin:0 auto;padding:28px 18px}}
+        h1{{margin:0 0 6px}} .muted{{color:#68727c}} .cards{{display:flex;gap:12px;flex-wrap:wrap;margin:24px 0}}
+        .card{{background:#fff;border:1px solid #e4e7eb;border-radius:12px;padding:15px;min-width:130px}} .value{{font-size:28px;font-weight:700}}
+        table{{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e4e7eb}} th,td{{padding:12px;text-align:left;border-bottom:1px solid #eef0f2;vertical-align:top}}
+        a{{color:#1565c0}} .bubble{{max-width:76%;margin:10px 0;padding:11px 13px;border-radius:12px;background:#fff;border:1px solid #e4e7eb;white-space:pre-wrap}}
+        .out{{margin-left:auto;background:#e6f7e9}} .meta{{font-size:12px;color:#68727c;margin-bottom:4px}}
+        </style></head><body>{}</body></html>""".format(html.escape(title), body),
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
+def _format_dashboard_time(value) -> str:
+    if not value:
+        return "—"
+    return value.astimezone(ARGENTINA_TZ).strftime("%d/%m %H:%M")
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def operations_dashboard(_: str = Depends(_require_dashboard)):
+    """Simple owner-only view of Fred's real conversations and operational state."""
+    snapshot = dashboard_snapshot()
+    counts = snapshot["last_24h"]
+    labels = {
+        "active_conversations": "Conversaciones activas",
+        "customer_messages": "Mensajes de clientas",
+        "fred_messages": "Mensajes de Fred",
+        "pending_actions": "Pendientes de Isa",
+        "approved_checkouts": "Checkouts aprobados",
+        "fred_paid_orders": "Pagos confirmados",
+    }
+    cards = "".join(
+        '<div class="card"><div class="value">{}</div><div>{}</div></div>'.format(
+            counts[key], labels[key]
+        )
+        for key in labels
+    )
+    pending = snapshot["pending_by_type"]
+    pending_text = ", ".join(
+        "{}: {}".format(html.escape(str(kind)), amount) for kind, amount in pending.items()
+    ) or "Sin pendientes"
+    rows = "".join(
+        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><a href=\"/admin/conversations/{}\">Ver chat</a></td></tr>".format(
+            html.escape(str(item["customer_phone"])),
+            html.escape(str(item["state"])),
+            html.escape(_format_dashboard_time(item["last_message_at"])),
+            html.escape(str(item["last_message"])[:160]),
+            item["id"],
+        )
+        for item in snapshot["conversations"]
+    ) or '<tr><td colspan="5">Todavía no hay conversaciones.</td></tr>'
+    return _dashboard_page(
+        "Fred | Operación",
+        "<h1>Operación de Fred</h1><p class=\"muted\">Datos reales de las últimas 24 horas. Solo para Isa/equipo autorizado.</p>"
+        '<div class="cards">{}</div><p><strong>Cola pendiente:</strong> {}</p>'
+        "<h2>Conversaciones recientes</h2><table><thead><tr><th>Cliente</th><th>Estado</th><th>Último mensaje</th><th>Vista previa</th><th></th></tr></thead><tbody>{}</tbody></table>".format(
+            cards, pending_text, rows
+        ),
+    )
+
+
+@app.get("/admin/conversations/{conversation_id}", response_class=HTMLResponse)
+async def operations_conversation(conversation_id: int, _: str = Depends(_require_dashboard)):
+    conversation = dashboard_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+    bubbles = "".join(
+        '<div class="bubble {}"><div class="meta">{} · {}</div>{}</div>'.format(
+            "out" if message["direction"] == "out" else "",
+            html.escape(str(message["sender"])),
+            html.escape(_format_dashboard_time(message["created_at"])),
+            html.escape(str(message["body"])),
+        )
+        for message in conversation["messages"]
+    ) or '<p class="muted">Sin mensajes guardados.</p>'
+    return _dashboard_page(
+        "Fred | Conversación",
+        '<p><a href="/admin">← Volver al panel</a></p><h1>Cliente {}</h1><p class="muted">Estado: {}</p>{}'.format(
+            html.escape(str(conversation["customer_phone"])),
+            html.escape(str(conversation["state"])),
+            bubbles,
+        ),
+    )
+
+
+def _process_tiendanube_paid_order(event_key: str, order_id: str) -> None:
+    """Verify a paid order, link it to Fred, and record the result once."""
+    try:
+        fetch_paid_order(order_id)
+        checkout = fred_checkout_for_order(order_id)
+        if not checkout:
+            finish_tiendanube_event(event_key, "ignored")
+            print("[Tiendanube] Pago {} no pertenece a un checkout de Fred.".format(order_id))
+            return
+
+        # A client may pay outside the WhatsApp 24-hour window. Only an approved
+        # template is valid then; free-form delivery would be unreliable.
+        if PAYMENT_CONFIRMED_TEMPLATE_NAME:
+            if send_whatsapp_template(
+                checkout["customer_phone"],
+                PAYMENT_CONFIRMED_TEMPLATE_NAME,
+                PAYMENT_CONFIRMED_TEMPLATE_LANGUAGE,
+                [order_id],
+            ):
+                record_bot_message(
+                    checkout["conversation_id"],
+                    "[Pago confirmado por Tiendanube: orden #{}]".format(order_id),
+                )
+        finish_tiendanube_event(event_key, "processed")
+        print("[Tiendanube] Pago confirmado para orden #{}.".format(order_id))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR procesando pago de Tiendanube (tipo: {}).".format(type(error).__name__))
+        try:
+            finish_tiendanube_event(event_key, "failed", type(error).__name__)
+        except Exception:  # noqa: BLE001
+            print("ERROR guardando fallo de pago de Tiendanube.")
+
+
+@app.post("/webhooks/tiendanube")
+async def tiendanube_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Receive Tiendanube order events with HMAC validation and idempotence."""
+    raw_body = await request.body()
+    signature = request.headers.get("x-linkedstore-hmac-sha256", "")
+    if not webhook_signature_is_valid(raw_body, signature):
+        raise HTTPException(status_code=401, detail="Firma de Tiendanube inválida")
+    if not TIENDANUBE_WEBHOOKS_ENABLED:
+        return JSONResponse(content={"ok": True, "status": "disabled"}, status_code=202)
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="Evento de Tiendanube inválido")
+
+    store_id = str(payload.get("store_id", "")).strip()
+    event_name = str(payload.get("event", "")).strip()
+    order_id = str(payload.get("id", "")).strip()
+    expected_store = os.getenv("TIENDANUBE_STORE_ID", "").strip()
+    if store_id != expected_store:
+        raise HTTPException(status_code=403, detail="Tienda de Tiendanube no autorizada")
+    if event_name != "order/paid" or not order_id:
+        return JSONResponse(content={"ok": True, "status": "ignored"}, status_code=202)
+
+    event_key = "{}:{}:{}".format(store_id, event_name, order_id)
+    if not claim_tiendanube_event(event_key, store_id, event_name, order_id, payload):
+        return JSONResponse(content={"ok": True, "status": "duplicate"})
+    background_tasks.add_task(_process_tiendanube_paid_order, event_key, order_id)
+    return JSONResponse(content={"ok": True, "status": "accepted"}, status_code=202)
 
 
 @app.get("/documents/preventa-encargos.pdf")
