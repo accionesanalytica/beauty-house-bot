@@ -21,6 +21,7 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key")
 import app  # noqa: E402
 import agent  # noqa: E402
 from tiendanube_events import webhook_signature_is_valid  # noqa: E402
+import tiendanube_events  # noqa: E402
 
 
 def _intake(status="confirmation"):
@@ -96,6 +97,18 @@ class SalesFlowTests(unittest.TestCase):
         )
         record_message.assert_called_once()
         finish.assert_called_once_with("event-2", "processed")
+
+    @patch.object(tiendanube_events, "requests")
+    @patch.object(tiendanube_events, "get_tiendanube_configuration")
+    def test_existing_payment_webhook_is_never_created_twice(self, get_configuration, requests_mock):
+        get_configuration.return_value = {
+            "store_id": "2060155", "access_token": "token", "user_agent": "Fred test"
+        }
+        existing = requests_mock.get.return_value
+        existing.json.return_value = [{"id": 9, "event": "order/paid", "url": "https://fred.test/hook"}]
+        result = tiendanube_events.register_order_paid_webhook("https://fred.test/hook")
+        self.assertEqual(result, {"created": False, "id": 9})
+        requests_mock.post.assert_not_called()
 
     def test_compact_customer_details_excludes_fulfillment_word(self):
         self.assertEqual(

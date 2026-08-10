@@ -27,9 +27,8 @@ Fred puede recibir el evento `order/paid` de Tiendanube. Cada evento se valida c
 
 Para activarlo después del deploy:
 
-1. En Railway, agregar `TIENDANUBE_WEBHOOKS_ENABLED=true`.
-2. En la configuración de webhooks de la app Tiendanube, crear el evento `order/paid` con URL:
-   `https://<dominio-de-fred>/webhooks/tiendanube`
+1. En Railway, agregar `TIENDANUBE_WEBHOOKS_ENABLED=true` y desplegar.
+2. Entrar al panel privado `/admin` y pulsar **Conectar avisos de pago**. Fred registra una vez el evento `order/paid`; no hay que usar terminal ni copiar tokens.
 3. Hacer un checkout de prueba de bajo valor y verificar el resultado en `/admin`.
 
 El webhook verifica pago y lo muestra en el panel. Para avisar automáticamente a una clienta pagada, Meta exige una plantilla aprobada porque el pago puede llegar fuera de la ventana de 24 horas.

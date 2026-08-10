@@ -6,12 +6,15 @@ responde con una plantilla de prueba aprobada por Meta.
 
 import asyncio
 import html
+import hashlib
+import hmac
 import json
 import os
 import re
 import secrets
 import sys
 import unicodedata
+from urllib.parse import parse_qs
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -38,7 +41,11 @@ from tiendanube_credentials import (
     TiendanubeCredentialError,
     save_tiendanube_credential,
 )
-from tiendanube_events import fetch_paid_order, webhook_signature_is_valid
+from tiendanube_events import (
+    fetch_paid_order,
+    register_order_paid_webhook,
+    webhook_signature_is_valid,
+)
 from operations_store import (
     claim_daily_operations_report,
     claim_tiendanube_event,
@@ -1854,8 +1861,16 @@ def _format_dashboard_time(value) -> str:
     return value.astimezone(ARGENTINA_TZ).strftime("%d/%m %H:%M")
 
 
+def _dashboard_csrf_token(username: str, action: str) -> str:
+    """Same-day action token; a public page cannot forge an admin POST."""
+    message = "{}:{}:{}".format(username, action, datetime.now(ARGENTINA_TZ).date()).encode("utf-8")
+    return hmac.new(
+        ADMIN_DASHBOARD_PASSWORD.encode("utf-8"), message, hashlib.sha256
+    ).hexdigest()
+
+
 @app.get("/admin", response_class=HTMLResponse)
-async def operations_dashboard(_: str = Depends(_require_dashboard)):
+async def operations_dashboard(request: Request, username: str = Depends(_require_dashboard)):
     """Simple owner-only view of Fred's real conversations and operational state."""
     snapshot = dashboard_snapshot()
     counts = snapshot["last_24h"]
@@ -1887,14 +1902,49 @@ async def operations_dashboard(_: str = Depends(_require_dashboard)):
         )
         for item in snapshot["conversations"]
     ) or '<tr><td colspan="5">Todavía no hay conversaciones.</td></tr>'
+    connection_message = request.query_params.get("connection", "")
+    connection_box = ""
+    if connection_message == "created":
+        connection_box = '<p><strong>Listo:</strong> Tiendanube quedó conectada para avisar pagos.</p>'
+    elif connection_message == "exists":
+        connection_box = '<p><strong>Ya estaba conectado:</strong> no se creó un webhook duplicado.</p>'
+    elif connection_message == "error":
+        connection_box = '<p><strong>No se pudo conectar Tiendanube.</strong> Revisá que la autorización OAuth siga vigente e intentá de nuevo.</p>'
+    webhook_box = (
+        '<h2>Pagos de Tiendanube</h2><p class="muted">Estado de recepción: {}.</p>'
+        '<form method="post" action="/admin/tiendanube/connect-payments">'
+        '<input type="hidden" name="csrf" value="{}">'
+        '<button type="submit">Conectar avisos de pago</button></form>'
+    ).format(
+        "activo" if TIENDANUBE_WEBHOOKS_ENABLED else "apagado (primero agregá TIENDANUBE_WEBHOOKS_ENABLED=true en Railway)",
+        _dashboard_csrf_token(username, "connect-payments"),
+    )
     return _dashboard_page(
         "Fred | Operación",
         "<h1>Operación de Fred</h1><p class=\"muted\">Datos reales de las últimas 24 horas. Solo para Isa/equipo autorizado.</p>"
-        '<div class="cards">{}</div><p><strong>Cola pendiente:</strong> {}</p>'
-        "<h2>Conversaciones recientes</h2><table><thead><tr><th>Cliente</th><th>Estado</th><th>Último mensaje</th><th>Vista previa</th><th></th></tr></thead><tbody>{}</tbody></table>".format(
-            cards, pending_text, rows
+        '<div class="cards">{}</div><p><strong>Cola pendiente:</strong> {}</p>{}'
+        "{}<h2>Conversaciones recientes</h2><table><thead><tr><th>Cliente</th><th>Estado</th><th>Último mensaje</th><th>Vista previa</th><th></th></tr></thead><tbody>{}</tbody></table>".format(
+            cards, pending_text, connection_box, webhook_box, rows
         ),
     )
+
+
+@app.post("/admin/tiendanube/connect-payments")
+async def connect_tiendanube_payments(request: Request, username: str = Depends(_require_dashboard)):
+    """Owner-clicked, idempotent webhook registration; no terminal or token copying."""
+    body = (await request.body()).decode("utf-8", errors="replace")
+    csrf = parse_qs(body).get("csrf", [""])[0]
+    expected = _dashboard_csrf_token(username, "connect-payments")
+    if not secrets.compare_digest(csrf, expected):
+        raise HTTPException(status_code=403, detail="Acción privada no verificada")
+    try:
+        result = register_order_paid_webhook(PUBLIC_BASE_URL + "/webhooks/tiendanube")
+        outcome = "created" if result["created"] else "exists"
+        print("[Tiendanube] Webhook order/paid registrado: {}.".format(result.get("id", "sin id")))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR registrando webhook Tiendanube (tipo: {}).".format(type(error).__name__))
+        outcome = "error"
+    return RedirectResponse("/admin?connection=" + outcome, status_code=303)
 
 
 @app.get("/admin/conversations/{conversation_id}", response_class=HTMLResponse)
