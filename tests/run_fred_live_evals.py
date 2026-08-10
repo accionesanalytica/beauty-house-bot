@@ -18,27 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from agent import answer  # noqa: E402
 from fred_eval_cases import CURATED_CASES  # noqa: E402
-
-
-def _critical_findings(case, result):
-    reply = (result.get("reply") or "").lower()
-    findings = []
-    for forbidden in case.forbidden_fragments:
-        if forbidden.lower() in reply:
-            findings.append("Incluyó texto prohibido: {}".format(forbidden))
-    if "http" in reply and not any(
-        call.get("name") == "get_product_availability"
-        for call in result.get("tool_calls", [])
-    ):
-        findings.append("Incluyó link sin haber obtenido URL de producto verificada.")
-    if case.should_escalate and not result.get("handoff") and "isa" not in reply:
-        findings.append("Caso sensible: revisar si debió escalar a Isa.")
-    if case.required_tool and not any(
-        call.get("name") == case.required_tool
-        for call in result.get("tool_calls", [])
-    ):
-        findings.append("No usó la verificación requerida: {}.".format(case.required_tool))
-    return findings
+from evaluation import assess_case  # noqa: E402
 
 
 def main():
@@ -46,14 +26,18 @@ def main():
     parser.add_argument("--live", action="store_true", help="Ejecuta llamadas de solo lectura a DeepSeek/Tiendanube.")
     parser.add_argument("--limit", type=int, default=len(CURATED_CASES))
     parser.add_argument("--start", type=int, default=0, help="Índice inicial de caso para continuar una muestra.")
+    parser.add_argument("--allow-large-batch", action="store_true", help="Permite más de 10 casos live; usa más APIs.")
     args = parser.parse_args()
 
     cases = CURATED_CASES[max(0, args.start): max(0, args.start) + max(0, args.limit)]
     if not args.live:
         print("Modo seguro: {} casos listos. Usá --live para evaluarlos sin enviar WhatsApps.".format(len(cases)))
         return
+    if len(cases) > 10 and not args.allow_large_batch:
+        parser.error("Modo live limitado a 10 casos. Usá --allow-large-batch sólo después de revisar costo y alcance.")
 
     attention_required = 0
+    scores = []
     for case in cases:
         print("\n[{}] {}".format(case.case_id, case.customer_message))
         try:
@@ -69,14 +53,18 @@ def main():
             continue
 
         print("Fred: {}".format(result.get("reply", "").replace("\n", " ")))
-        findings = _critical_findings(case, result)
+        assessment = assess_case(case, result)
+        scores.append(assessment["score"])
+        findings = assessment["findings"]
+        print("Decisión: {} | Puntaje automático: {}/100".format(assessment["action"], assessment["score"]))
         if findings:
             attention_required += 1
-            print("REVISAR: {}".format(" | ".join(findings)))
+            print("REVISAR: {}".format(" | ".join(item["message"] for item in findings)))
         else:
             print("OK automático — validar tono según: {}".format(case.notes))
 
-    print("\nResultado: {} caso(s) requieren revisión humana.".format(attention_required))
+    average = sum(scores) / len(scores) if scores else 0
+    print("\nResultado: {} caso(s) requieren revisión humana. Puntaje promedio: {:.1f}/100.".format(attention_required, average))
 
 
 if __name__ == "__main__":

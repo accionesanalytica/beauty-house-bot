@@ -11,7 +11,7 @@ ni con una única respuesta bonita. Se revisa en dos capas:
 
 ## Casos curados
 
-`tests/fred_eval_cases.py` contiene 50 escenarios inspirados en consultas de
+`tests/fred_eval_cases.py` contiene más de 60 escenarios inspirados en consultas de
 asesoría, preventa, seguimiento, pagos, mayorista, logística, cambios y
 devoluciones. No contiene nombres, teléfonos, direcciones, importes bancarios
 ni transcripciones reales.
@@ -30,7 +30,7 @@ Vista previa de los 50 casos:
 python tests/run_fred_live_evals.py
 ```
 
-Evaluación real de una muestra, sin enviar mensajes:
+Evaluación real de una muestra de hasta diez casos, sin enviar mensajes:
 
 ```bash
 python tests/run_fred_live_evals.py --live --limit 10
@@ -38,11 +38,14 @@ python tests/run_fred_live_evals.py --live --limit 10
 
 Antes de usar el modo `--live`, revisar que `.env` tenga las credenciales ya
 configuradas. El modo consulta DeepSeek y Tiendanube, por lo que tiene costo de
-modelo y usa el catálogo real, pero no escribe ni crea pedidos.
+modelo y usa el catálogo real, pero no escribe ni crea pedidos. Por defecto se
+bloquean lotes mayores de diez casos; para superarlo se requiere
+`--allow-large-batch` como confirmación deliberada de costo.
 
 ## Cómo leer los resultados
 
-Un `OK automático` solo significa que no disparó una regla crítica. Isa debe
+Cada resultado trae una acción estructurada y un puntaje automático. Un `OK`
+solo significa que no disparó una regla crítica. Isa debe
 revisar la naturalidad, claridad, utilidad comercial y si una recomendación
 efectivamente tiene sentido. Un resultado `REVISAR` no implica que el bot haya
 hecho algo irreversible: es una señal para mejorar el prompt, la fuente o la
