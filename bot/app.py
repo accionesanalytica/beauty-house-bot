@@ -2312,11 +2312,32 @@ def handle_isa_message(
         )
     else:
         set_conversation_state(result["conversation_id"], "BOT")
-        send_whatsapp_text(
-            ISA_WHATSAPP_NUMBER,
-            "Cancelaste el pendiente #{}. Fred vuelve a atender a la clienta."
-            .format(action_id),
-        )
+        # A cancelled purchase review must also close the loop with the
+        # customer.  Otherwise the internal card disappears but the customer
+        # remains waiting for an approval that will never arrive.
+        if result["action_type"] == "purchase_review":
+            customer_text = (
+                "Isa revisó la preparación y decidió no avanzar con este link por ahora. "
+                "No tenés que pagar nada ni hay una compra confirmada 😊\n\n"
+                "Si querés, seguimos viendo alternativas por acá. Y si preferís hablar "
+                "directamente con Isa, decime y se lo paso."
+            )
+            customer_phone = result["payload"].get("customer_phone", "")
+            if customer_phone and send_whatsapp_text(customer_phone, customer_text):
+                record_bot_message(result["conversation_id"], customer_text)
+                customer_notice = " Fred ya le avisó a la clienta y sigue atendiendo ese chat."
+            else:
+                customer_notice = " No pude avisarle a la clienta; revisá el chat antes de seguir."
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "Cancelaste la compra pendiente #{}.{}".format(action_id, customer_notice),
+            )
+        else:
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "Cancelaste el pendiente #{}. Fred vuelve a atender a la clienta."
+                .format(action_id),
+            )
 
     if pending_action_count():
         send_next_pending_to_isa()

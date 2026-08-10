@@ -448,6 +448,33 @@ class DashboardSafetyTests(unittest.TestCase):
 
 
 class IsaInternalSaleFlowTests(unittest.TestCase):
+    @patch.object(app, "list_pending_actions", return_value=[])
+    @patch.object(app, "pending_action_count", return_value=False)
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "set_conversation_state")
+    @patch.object(app, "resolve_pending_action")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    def test_cancelling_purchase_review_notifies_customer_and_returns_to_fred(
+        self, send_message, resolve_action, set_state, record_message, pending_count, list_pending
+    ):
+        resolve_action.return_value = {
+            "conversation_id": 7,
+            "action_type": "purchase_review",
+            "payload": {"customer_phone": "5491111111111"},
+        }
+
+        app.handle_isa_message("", button_reply_id="reject:11")
+
+        resolve_action.assert_called_once_with(11, "rejected")
+        set_state.assert_called_once_with(7, "BOT")
+        customer_messages = [call.args for call in send_message.call_args_list if call.args[0] == "5491111111111"]
+        self.assertEqual(len(customer_messages), 1)
+        self.assertIn("No tenés que pagar nada", customer_messages[0][1])
+        self.assertIn("seguimos viendo alternativas", customer_messages[0][1])
+        record_message.assert_called_once_with(7, customer_messages[0][1])
+        self.assertIn("Fred ya le avisó", send_message.call_args_list[-1].args[1])
+        pending_count.assert_called_once()
+
     @patch.object(app, "send_whatsapp_text", return_value=True)
     @patch.object(app, "wait_for_isa_response", return_value=True)
     @patch.object(
