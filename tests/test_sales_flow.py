@@ -103,6 +103,28 @@ class SalesFlowTests(unittest.TestCase):
         record_message.assert_called_once()
         get_active.assert_called_once_with(11)
 
+    @patch.object(app, "get_active_sales_intake")
+    @patch.object(app, "set_sales_intake_customer")
+    @patch.object(app, "set_sales_intake_fulfillment")
+    def test_same_purchase_message_keeps_delivery_and_contact_details(
+        self, set_fulfillment, set_customer, get_active
+    ):
+        intake = _intake(status="customer")
+        get_active.side_effect = [intake, intake]
+
+        summary = app._apply_sale_details_from_same_message(
+            11,
+            "Quiero 4 packs de 10 pares\n"
+            "Entrega: envío\n"
+            "Nombre: Luis Vera\n"
+            "Email: luis@example.com",
+        )
+
+        set_fulfillment.assert_called_once_with(11, "shipping")
+        set_customer.assert_called_once_with(11, "Luis Vera", "luis@example.com")
+        self.assertIn("Cantidad: 4", summary)
+        self.assertIn("Nombre: Luis Vera", summary)
+
     @patch.object(app, "get_stock")
     def test_1000_purchase_guard_variations(self, get_stock):
         """500 purchase variations + 500 non-purchase variations.

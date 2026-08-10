@@ -839,6 +839,29 @@ def _start_sales_intake(
     )
 
 
+def _apply_sale_details_from_same_message(conversation_id: int, message_text: str) -> str:
+    """Keep checkout details the customer already gave in their purchase message.
+
+    A client may naturally write the product, quantity, delivery preference,
+    name and email in one WhatsApp message.  Once the product is verified, we
+    must not make them repeat those details just because the persisted sales
+    form was opened a few lines later in the code.
+    """
+    intake = get_active_sales_intake(conversation_id)
+    if not intake or not intake.get("quantity"):
+        return ""
+
+    fulfillment = _sales_fulfillment(message_text)
+    details = _extract_customer_details(message_text)
+    if not fulfillment or not details:
+        return ""
+
+    customer_name, customer_email = details
+    set_sales_intake_fulfillment(conversation_id, fulfillment)
+    set_sales_intake_customer(conversation_id, customer_name, customer_email)
+    return _sales_summary(get_active_sales_intake(conversation_id))
+
+
 def _handle_sales_intake(
     conversation_id: int,
     customer_phone: str,
@@ -1982,6 +2005,14 @@ async def webhook_post(request: Request):
                         sale_candidate,
                         quantity=candidate_quantity,
                     )
+                    # If the client already sent delivery + contact details in
+                    # the same message as their purchase request, preserve them
+                    # and move directly to the confirmation summary.
+                    complete_summary = _apply_sale_details_from_same_message(
+                        conversation_id, message_text
+                    )
+                    if complete_summary:
+                        reply = complete_summary
                     handoff = None
                 except Exception as error:  # noqa: BLE001
                     print(f"ERROR iniciando ficha preseleccionada (tipo: {type(error).__name__})")
