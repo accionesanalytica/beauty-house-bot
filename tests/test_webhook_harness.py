@@ -52,6 +52,7 @@ class IncomingRequest:
         return self._body
 
 
+@patch.object(app, "CONVERSATION_DEBOUNCE_SECONDS", 0)
 class WebhookHarnessTests(unittest.TestCase):
     PHONE = "5491111111111"
 

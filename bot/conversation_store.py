@@ -173,6 +173,66 @@ def load_history(customer_phone: str, limit: int = 12) -> List[Dict[str, Any]]:
     return history
 
 
+def is_latest_customer_message(conversation_id: int, wa_message_id: str) -> bool:
+    """Return whether this event is still the newest customer message.
+
+    This small database-backed check makes the webhook debounce work across
+    Railway instances: only the last message in a burst is allowed to answer.
+    It is deliberately not a replacement for a future durable worker queue.
+    """
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT wa_message_id
+                FROM messages
+                WHERE conversation_id = %s
+                  AND direction = 'in'
+                  AND sender = 'customer'
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            )
+            row = cursor.fetchone()
+    finally:
+        connection.close()
+    return bool(row and row[0] == wa_message_id)
+
+
+def load_open_customer_turn(customer_phone: str, limit: int = 12) -> str:
+    """Join the customer's messages since Fred's last reply into one turn."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH conversation AS (
+                    SELECT id FROM conversations WHERE customer_phone = %s
+                ), last_bot_reply AS (
+                    SELECT COALESCE(MAX(id), 0) AS id
+                    FROM messages
+                    WHERE conversation_id = (SELECT id FROM conversation)
+                      AND direction = 'out'
+                )
+                SELECT body
+                FROM messages
+                WHERE conversation_id = (SELECT id FROM conversation)
+                  AND direction = 'in'
+                  AND sender = 'customer'
+                  AND id > (SELECT id FROM last_bot_reply)
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (customer_phone, limit),
+            )
+            rows = cursor.fetchall()
+    finally:
+        connection.close()
+    return "\n".join(row[0].strip() for row in rows if row[0] and row[0].strip())
+
+
 def get_active_sales_intake(conversation_id: int) -> Optional[Dict[str, Any]]:
     """Return the active sales-intake form for one customer conversation."""
     connection = _connect()
@@ -287,6 +347,15 @@ def set_sales_intake_customer(
         customer_name=customer_name,
         customer_email=customer_email,
     )
+
+
+def update_sales_intake_fields(
+    conversation_id: int,
+    status: str,
+    **values: Any,
+) -> None:
+    """Apply explicit corrections without discarding the rest of a sale draft."""
+    _update_sales_intake(conversation_id, status, **values)
 
 
 def mark_sales_intake_ready(conversation_id: int) -> None:

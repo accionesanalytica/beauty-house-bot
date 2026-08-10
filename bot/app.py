@@ -81,8 +81,10 @@ from conversation_store import (
     create_pending_action,
     get_isa_sale_session,
     get_active_sales_intake,
+    is_latest_customer_message,
     isa_reminders_snoozed,
     load_history,
+    load_open_customer_turn,
     list_pending_actions,
     mark_sales_intake_ready,
     pending_action_count,
@@ -97,6 +99,7 @@ from conversation_store import (
     set_sales_intake_fulfillment,
     set_sales_intake_product,
     set_sales_intake_quantity,
+    update_sales_intake_fields,
     set_conversation_state,
     set_isa_sale_session_type,
     start_isa_sale_session,
@@ -135,6 +138,15 @@ FRED_BETA_ALLOWED_PHONES = {
 }
 ISA_WHATSAPP_NUMBER = os.getenv("ISA_WHATSAPP_NUMBER", "")
 SALES_INTAKE_ENABLED = os.getenv("SALES_INTAKE_ENABLED", "false").lower() == "true"
+# A short pause lets WhatsApp users finish a natural burst ("hola" / "quiero
+# dos" / "retiro") before Fred decides. The database decides which event is
+# newest, so this remains safe if Railway later has more than one instance.
+try:
+    CONVERSATION_DEBOUNCE_SECONDS = max(
+        0.0, min(float(os.getenv("CONVERSATION_DEBOUNCE_SECONDS", "1.5")), 4.0)
+    )
+except ValueError:
+    CONVERSATION_DEBOUNCE_SECONDS = 1.5
 # Segunda llave explícita: incluso si existen credenciales demo, una aprobación
 # normal nunca crea nada. Solo sirve para probar el recorrido completo.
 DEMO_APPROVALS_ENABLED = (
@@ -633,6 +645,37 @@ def send_whatsapp_text(phone_number: str, text: str) -> bool:
         return True
     except Exception as error:  # noqa: BLE001
         print(f"ERROR enviando texto a WhatsApp: {type(error).__name__}")
+        return False
+
+
+def send_customer_fulfillment_buttons(phone_number: str) -> bool:
+    """Ask the one closed checkout question with native WhatsApp buttons."""
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": normalize_whatsapp_recipient(phone_number),
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": "¿Cómo preferís recibir tu compra?"},
+            "footer": {"text": "Elegí una opción para seguir"},
+            "action": {"buttons": [
+                {"type": "reply", "reply": {"id": "fulfillment:shipping", "title": "Envío"}},
+                {"type": "reply", "reply": {"id": "fulfillment:pickup", "title": "Retiro"}},
+            ]},
+        },
+    }
+    try:
+        response = requests.post(
+            f"https://graph.facebook.com/v26.0/{WHATSAPP_PHONE_ID}/messages",
+            json=payload,
+            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        return True
+    except Exception as error:  # noqa: BLE001
+        print(f"ERROR enviando botones de entrega: {type(error).__name__}")
         return False
 
 
@@ -1141,6 +1184,36 @@ def _extract_customer_details(text: str) -> tuple:
     return " ".join(name_words[:5]), email_match.group(0).lower()
 
 
+def _extract_customer_fields(text: str) -> dict:
+    """Extract only the identity fields explicitly present in a WhatsApp turn."""
+    fields = {}
+    email_match = re.search(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", text)
+    if email_match:
+        fields["customer_email"] = email_match.group(0).lower()
+
+    labeled_name = re.search(
+        r"(?im)^\s*(?:nombre(?:\s+y\s+apellido)?|nombre completo)\s*:\s*([^\r\n,;|]+)",
+        text,
+    )
+    natural_name = re.search(
+        r"(?i)\b(?:mi\s+)?nombre\s+(?:es|ser[ií]a)\s+"
+        r"([A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+){1,4})",
+        text,
+    )
+    candidate = labeled_name.group(1) if labeled_name else (natural_name.group(1) if natural_name else "")
+    words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", candidate)
+    if len(words) >= 2:
+        fields["customer_name"] = " ".join(words[:5])
+    return fields
+
+
+def _mask_email(email: str) -> str:
+    if not email or "@" not in email:
+        return "a confirmar"
+    local, domain = email.split("@", 1)
+    return "{}***@{}".format(local[:1], domain)
+
+
 def _customer_details_prompt(include_quantity: bool = False) -> str:
     """Request checkout data in a small, copyable WhatsApp form."""
     quantity_line = "Cantidad: \n" if include_quantity else ""
@@ -1148,7 +1221,6 @@ def _customer_details_prompt(include_quantity: bool = False) -> str:
         "¡Buenísimo! Para dejarlo listo, copiá y completá estas líneas. "
         "Así evitamos errores con el link 😊\n"
         "{}"
-        "Entrega: envío o retiro\n"
         "Nombre y apellido: \n"
         "Email: "
     ).format(quantity_line)
@@ -1281,7 +1353,7 @@ def _sales_summary(intake: dict) -> str:
         intake["quantity"],
         fulfillment,
         intake["customer_name"],
-        intake["customer_email"],
+        _mask_email(intake["customer_email"]),
         price_summary,
     )
 
@@ -1404,7 +1476,7 @@ def _start_sales_intake(
             quantity=quantity or None,
         )
         if quantity:
-            return _customer_details_prompt()
+            return "__FULFILLMENT_BUTTONS__"
         return _customer_details_prompt(include_quantity=True)
 
     start_sales_intake(conversation_id)
@@ -1426,15 +1498,84 @@ def _apply_sale_details_from_same_message(conversation_id: int, message_text: st
     if not intake or not intake.get("quantity"):
         return ""
 
+    _apply_sale_turn_updates(conversation_id, message_text, intake)
+    refreshed = get_active_sales_intake(conversation_id)
+    return _sales_summary(refreshed) if _sale_is_complete(refreshed) else ""
+
+
+def _sale_is_complete(intake: dict) -> bool:
+    return bool(
+        intake
+        and intake.get("quantity")
+        and intake.get("fulfillment")
+        and intake.get("customer_name")
+        and intake.get("customer_email")
+    )
+
+
+def _apply_sale_turn_updates(conversation_id: int, message_text: str, intake: dict = None) -> dict:
+    """Save every explicit field in a natural customer message.
+
+    The latest explicit value wins, so “perdón, son 3” replaces a prior two
+    even if Fred was asking for another field at that moment.
+    """
+    intake = intake or get_active_sales_intake(conversation_id)
+    if not intake:
+        return {}
+    values = {}
+    quantity = _extract_quantity(message_text)
     fulfillment = _sales_fulfillment(message_text)
     details = _extract_customer_details(message_text)
-    if not fulfillment or not details:
-        return ""
+    fields = _extract_customer_fields(message_text)
+    if quantity:
+        values["quantity"] = quantity
+    if fulfillment:
+        values["fulfillment"] = fulfillment
+    if details:
+        values["customer_name"], values["customer_email"] = details
+    values.update(fields)
+    # Do not rewrite a field merely because the client repeated it. Apart from
+    # avoiding needless writes, this keeps a stale form step from firing twice.
+    values = {field: value for field, value in values.items() if intake.get(field) != value}
+    if not values:
+        return intake
 
-    customer_name, customer_email = details
-    set_sales_intake_fulfillment(conversation_id, fulfillment)
-    set_sales_intake_customer(conversation_id, customer_name, customer_email)
-    return _sales_summary(get_active_sales_intake(conversation_id))
+    merged = dict(intake)
+    merged.update(values)
+    next_status = (
+        "quantity" if not merged.get("quantity") else
+        "fulfillment" if not merged.get("fulfillment") else
+        "customer" if not (merged.get("customer_name") and merged.get("customer_email")) else
+        "confirmation"
+    )
+    complete_identity = "customer_name" in values and "customer_email" in values
+    if "quantity" in values:
+        set_sales_intake_quantity(conversation_id, values.pop("quantity"))
+    if "fulfillment" in values:
+        set_sales_intake_fulfillment(conversation_id, values.pop("fulfillment"))
+    if complete_identity:
+        set_sales_intake_customer(
+            conversation_id,
+            values.pop("customer_name"),
+            values.pop("customer_email"),
+        )
+    if values:
+        update_sales_intake_fields(conversation_id, next_status, **values)
+    return merged
+
+
+def _sales_missing_step(intake: dict) -> str:
+    if not intake.get("quantity"):
+        return "¿Cuántas unidades querés llevar?"
+    if not intake.get("fulfillment"):
+        return "__FULFILLMENT_BUTTONS__"
+    if not intake.get("customer_name") and not intake.get("customer_email"):
+        return "Para dejarlo listo, pasame tu nombre y apellido junto con tu email 😊"
+    if not intake.get("customer_name"):
+        return "Perfecto. Me falta tu nombre y apellido para dejarlo listo 😊"
+    return "Perfecto, {}. Me falta tu email para dejarlo listo 😊".format(
+        intake.get("customer_name", "")
+    )
 
 
 def _handle_sales_intake(
@@ -1449,6 +1590,30 @@ def _handle_sales_intake(
     if re.fullmatch(r"(?:cancelar|cancelo|dejalo|no sigo)", normalized):
         cancel_sales_intake(conversation_id)
         reply = "Dale, cancelé esta preparación. Si querés volver a empezar, avisame 😊"
+    elif (updated_intake := _apply_sale_turn_updates(conversation_id, message_text, intake)) != intake:
+        reply = (
+            _sales_summary(updated_intake)
+            if _sale_is_complete(updated_intake)
+            else _sales_missing_step(updated_intake)
+        )
+        if reply == "__FULFILLMENT_BUTTONS__":
+            delivered = send_customer_fulfillment_buttons(customer_phone)
+            stored_reply = "¿Cómo preferís recibir tu compra? [Envío / Retiro]"
+        else:
+            delivered = send_whatsapp_text(customer_phone, reply)
+            stored_reply = reply
+        if delivered:
+            record_bot_message(conversation_id, stored_reply)
+        return True
+    elif _sale_is_complete(intake) and (
+        _sales_fulfillment(message_text)
+        or _extract_customer_fields(message_text)
+        or _extract_customer_details(message_text)
+    ):
+        reply = _sales_summary(intake)
+        if send_whatsapp_text(customer_phone, reply):
+            record_bot_message(conversation_id, reply)
+        return True
     elif intake["status"] == "product":
         set_sales_intake_product(conversation_id, message_text)
         reply = "Perfecto. ¿Cuántas unidades querés?"
@@ -1546,7 +1711,10 @@ def _handle_sales_intake(
     else:
         return False
 
-    if send_whatsapp_text(customer_phone, reply):
+    if reply == "__FULFILLMENT_BUTTONS__":
+        if send_customer_fulfillment_buttons(customer_phone):
+            record_bot_message(conversation_id, "¿Cómo preferís recibir tu compra? [Envío / Retiro]")
+    elif send_whatsapp_text(customer_phone, reply):
         record_bot_message(conversation_id, reply)
     return True
 
@@ -2973,9 +3141,12 @@ async def webhook_post(request: Request):
     state = "BOT"
     prior_history = []
     history_available = True
+
+    # Capture the earlier conversation before saving this inbound event.  The
+    # agent receives ``message_text`` separately, so this prevents the newest
+    # customer turn from appearing twice in its context.
     if BOT_RESPONSE_MODE == "agent":
         try:
-            # Load before storing the current message: answer() adds it once.
             prior_history = load_history(customer_phone)
         except Exception as error:  # noqa: BLE001
             history_available = False
@@ -3000,6 +3171,23 @@ async def webhook_post(request: Request):
         # Error details may contain database information, so log only its type.
         history_available = False
         print(f"ERROR guardando conversacion (tipo: {type(error).__name__})")
+
+    if BOT_RESPONSE_MODE == "agent" and history_available:
+        try:
+            # A client often writes one thought in several bubbles. Wait a
+            # small, bounded window; only the newest event in that burst gets
+            # to decide and it receives the complete customer turn.
+            if CONVERSATION_DEBOUNCE_SECONDS and conversation_id and wa_message_id:
+                await asyncio.sleep(CONVERSATION_DEBOUNCE_SECONDS)
+                if not is_latest_customer_message(conversation_id, wa_message_id):
+                    print("[Conversacion] Mensaje agrupado en una ráfaga posterior.")
+                    return JSONResponse(content={"ok": True})
+                grouped_text = load_open_customer_turn(customer_phone)
+                if grouped_text:
+                    message_text = grouped_text
+        except Exception as error:  # noqa: BLE001
+            history_available = False
+            print(f"ERROR agrupando conversacion (tipo: {type(error).__name__})")
 
     # ========================================================
     # RESPUESTA
@@ -3295,9 +3483,22 @@ async def webhook_post(request: Request):
                         conversation_context=prior_history,
                     )
 
-            delivered = send_whatsapp_text(customer_phone, reply)
+            # A slower model/tool turn must never answer an earlier version of
+            # the customer's thought. The newer inbound webhook will own the
+            # reply instead.
+            if CONVERSATION_DEBOUNCE_SECONDS and conversation_id and wa_message_id:
+                if not is_latest_customer_message(conversation_id, wa_message_id):
+                    print("[Conversacion] Respuesta obsoleta omitida por mensaje posterior.")
+                    return JSONResponse(content={"ok": True})
+
+            if reply == "__FULFILLMENT_BUTTONS__":
+                delivered = send_customer_fulfillment_buttons(customer_phone)
+                reply_to_store = "¿Cómo preferís recibir tu compra? [Envío / Retiro]"
+            else:
+                delivered = send_whatsapp_text(customer_phone, reply)
+                reply_to_store = reply
             if delivered:
-                record_bot_message(conversation_id, reply)
+                record_bot_message(conversation_id, reply_to_store)
                 print("[Conversacion] Respuesta del agente guardada.")
 
             effective_action = (

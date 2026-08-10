@@ -41,6 +41,25 @@ def _intake(status="confirmation"):
 
 
 class SalesFlowTests(unittest.TestCase):
+    def test_customer_fields_accept_email_without_reasking_for_name(self):
+        self.assertEqual(
+            app._extract_customer_fields("perdón, mi mail correcto es maria@hotmail.com"),
+            {"customer_email": "maria@hotmail.com"},
+        )
+
+    @patch.object(app, "set_sales_intake_quantity")
+    def test_latest_explicit_quantity_replaces_prior_quantity(self, set_quantity):
+        updated = app._apply_sale_turn_updates(
+            11, "perdón, son 3", _intake()
+        )
+        self.assertEqual(updated["quantity"], 3)
+        set_quantity.assert_called_once_with(11, 3)
+
+    def test_missing_fulfillment_uses_closed_choice_step(self):
+        intake = _intake()
+        intake["fulfillment"] = None
+        self.assertEqual(app._sales_missing_step(intake), "__FULFILLMENT_BUTTONS__")
+
     def test_confirmation_tolerates_typo_but_not_a_correction_sentence(self):
         self.assertTrue(app._is_sale_confirmation("si confimo"))
         self.assertTrue(app._is_sale_confirmation("confirmo"))
@@ -207,11 +226,13 @@ class SalesFlowTests(unittest.TestCase):
         )
 
         self.assertTrue(handled)
-        set_fulfillment.assert_called_once_with(11, "shipping")
-        set_customer.assert_called_once_with(11, "Luis Vera", "luis@example.com")
+        # The same-message parser now preserves already-known values instead
+        # of rewriting them just because the customer repeated the details.
+        set_fulfillment.assert_not_called()
+        set_customer.assert_not_called()
         self.assertIn("Subtotal de productos: $120.000", send_message.call_args.args[1])
         record_message.assert_called_once()
-        get_active.assert_called_once_with(11)
+        get_active.assert_not_called()
 
     @patch.object(app, "get_active_sales_intake")
     @patch.object(app, "set_sales_intake_customer")
@@ -230,8 +251,8 @@ class SalesFlowTests(unittest.TestCase):
             "Email: luis@example.com",
         )
 
-        set_fulfillment.assert_called_once_with(11, "shipping")
-        set_customer.assert_called_once_with(11, "Luis Vera", "luis@example.com")
+        set_fulfillment.assert_not_called()
+        set_customer.assert_not_called()
         self.assertIn("Cantidad: 4", summary)
         self.assertIn("Nombre: Luis Vera", summary)
 
