@@ -267,6 +267,72 @@ def get_active_sales_intake(conversation_id: int) -> Optional[Dict[str, Any]]:
     }
 
 
+def save_product_selection(conversation_id: int, candidate: Dict[str, Any]) -> None:
+    """Remember the last concrete, live-verified product a customer chose.
+
+    This is deliberately separate from ``sales_intakes``: showing interest in
+    a product is not yet a purchase. It lets a natural next message such as
+    “quiero dos, envío” keep the product without forcing the customer to type
+    the model name again.
+    """
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO conversation_product_selections (
+                    conversation_id, selected_sku, product_name, selected_variant, unit_price
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (conversation_id) DO UPDATE
+                SET selected_sku = EXCLUDED.selected_sku,
+                    product_name = EXCLUDED.product_name,
+                    selected_variant = EXCLUDED.selected_variant,
+                    unit_price = EXCLUDED.unit_price,
+                    updated_at = now()
+                """,
+                (
+                    conversation_id,
+                    candidate.get("sku"),
+                    candidate.get("product_name"),
+                    candidate.get("variant") or None,
+                    candidate.get("unit_price"),
+                ),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def get_product_selection(conversation_id: int) -> Optional[Dict[str, Any]]:
+    """Return the last product selection; stock is revalidated by the caller."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT selected_sku, product_name, selected_variant, unit_price
+                FROM conversation_product_selections
+                WHERE conversation_id = %s
+                """,
+                (conversation_id,),
+            )
+            row = cursor.fetchone()
+    finally:
+        connection.close()
+    if not row:
+        return None
+    return {
+        "sku": row[0],
+        "product_name": row[1],
+        "variant": row[2] or "",
+        "unit_price": row[3],
+    }
+
+
 def start_sales_intake(
     conversation_id: int,
     product_request: str = "",

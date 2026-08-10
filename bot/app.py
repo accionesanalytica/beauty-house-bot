@@ -81,6 +81,7 @@ from conversation_store import (
     create_pending_action,
     get_isa_sale_session,
     get_active_sales_intake,
+    get_product_selection,
     is_latest_customer_message,
     isa_reminders_snoozed,
     load_history,
@@ -95,6 +96,7 @@ from conversation_store import (
     resolve_pending_action,
     release_daily_isa_reminder,
     save_pending_action_checkout,
+    save_product_selection,
     set_sales_intake_customer,
     set_sales_intake_fulfillment,
     set_sales_intake_product,
@@ -454,17 +456,14 @@ def _expresses_purchase(text: str) -> bool:
     )
 
 
-def _live_purchase_candidate(live_context: str, message_text: str) -> dict:
-    """Turn one unambiguous, already-live-verified choice into a sale candidate.
+def _live_product_candidate(live_context: str, message_text: str) -> dict:
+    """Resolve one unambiguous, already-live-verified product mention.
 
-    The candidate still goes through the normal persisted intake and Isa's
-    approval. This only removes the unnecessary model round that used to lose
-    a customer's product, quantity and contact details immediately after they
-    had written them in one WhatsApp message.
+    Selection and purchase are deliberately different states: a client can ask
+    about Isabel I now and write “quiero dos” in the next WhatsApp message.
+    The selection is persisted, while a sale is opened only after purchase
+    intent is explicit.
     """
-    if not _expresses_purchase(message_text):
-        return {}
-
     normalized_message = _normalized_text(message_text)
     candidates = []
     pattern = (
@@ -499,6 +498,32 @@ def _live_purchase_candidate(live_context: str, message_text: str) -> dict:
         "sku": stock.get("sku") or sku,
         "product_name": stock.get("product_name") or product_name,
         "variant": stock.get("variant") or variant,
+        "unit_price": stock.get("price"),
+    }
+
+
+def _live_purchase_candidate(live_context: str, message_text: str) -> dict:
+    """Return a verified candidate only when the same message asks to buy."""
+    if not _expresses_purchase(message_text):
+        return {}
+    return _live_product_candidate(live_context, message_text)
+
+
+def _revalidate_product_candidate(candidate: dict) -> dict:
+    """Never use a remembered product without checking current Tiendanube stock."""
+    if not candidate or not candidate.get("sku"):
+        return {}
+    try:
+        stock = get_stock(candidate["sku"])
+    except Exception as error:  # noqa: BLE001
+        print("ERROR revalidando selección (tipo: {}).".format(type(error).__name__))
+        return {}
+    if stock.get("status") != "in_stock":
+        return {}
+    return {
+        "sku": stock.get("sku") or candidate["sku"],
+        "product_name": stock.get("product_name") or candidate.get("product_name"),
+        "variant": stock.get("variant") or candidate.get("variant") or "",
         "unit_price": stock.get("price"),
     }
 
@@ -3288,9 +3313,34 @@ async def webhook_post(request: Request):
             rag_context = "\n\n".join(
                 context for context in (catalog_context, knowledge_context) if context
             )
+            # A named product is useful context even before the client decides
+            # to buy. Persist it separately from a sale so the next natural
+            # message (“quiero dos, envío”) does not lose the chosen SKU.
+            selected_product_candidate = _live_product_candidate(
+                live_candidate_context, message_text
+            )
+            if selected_product_candidate:
+                try:
+                    save_product_selection(conversation_id, selected_product_candidate)
+                except Exception as error:  # noqa: BLE001
+                    # Selection memory improves the journey but must never
+                    # block a normal customer answer if storage is temporary.
+                    print("ERROR guardando selección (tipo: {}).".format(type(error).__name__))
             direct_sale_candidate = _live_purchase_candidate(
                 live_candidate_context, message_text
             )
+            if not direct_sale_candidate and (
+                _expresses_purchase(message_text) or _is_sale_confirmation(message_text)
+            ):
+                # The customer may have named the model in the prior turn.
+                # Re-check stock now; a remembered selection is never a
+                # substitute for Tiendanube's current availability.
+                try:
+                    direct_sale_candidate = _revalidate_product_candidate(
+                        get_product_selection(conversation_id)
+                    )
+                except Exception as error:  # noqa: BLE001
+                    print("ERROR leyendo selección (tipo: {}).".format(type(error).__name__))
             grounded_reply = _grounded_lash_recommendation(live_candidate_context, catalog_query)
             if direct_sale_candidate:
                 # Purchase intent always outranks a recommendation card. The
@@ -3426,7 +3476,13 @@ async def webhook_post(request: Request):
                 else:
                     action_type = "bot_fallback"
                 if action_type == "purchase_review" and SALES_INTAKE_ENABLED:
-                    reply = _start_sales_intake(conversation_id)
+                    # A model may detect purchase intent, but it may never
+                    # open a blank sale form. Only a SKU verified above can
+                    # create an intake; otherwise ask for one clear choice.
+                    reply = (
+                        "Dale 😊 Para avanzar necesito saber cuál producto querés llevar. "
+                        "Decime el modelo o mandame el link y lo verifico."
+                    )
                 else:
                     _queue_for_isa(
                         conversation_id,

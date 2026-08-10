@@ -5,7 +5,8 @@ Este documento describe la operación real. No contiene contraseñas ni tokens.
 ## Qué hace Fred hoy
 
 1. Atiende consultas y recomendaciones con catálogo/stock vigente de Tiendanube.
-2. Si una clienta elige un producto normal, junta producto, cantidad, entrega y contacto.
+2. Si una clienta elige un producto normal, Fred recuerda el SKU verificado y
+   junta cantidad, entrega y contacto sin pedir de nuevo lo que ya recibió.
 3. Isa aprueba la ficha antes de que Fred cree un checkout. Tiendanube es quien reserva stock y registra el pago/pedido.
 4. Un encargo, preventa, cotización especial o venta mayorista **no** se convierte en checkout normal: se deriva a Isa y usa las condiciones vigentes.
 5. Isa puede responder mediante Fred desde su WhatsApp usando **Responder a Fred**. Fred entrega ese dato a la clienta y retoma el chat.

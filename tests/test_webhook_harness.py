@@ -334,6 +334,69 @@ class WebhookHarnessTests(unittest.TestCase):
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
     @patch.object(app, "load_history", return_value=[])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
+    @patch.object(app, "KNOWLEDGE_RAG_ENABLED", False)
+    @patch.object(app, "SALES_INTAKE_ENABLED", True)
+    @patch.object(app, "get_active_sales_intake", return_value=None)
+    def test_purchase_details_use_previous_verified_selection_without_model(
+        self, active_intake, history, inbound, send_message, record_message, record_turn
+    ):
+        selected = {
+            "sku": "ISABEL-CHOCO", "product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
+            "variant": "8/8/10/12 mm", "unit_price": "30000",
+        }
+        live_stock = {"status": "in_stock", **selected, "price": "30000"}
+        with patch.object(app, "search_similar_products", return_value=""), patch.object(
+            app, "_live_candidate_context", return_value=""
+        ), patch.object(app, "get_product_selection", return_value=selected), patch.object(
+            app, "get_stock", return_value=live_stock
+        ), patch.object(app, "_start_sales_intake", return_value="pedir datos") as start_intake, patch.object(
+            app, "_apply_sale_details_from_same_message", return_value="Resumen listo"
+        ), patch.object(app, "answer") as ask_model:
+            response = self._post(
+                "Quiero 2 unidades, envío. Nombre: Luis Vera. Email: luis@example.com",
+                "wamid-previous-selection",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        ask_model.assert_not_called()
+        self.assertEqual(start_intake.call_args.args[1]["sku"], "ISABEL-CHOCO")
+        self.assertEqual(start_intake.call_args.kwargs["quantity"], 2)
+        send_message.assert_called_once_with(self.PHONE, "Resumen listo")
+
+    @patch.object(app, "record_agent_turn")
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
+    @patch.object(app, "load_history", return_value=[])
+    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
+    @patch.object(app, "KNOWLEDGE_RAG_ENABLED", False)
+    @patch.object(app, "SALES_INTAKE_ENABLED", True)
+    @patch.object(app, "get_active_sales_intake", return_value=None)
+    def test_model_purchase_handoff_cannot_open_blank_sale_form(
+        self, active_intake, history, inbound, send_message, record_message, record_turn
+    ):
+        result = {
+            "reply": "Voy a preparar la compra.", "tool_calls": [], "usage": {},
+            "handoff": {"reason": "purchase_intent", "summary": "Quiere comprar."},
+            "decision": {"action": "start_sales_intake", "reason": "purchase_intent"},
+        }
+        with patch.object(app, "search_similar_products", return_value=""), patch.object(
+            app, "_live_candidate_context", return_value=""
+        ), patch.object(app, "get_product_selection", return_value=None), patch.object(
+            app, "_start_sales_intake"
+        ) as start_intake, patch.object(app, "answer", return_value=result):
+            response = self._post("Quiero comprar", "wamid-no-product")
+
+        self.assertEqual(response.status_code, 200)
+        start_intake.assert_not_called()
+        self.assertIn("cuál producto", send_message.call_args.args[1])
+
+    @patch.object(app, "record_agent_turn")
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
+    @patch.object(app, "load_history", return_value=[])
+    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
     @patch.object(app, "KNOWLEDGE_RAG_ENABLED", True)
     def test_embedding_outage_falls_back_to_lexical_catalog(
         self, history, inbound, send_message, record_message, record_turn

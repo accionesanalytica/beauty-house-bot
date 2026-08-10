@@ -12,6 +12,23 @@ long-running tool can still receive a newer message after it begins.
 
 ## Adaptive purchase intake
 
+Before a sale exists, Fred remembers the last **named, live-verified** product
+selected in a conversation (SKU, variant and reference price). Interest is not
+an order: this small selection state is separate from the sales form.
+
+That means this natural sequence is valid:
+
+1. Clienta: “Quiero las Isabel I chocolate.”
+2. Fred verifies the SKU and remembers that choice.
+3. Clienta: “Quiero dos, envío. Nombre: Laura Pérez. Email: laura@…”
+4. Fred rechecks Tiendanube stock, opens the real intake with Isabel I, and
+   preserves every detail in the same message.
+
+The model cannot open a blank sales form. Only code can open one, and only
+after a concrete SKU has been verified against current Tiendanube stock. If
+the product is ambiguous, Fred asks for a model or link instead of asking for
+generic customer fields.
+
 Every message during an active purchase can update explicit fields. Latest
 explicit value wins for quantity, fulfillment, name and email. Fred asks only
 for missing information:
@@ -25,6 +42,9 @@ for missing information:
 Address, locality and postal code are intentionally collected by Tiendanube's
 checkout, not duplicated in WhatsApp. The customer and Isa both see the full
 email in the sale summary so they can catch a typo before approval.
+
+Database prerequisite: run `docs/sql/006_conversation_product_selections.sql`
+once in Supabase before enabling this behavior in production.
 
 ## Future boundary
 

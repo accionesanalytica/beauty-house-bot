@@ -2,7 +2,9 @@
 
 ## Flujo de venta normal
 
-1. Fred verifica producto, variante, precio y disponibilidad actuales.
+1. Fred verifica producto, variante, precio y disponibilidad actuales. Puede
+   recordar esa selección en el mismo chat; antes de abrir una compra vuelve a
+   verificar el SKU y el stock en Tiendanube.
 2. Reúne cantidad, envío/retiro, nombre y email, y muestra el resumen.
 3. La clienta confirma; Isa recibe una tarjeta **Aprobar compra**.
 4. Al aprobar, Fred consulta de nuevo el SKU y el stock real en Tiendanube.
@@ -14,6 +16,10 @@
 Fred no descuenta stock mediante una segunda llamada. Tiendanube conserva la
 fuente de verdad del pedido y del inventario; una doble modificación sería un
 riesgo de sobreventa.
+
+Fred nunca abre una ficha de venta sin SKU. Si la clienta dice “quiero comprar”
+pero no se puede asociar a una selección reciente y verificable, pide el modelo
+o link antes de solicitar sus datos personales.
 
 ## Interruptor de seguridad
 
