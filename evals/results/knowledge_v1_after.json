@@ -1,0 +1,537 @@
+{
+  "knowledge_dir": "knowledge",
+  "case_count": 25,
+  "chunk_count": 42,
+  "summary": {
+    "ESCALATED_CORRECTLY": 7,
+    "RESOLVED_CORRECTLY": 12,
+    "UNSUPPORTED": 6
+  },
+  "limitations": [
+    "Live checks are requirements recorded by the benchmark; this local runner does not call Tiendanube.",
+    "Multi-message concurrency and sales orchestration are reported as UNSUPPORTED, outside Knowledge V1 scope.",
+    "Repetition and final prose quality require a model/harness evaluation in Fase C."
+  ],
+  "results": [
+    {
+      "id": "tracking_no_code",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations",
+        "order_tracking",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "procedure-order-tracking-v1",
+        "facts-order-tracking-v1",
+        "faq-customer-service-v1",
+        "procedure-commercial-postsale-v1",
+        "facts-commercial-operations-v1",
+        "facts-commercial-operations-v1"
+      ],
+      "required_live_checks": [
+        "order_lookup"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "tracking_stalled",
+      "classification": "ESCALATED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations",
+        "lashes_guidance",
+        "order_tracking",
+        "pickups_showroom"
+      ],
+      "retrieved_sources": [
+        "facts-order-tracking-v1",
+        "facts-commercial-operations-v1",
+        "facts-lashes-products-v1",
+        "facts-pickups-showroom-v1",
+        "facts-pickups-showroom-v1",
+        "facts-order-tracking-v1"
+      ],
+      "required_live_checks": [
+        "order_lookup",
+        "tracking_lookup"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "order_not_found_channel",
+      "classification": "ESCALATED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations",
+        "order_tracking",
+        "pickups_showroom",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "facts-pickups-showroom-v1",
+        "procedure-order-tracking-v1",
+        "faq-customer-service-v1",
+        "procedure-pickups-v1",
+        "facts-commercial-operations-v1",
+        "facts-order-tracking-v1"
+      ],
+      "required_live_checks": [
+        "order_lookup"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "pickup_third_person",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations",
+        "pickups_showroom",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "faq-customer-service-v1",
+        "facts-pickups-showroom-v1",
+        "facts-pickups-showroom-v1",
+        "faq-customer-service-v1",
+        "facts-commercial-operations-v1",
+        "facts-commercial-operations-v1"
+      ],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "pickup_courier",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations",
+        "order_tracking",
+        "pickups_showroom"
+      ],
+      "retrieved_sources": [
+        "facts-pickups-showroom-v1",
+        "procedure-order-tracking-v1",
+        "procedure-pickups-v1",
+        "facts-commercial-operations-v1",
+        "facts-order-tracking-v1",
+        "facts-order-tracking-v1"
+      ],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "showroom_visit",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "pickups_showroom"
+      ],
+      "retrieved_sources": [
+        "facts-pickups-showroom-v1",
+        "facts-pickups-showroom-v1",
+        "facts-pickups-showroom-v1",
+        "facts-pickups-showroom-v1",
+        "procedure-pickups-v1",
+        "procedure-pickups-v1"
+      ],
+      "required_live_checks": [
+        "calendar_availability"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "lifting_recommendation",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "lashes_guidance",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "facts-lashes-products-v1",
+        "procedure-lashes-guidance-v1",
+        "faq-customer-service-v1",
+        "facts-lashes-products-v1",
+        "facts-lashes-products-v1",
+        "facts-lashes-products-v1"
+      ],
+      "required_live_checks": [
+        "catalog_stock"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "cluster_seven_days",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations",
+        "lashes_guidance",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "facts-lashes-products-v1",
+        "facts-commercial-operations-v1",
+        "facts-lashes-products-v1",
+        "faq-customer-service-v1",
+        "facts-commercial-operations-v1",
+        "facts-lashes-products-v1"
+      ],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "lash_cleaning",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "lashes_guidance",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "faq-customer-service-v1",
+        "facts-lashes-products-v1",
+        "facts-lashes-products-v1",
+        "facts-lashes-products-v1",
+        "facts-lashes-products-v1",
+        "procedure-lashes-guidance-v1"
+      ],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "lash_reaction",
+      "classification": "ESCALATED_CORRECTLY",
+      "retrieved_topics": [
+        "lashes_guidance",
+        "order_tracking",
+        "pickups_showroom"
+      ],
+      "retrieved_sources": [
+        "procedure-lashes-guidance-v1",
+        "procedure-pickups-v1",
+        "facts-lashes-products-v1",
+        "facts-lashes-products-v1",
+        "facts-lashes-products-v1",
+        "facts-order-tracking-v1"
+      ],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "touchup_kit_contents",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "touchup_kit",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "faq-customer-service-v1",
+        "facts-touchup-kit-v1",
+        "facts-touchup-kit-v1",
+        "facts-touchup-kit-v1",
+        "procedure-touchup-kit-spray-v1"
+      ],
+      "required_live_checks": [
+        "catalog_price_stock"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "touchup_kit_spray",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "touchup_kit",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "procedure-touchup-kit-spray-v1",
+        "facts-touchup-kit-v1",
+        "faq-customer-service-v1",
+        "facts-touchup-kit-v1",
+        "facts-touchup-kit-v1"
+      ],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "wholesale_general",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations",
+        "lashes_guidance",
+        "touchup_kit",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "faq-customer-service-v1",
+        "faq-customer-service-v1",
+        "facts-commercial-operations-v1",
+        "facts-commercial-operations-v1",
+        "facts-lashes-products-v1",
+        "facts-touchup-kit-v1"
+      ],
+      "required_live_checks": [
+        "wholesale_listing"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "wholesale_unpublished",
+      "classification": "ESCALATED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations"
+      ],
+      "retrieved_sources": [
+        "procedure-commercial-postsale-v1",
+        "facts-commercial-operations-v1",
+        "procedure-commercial-postsale-v1",
+        "procedure-commercial-postsale-v1"
+      ],
+      "required_live_checks": [
+        "wholesale_listing"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "special_order",
+      "classification": "ESCALATED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "facts-commercial-operations-v1",
+        "procedure-commercial-postsale-v1",
+        "procedure-commercial-postsale-v1",
+        "procedure-commercial-postsale-v1",
+        "procedure-commercial-postsale-v1",
+        "faq-customer-service-v1"
+      ],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "payment_modes",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "faq-customer-service-v1",
+        "facts-commercial-operations-v1",
+        "facts-commercial-operations-v1",
+        "procedure-commercial-postsale-v1",
+        "facts-commercial-operations-v1",
+        "facts-commercial-operations-v1"
+      ],
+      "required_live_checks": [
+        "current_fees_discounts"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "courier_quote",
+      "classification": "RESOLVED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations",
+        "customer_service_faq"
+      ],
+      "retrieved_sources": [
+        "faq-customer-service-v1",
+        "facts-commercial-operations-v1",
+        "facts-commercial-operations-v1",
+        "facts-commercial-operations-v1",
+        "facts-commercial-operations-v1"
+      ],
+      "required_live_checks": [
+        "current_courier_quote"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "wrong_product",
+      "classification": "ESCALATED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations",
+        "order_tracking"
+      ],
+      "retrieved_sources": [
+        "procedure-commercial-postsale-v1",
+        "procedure-order-tracking-v1",
+        "procedure-commercial-postsale-v1",
+        "procedure-commercial-postsale-v1",
+        "procedure-commercial-postsale-v1",
+        "procedure-commercial-postsale-v1"
+      ],
+      "required_live_checks": [
+        "order_lookup"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "refund_request",
+      "classification": "ESCALATED_CORRECTLY",
+      "retrieved_topics": [
+        "commercial_operations"
+      ],
+      "retrieved_sources": [
+        "procedure-commercial-postsale-v1",
+        "facts-commercial-operations-v1",
+        "facts-commercial-operations-v1",
+        "facts-commercial-operations-v1",
+        "facts-commercial-operations-v1",
+        "procedure-commercial-postsale-v1"
+      ],
+      "required_live_checks": [
+        "order_lookup"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": false,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "fragmented_catalog_query",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    },
+    {
+      "id": "quantity_correction",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    },
+    {
+      "id": "product_change",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    },
+    {
+      "id": "ambiguous_yes",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    },
+    {
+      "id": "new_question_during_escalation",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    },
+    {
+      "id": "rapid_messages",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    }
+  ]
+}

@@ -1,0 +1,382 @@
+{
+  "knowledge_dir": "/private/tmp/fred-knowledge-baseline",
+  "case_count": 25,
+  "chunk_count": 5,
+  "summary": {
+    "INCORRECT": 19,
+    "UNSUPPORTED": 6
+  },
+  "limitations": [
+    "Live checks are requirements recorded by the benchmark; this local runner does not call Tiendanube.",
+    "Multi-message concurrency and sales orchestration are reported as UNSUPPORTED, outside Knowledge V1 scope.",
+    "Repetition and final prose quality require a model/harness evaluation in Fase C."
+  ],
+  "results": [
+    {
+      "id": "tracking_no_code",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [
+        "order_lookup"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "tracking_stalled",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [
+        "politicas-operativas",
+        "politicas-operativas"
+      ],
+      "required_live_checks": [
+        "order_lookup",
+        "tracking_lookup"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "order_not_found_channel",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [
+        "politicas-operativas",
+        "politicas-operativas"
+      ],
+      "required_live_checks": [
+        "order_lookup"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "pickup_third_person",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [
+        "politicas-operativas"
+      ],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": false,
+      "missing_disclosures": [],
+      "missing_links": [
+        "pickup-calendar"
+      ],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "pickup_courier",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [
+        "politicas-operativas",
+        "politicas-operativas"
+      ],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": false,
+      "missing_disclosures": [],
+      "missing_links": [
+        "pickup-calendar"
+      ],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "showroom_visit",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [
+        "calendar_availability"
+      ],
+      "required_disclosures_ok": false,
+      "required_links_ok": true,
+      "missing_disclosures": [
+        "showroom-closed"
+      ],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "lifting_recommendation",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [
+        "catalog_stock"
+      ],
+      "required_disclosures_ok": false,
+      "required_links_ok": false,
+      "missing_disclosures": [
+        "lifting-cluster-only"
+      ],
+      "missing_links": [
+        "taylor-lifting-video"
+      ],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "cluster_seven_days",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [],
+      "required_disclosures_ok": false,
+      "required_links_ok": false,
+      "missing_disclosures": [
+        "aoa-removable-not-seven-days"
+      ],
+      "missing_links": [
+        "taylor-lifting-video"
+      ],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "lash_cleaning",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "lash_reaction",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "touchup_kit_contents",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [
+        "catalog_price_stock"
+      ],
+      "required_disclosures_ok": false,
+      "required_links_ok": false,
+      "missing_disclosures": [
+        "kit-empty",
+        "kit-spray-pressure"
+      ],
+      "missing_links": [
+        "touchup-kit-video"
+      ],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "touchup_kit_spray",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [],
+      "required_disclosures_ok": false,
+      "required_links_ok": false,
+      "missing_disclosures": [
+        "kit-empty",
+        "kit-spray-pressure"
+      ],
+      "missing_links": [
+        "touchup-kit-video"
+      ],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "wholesale_general",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [
+        "wholesale_listing"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": false,
+      "missing_disclosures": [],
+      "missing_links": [
+        "wholesale-section"
+      ],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "wholesale_unpublished",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [
+        "wholesale_listing"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "special_order",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "payment_modes",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [
+        "politicas-operativas"
+      ],
+      "required_live_checks": [
+        "current_fees_discounts"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "courier_quote",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [
+        "current_courier_quote"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "wrong_product",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [
+        "order_lookup"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "refund_request",
+      "classification": "INCORRECT",
+      "retrieved_topics": [],
+      "retrieved_sources": [],
+      "required_live_checks": [
+        "order_lookup"
+      ],
+      "required_disclosures_ok": true,
+      "required_links_ok": true,
+      "missing_disclosures": [],
+      "missing_links": [],
+      "routing_incorrect": true,
+      "dynamic_information_invented": false,
+      "unnecessary_data_repetition": "NOT_EVALUATED_WITHOUT_MODEL"
+    },
+    {
+      "id": "fragmented_catalog_query",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    },
+    {
+      "id": "quantity_correction",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    },
+    {
+      "id": "product_change",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    },
+    {
+      "id": "ambiguous_yes",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    },
+    {
+      "id": "new_question_during_escalation",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    },
+    {
+      "id": "rapid_messages",
+      "classification": "UNSUPPORTED",
+      "finding": "Caso multi-message/orquestación: se documenta, no se corrige en Fase B.",
+      "retrieved_topics": []
+    }
+  ]
+}

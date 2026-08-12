@@ -19,6 +19,8 @@ backups/
 data/catalog.json
 data/catalog_flat.csv
 *.jsonl
+# Benchmark curado y anonimizado de Knowledge V1; sí forma parte del proyecto.
+!evals/knowledge_v1_cases.jsonl
 bot/*.save
 
 # Sistema

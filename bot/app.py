@@ -19,6 +19,7 @@ from urllib.parse import parse_qs
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 # Agregar el directorio actual al path para importar agent.py
@@ -40,11 +41,34 @@ from catalog_rag import (
     fuse_catalog_candidates,
     lexical_catalog_query,
 )
-from knowledge_rag import approved_knowledge_rows, format_knowledge_context
+from knowledge_rag import (
+    DEFAULT_KNOWLEDGE_TOP_K,
+    KnowledgeRetrieval,
+    approved_knowledge_rows,
+    build_knowledge_retrieval,
+    load_knowledge_chunks,
+    retrieve_local_knowledge,
+    retrieve_with_recent_context,
+    enforce_knowledge_obligations,
+    extract_https_urls,
+)
+from dynamic_checks import (
+    execute_dynamic_requirements,
+    format_dynamic_check_context,
+)
+from conversation_quality import apply_conversation_contract
+from routing_policy import (
+    align_reply_with_routing,
+    legacy_special_sale_context,
+    lifting_clarification_reply,
+    resolve_harness_routing,
+    visible_routing_contract,
+)
 from tiendanube_checkout import CheckoutError, checkout_enabled, create_approved_checkout
 from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
 from tiendanube_tools import (
     catalog_health_audit,
+    get_order_status,
     get_product_availability,
     get_stock,
     search_available_products,
@@ -125,6 +149,11 @@ WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN")
 SUPABASE_DB_URL = os.getenv("SUPABASE_DB_URL")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 KNOWLEDGE_RAG_ENABLED = os.getenv("KNOWLEDGE_RAG_ENABLED", "false").lower() == "true"
+KNOWLEDGE_RAG_SOURCE = os.getenv("KNOWLEDGE_RAG_SOURCE", "local").strip().lower()
+if KNOWLEDGE_RAG_SOURCE not in {"local", "supabase"}:
+    print("[Knowledge] Fuente inválida; se usa local como fallback seguro.")
+    KNOWLEDGE_RAG_SOURCE = "local"
+KNOWLEDGE_DIRECTORY = Path(__file__).resolve().parents[1] / "knowledge"
 
 # Seguridad: hasta completar las pruebas, el webhook conserva la plantilla
 # actual. El modo agent se habilitará explícitamente en una etapa posterior.
@@ -528,10 +557,30 @@ def _revalidate_product_candidate(candidate: dict) -> dict:
     }
 
 
-def search_knowledge_context(query: str, limit: int = 3, query_embedding=None) -> str:
-    """Retrieve only reviewed knowledge when the feature is explicitly enabled."""
-    if not KNOWLEDGE_RAG_ENABLED:
-        return ""
+def _search_local_knowledge_bundle(
+    query: str,
+    limit: int = DEFAULT_KNOWLEDGE_TOP_K,
+) -> KnowledgeRetrieval:
+    """Read the reviewed Markdown corpus without any external dependency."""
+    try:
+        return retrieve_local_knowledge(
+            query,
+            load_knowledge_chunks(KNOWLEDGE_DIRECTORY),
+            limit=limit,
+        )
+    except Exception as error:  # noqa: BLE001
+        print("ERROR en knowledge local (tipo: {})".format(type(error).__name__))
+        return KnowledgeRetrieval()
+
+
+def _search_supabase_knowledge_bundle(
+    query: str,
+    limit: int = DEFAULT_KNOWLEDGE_TOP_K,
+    query_embedding=None,
+) -> Optional[KnowledgeRetrieval]:
+    """Retrieve reviewed Knowledge V1 rows, returning None on provider failure."""
+    conn = None
+    cursor = None
     try:
         embedding = query_embedding or embed_text(query, task_type="RETRIEVAL_QUERY")
         conn = psycopg2.connect(SUPABASE_DB_URL)
@@ -539,9 +588,12 @@ def search_knowledge_context(query: str, limit: int = 3, query_embedding=None) -
         cursor.execute(
             """
             SELECT source_id, section, content, status, active,
-                   1 - (embedding <=> %s::vector) AS similarity
+                   1 - (embedding <=> %s::vector) AS similarity,
+                   COALESCE(to_jsonb(knowledge_chunks) -> 'metadata', '{}'::jsonb) AS metadata
             FROM knowledge_chunks
             WHERE active = true AND status = 'approved'
+              AND COALESCE(to_jsonb(knowledge_chunks) -> 'metadata' ->> 'approved_by', '') = 'Isa'
+              AND COALESCE(to_jsonb(knowledge_chunks) -> 'metadata' ->> 'id', '') = source_id
             ORDER BY embedding <=> %s::vector
             LIMIT %s
             """,
@@ -551,15 +603,73 @@ def search_knowledge_context(query: str, limit: int = 3, query_embedding=None) -
             {
                 "source_id": row[0], "section": row[1], "content": row[2],
                 "status": row[3], "active": row[4], "similarity": row[5],
+                "metadata": row[6] or {},
             }
             for row in cursor.fetchall()
         ]
         cursor.close()
-        conn.close()
-        return format_knowledge_context(approved_knowledge_rows(rows, limit=limit))
+        cursor = None
+        accepted_rows = approved_knowledge_rows(rows, limit=limit)
+        topics = sorted({
+            str((row.get("metadata") or {}).get("topic") or "")
+            for row in accepted_rows if (row.get("metadata") or {}).get("topic")
+        })
+        obligation_rows = accepted_rows
+        if topics:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT DISTINCT COALESCE(to_jsonb(knowledge_chunks) -> 'metadata', '{}'::jsonb)
+                FROM knowledge_chunks
+                WHERE active = true AND status = 'approved'
+                  AND COALESCE(to_jsonb(knowledge_chunks) -> 'metadata' ->> 'approved_by', '') = 'Isa'
+                  AND COALESCE(to_jsonb(knowledge_chunks) -> 'metadata' ->> 'id', '') = source_id
+                  AND COALESCE(to_jsonb(knowledge_chunks) -> 'metadata' ->> 'topic', '') = ANY(%s)
+                """,
+                (topics,),
+            )
+            obligation_rows = [{"metadata": row[0] or {}} for row in cursor.fetchall()]
+            cursor.close()
+            cursor = None
+        return build_knowledge_retrieval(
+            accepted_rows, query=query, obligation_rows=obligation_rows
+        )
     except Exception as error:  # noqa: BLE001
-        print("ERROR en search_knowledge_context (tipo: {})".format(type(error).__name__))
-        return ""
+        print("ERROR en knowledge Supabase (tipo: {}); fallback local.".format(type(error).__name__))
+        return None
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if conn is not None:
+            conn.close()
+
+
+def search_knowledge_bundle(
+    query: str,
+    limit: int = DEFAULT_KNOWLEDGE_TOP_K,
+    query_embedding=None,
+) -> KnowledgeRetrieval:
+    """Select Knowledge source explicitly; Supabase failures fall back to local."""
+    if not KNOWLEDGE_RAG_ENABLED:
+        return KnowledgeRetrieval()
+    if KNOWLEDGE_RAG_SOURCE == "supabase":
+        retrieval = _search_supabase_knowledge_bundle(
+            query,
+            limit=limit,
+            query_embedding=query_embedding,
+        )
+        if retrieval is not None:
+            return retrieval
+    return _search_local_knowledge_bundle(query, limit=limit)
+
+
+def search_knowledge_context(
+    query: str,
+    limit: int = DEFAULT_KNOWLEDGE_TOP_K,
+    query_embedding=None,
+) -> str:
+    """Backward-compatible text-only wrapper used by older callers/tests."""
+    return search_knowledge_bundle(query, limit, query_embedding).context
 
 
 # ============================================================
@@ -1091,24 +1201,8 @@ def _customer_escalation_type(message_text: str, has_bot_history: bool) -> str:
 
 
 def _is_special_sale_context(message_text: str, prior_history: list) -> bool:
-    """Keep a live special-sale thread out of normal checkout, not stale history."""
-    normalized_current = _normalized_text(message_text)
-    special_words = r"\b(encargo|encargar|preventa|mayorista|cotizacion)\b"
-    if re.search(special_words, normalized_current):
-        return True
-
-    # “Sí, porfa” retains the immediately preceding encargo context, but an
-    # unrelated purchase several turns later must be allowed to start normally.
-    last_assistant_text = next(
-        (
-            _normalized_text(item.get("content", ""))
-            for item in reversed(prior_history or [])
-            if item.get("role") == "assistant"
-        ),
-        "",
-    )
-    is_short_affirmation = bool(re.fullmatch(r"(?:si|si porfa|dale|ok|perfecto)", normalized_current.strip()))
-    return bool(is_short_affirmation and re.search(special_words, last_assistant_text))
+    """Backward-compatible wrapper around the shared pure routing policy."""
+    return legacy_special_sale_context(message_text, prior_history)
 
 
 def _needs_purchase_clarification(message_text: str, prior_history: list) -> bool:
@@ -1288,21 +1382,8 @@ def _simple_customer_reply(text: str) -> str:
 
 
 def _lifting_clarification_reply(text: str) -> str:
-    """Keep lifting advice safe without turning it into a human handoff.
-
-    Fred cannot verify compatibility from a photo or a generic style request.
-    A product name or public link gives it a concrete item for a later
-    Tiendanube/knowledge check, while the conversation remains fluid.
-    """
-    normalized = _normalized_text(text)
-    if "lifting" not in normalized:
-        return ""
-    return (
-        "Para orientarte bien sin prometerte algo que no esté confirmado: "
-        "¿tenés el nombre exacto o el link del modelo que te gustaría usar? "
-        "Si todavía no lo elegiste, contame si buscás pestañas de banda o cluster "
-        "y te ayudo a ubicar opciones 😊"
-    )
+    """Backward-compatible wrapper shared with the read-only shadow."""
+    return lifting_clarification_reply(text)
 
 
 def _customer_access_reply(customer_phone: str) -> str:
@@ -3221,12 +3302,6 @@ async def webhook_post(request: Request):
                 record_bot_message(conversation_id, customer_reply)
             return JSONResponse(content={"ok": True})
 
-        lifting_reply = _lifting_clarification_reply(message_text)
-        if lifting_reply:
-            if send_whatsapp_text(customer_phone, lifting_reply):
-                record_bot_message(conversation_id, lifting_reply)
-            return JSONResponse(content={"ok": True})
-
         simple_reply = _simple_customer_reply(message_text)
         if simple_reply:
             if send_whatsapp_text(customer_phone, simple_reply):
@@ -3269,6 +3344,9 @@ async def webhook_post(request: Request):
         agent_turn_started = time.monotonic()
         catalog_context = ""
         knowledge_context = ""
+        knowledge_bundle = KnowledgeRetrieval()
+        dynamic_check_outcomes = ()
+        knowledge_answer_used = False
         result = {}
         try:
             # With Knowledge RAG off, preserve the established catalog path.
@@ -3294,12 +3372,32 @@ async def webhook_post(request: Request):
                     catalog_context = search_similar_products(
                         catalog_query, query_embedding=query_embedding
                     )
-                    knowledge_context = search_knowledge_context(
-                        message_text,
-                        query_embedding=(
-                            query_embedding if catalog_query == message_text
-                            else None
-                        ),
+                    def retrieve_knowledge(retrieval_query):
+                        return search_knowledge_bundle(
+                            retrieval_query,
+                            query_embedding=(
+                                query_embedding
+                                if retrieval_query == message_text
+                                and catalog_query == message_text
+                                else None
+                            ),
+                        )
+
+                    knowledge_bundle, _, _ = retrieve_with_recent_context(
+                        message_text, prior_history, retrieve_knowledge
+                    )
+                    dynamic_check_outcomes = execute_dynamic_requirements(
+                        knowledge_bundle.dynamic_requirements,
+                        {
+                            "get_order_status": get_order_status,
+                            "get_stock": get_stock,
+                        },
+                    )
+                    dynamic_context = format_dynamic_check_context(
+                        dynamic_check_outcomes
+                    )
+                    knowledge_context = "\n\n".join(
+                        item for item in (knowledge_bundle.context, dynamic_context) if item
                     )
                 else:
                     # Knowledge is optional. A temporary embedding/provider
@@ -3364,6 +3462,7 @@ async def webhook_post(request: Request):
                     "model_calls": 0,
                 }
             else:
+                knowledge_answer_used = True
                 result = answer(
                     message_text,
                     history=prior_history,
@@ -3395,20 +3494,32 @@ async def webhook_post(request: Request):
                     decision.get("reason", "unknown"),
                 )
             )
-            special_sale = _is_special_sale_context(message_text, prior_history)
-            if special_sale:
-                # This is a hard business boundary, not a model preference.
-                # A product may exist in the catalog, but an encargo/preventa/
-                # wholesale request is still not a normal checkout.
+            routing = resolve_harness_routing(
+                message_text,
+                prior_history,
+                decision=decision,
+                handoff=handoff,
+                knowledge_retrieval=knowledge_bundle,
+                dynamic_requirements=dynamic_check_outcomes,
+            )
+            decision = routing["decision"]
+            handoff = routing["handoff"]
+            reply = align_reply_with_routing(
+                reply,
+                routing,
+                dynamic_requirements=dynamic_check_outcomes,
+            )
+            # Obligations are a final-output invariant. Routing may replace
+            # model wording, so enforce the same approved disclosures/links
+            # after that alignment to ensure none are accidentally lost.
+            if knowledge_answer_used and knowledge_bundle.context:
+                reply = enforce_knowledge_obligations(
+                    reply,
+                    knowledge_bundle.obligations,
+                    verified_dynamic_links=extract_https_urls(catalog_context),
+                )
+            if handoff:
                 sale_candidate = None
-                handoff = {
-                    "reason": "special_sale_request",
-                    "summary": "La clienta consulta por un encargo, preventa, cotización o venta mayorista.",
-                }
-                decision = {
-                    "action": "handoff_to_isa",
-                    "reason": "special_sale_request",
-                }
             # Un fallo de identificación recibe una sola repregunta. Si la
             # clienta ya respondió esa repregunta y aún no podemos verificar el
             # modelo, Isa recibe un caso realmente excepcional y con contexto.
@@ -3492,6 +3603,19 @@ async def webhook_post(request: Request):
                         message_text,
                         conversation_context=prior_history,
                     )
+
+            # C4 is presentation-only: decisions, tools and sales state are
+            # already final. Deterministic sales-intake copy is left untouched.
+            if knowledge_answer_used and not sale_candidate:
+                final_routing = {"decision": decision, "handoff": handoff}
+                reply = apply_conversation_contract(
+                    reply,
+                    history=prior_history,
+                    routing_contract=visible_routing_contract(
+                        final_routing,
+                        dynamic_requirements=dynamic_check_outcomes,
+                    ),
+                )
 
             # A slower model/tool turn must never answer an earlier version of
             # the customer's thought. The newer inbound webhook will own the

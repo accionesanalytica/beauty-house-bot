@@ -12,6 +12,7 @@ deploy ni una venta real.
 | `kit-replicable-fred.md` | Arquitectura actual y cómo instalar Fred en otro comercio. |
 | `checkout-real.md` | Límites y flujo seguro del checkout aprobado. |
 | `conversation-robustness.md` | Cómo Fred conserva una selección y recopila datos sin formularios vacíos. |
+| `knowledge-v1.md` | Corpus aprobado, fuente local/Supabase, activación controlada y rollback. |
 | `conectar-tiendanube-real.md` | Conexión OAuth a Beauty House sin usar terminal. |
 | `mapa-de-credenciales.md` | Dónde vive cada acceso; nunca contiene valores secretos. |
 | `evaluacion-conversacional-fred.md` y `qa-fred-mvp.md` | Cómo probar calidad sin gastar servicios reales. |

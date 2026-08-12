@@ -188,6 +188,59 @@ class WebhookHarnessTests(unittest.TestCase):
         self.assertIn("link", reply)
         self.assertEqual(app._lifting_clarification_reply("Busco pestañas naturales"), "")
 
+    @patch.object(app, "record_agent_turn")
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
+    @patch.object(app, "load_history", return_value=[])
+    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
+    def test_lifting_enters_knowledge_flow_and_enforces_approved_reference(
+        self, history, inbound, send_message, record_message, record_turn
+    ):
+        from knowledge_rag import KnowledgeObligations, KnowledgeRetrieval
+
+        obligations = KnowledgeObligations(
+            topics=("lashes_guidance",),
+            required_disclosures=({
+                "id": "lifting-band", "text": "Con lifting no se recomienda banda completa.",
+            },),
+            required_links=({
+                "id": "lifting-link", "link_type": "approved_static_link",
+                "url": "https://www.instagram.com/p/DZ3U5VGtnrX/",
+            },),
+        )
+        retrieval = KnowledgeRetrieval(
+            rows=({"source_id": "lifting", "content": "Taylor cluster"},),
+            context="Conocimiento aprobado: Taylor cluster; no banda completa.",
+            obligations=obligations,
+            retrieved_topics=("lashes_guidance",),
+            governing_topic="lashes_guidance",
+        )
+        result = {
+            "reply": "Para lifting podés evaluar Taylor cluster.",
+            "tool_calls": [],
+            "decision": {"action": "reply", "reason": "normal_response"},
+            "usage": {},
+            "model_calls": 1,
+        }
+        with patch.object(app, "KNOWLEDGE_RAG_ENABLED", True), patch.object(
+            app, "embed_text", return_value=[0.1]
+        ), patch.object(
+            app, "search_similar_products", return_value=""
+        ), patch.object(
+            app, "search_knowledge_bundle", return_value=retrieval
+        ) as knowledge, patch.object(app, "answer", return_value=result) as ask_model:
+            response = self._post(
+                "Tengo lifting, ¿qué pestañas me recomendás?", "wamid-lifting-knowledge"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        knowledge.assert_called_once()
+        ask_model.assert_called_once()
+        visible = send_message.call_args.args[1]
+        self.assertIn("no se recomienda banda completa", visible)
+        self.assertIn("https://www.instagram.com/p/DZ3U5VGtnrX/", visible)
+
     def test_isa_policy_instruction_is_translated_not_forwarded_verbatim(self):
         reply = app._isa_customer_instruction(
             "mandar políticas en pdf",
