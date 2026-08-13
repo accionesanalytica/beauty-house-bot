@@ -21,6 +21,8 @@ data/catalog_flat.csv
 *.jsonl
 # Benchmark curado y anonimizado de Knowledge V1; sí forma parte del proyecto.
 !evals/knowledge_v1_cases.jsonl
+# Benchmark determinístico de M1 (cola durable); sí forma parte del proyecto.
+!evals/multimessage_m1_cases.jsonl
 bot/*.save
 
 # Sistema

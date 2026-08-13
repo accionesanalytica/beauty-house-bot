@@ -5,6 +5,7 @@ responde con una plantilla de prueba aprobada por Meta.
 """
 
 import asyncio
+import contextlib
 import html
 import hashlib
 import hmac
@@ -12,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import sys
 import time
 import unicodedata
@@ -57,6 +59,8 @@ from dynamic_checks import (
     format_dynamic_check_context,
 )
 from conversation_quality import apply_conversation_contract
+from durable_worker import DeliveryContext, current_delivery_context
+from message_queue import extract_inbound_messages, ordered_turn_text
 from routing_policy import (
     align_reply_with_routing,
     legacy_special_sale_context,
@@ -100,6 +104,7 @@ from conversation_store import (
     cancel_sales_intake,
     claim_daily_isa_reminder,
     claim_requested_isa_reminder,
+    claim_next_conversation,
     clear_isa_reminder_snooze,
     clear_isa_sale_session,
     create_pending_action,
@@ -117,6 +122,11 @@ from conversation_store import (
     record_isa_feedback,
     record_bot_message,
     record_inbound_message,
+    enqueue_inbound_message,
+    finish_processing_claim,
+    processing_claim_is_current,
+    release_processing_claim,
+    renew_processing_claim,
     resolve_pending_action,
     release_daily_isa_reminder,
     save_pending_action_checkout,
@@ -178,6 +188,31 @@ try:
     )
 except ValueError:
     CONVERSATION_DEBOUNCE_SECONDS = 1.5
+# M1 is opt-in until its SQL migration is applied.  The legacy path remains a
+# rollback switch; enabling this flag makes the webhook ingestion-only and a
+# Postgres-leased worker owns customer replies.
+DURABLE_MESSAGE_PROCESSING_ENABLED = (
+    os.getenv("DURABLE_MESSAGE_PROCESSING_ENABLED", "false").lower() == "true"
+)
+try:
+    MESSAGE_QUIET_WINDOW_SECONDS = max(
+        0.0, float(os.getenv("MESSAGE_QUIET_WINDOW_SECONDS", "1.5"))
+    )
+    MESSAGE_MAX_BURST_WAIT_SECONDS = max(
+        MESSAGE_QUIET_WINDOW_SECONDS,
+        float(os.getenv("MESSAGE_MAX_BURST_WAIT_SECONDS", "5.0")),
+    )
+    MESSAGE_LEASE_SECONDS = max(
+        15.0, float(os.getenv("MESSAGE_LEASE_SECONDS", "120"))
+    )
+    MESSAGE_WORKER_POLL_SECONDS = max(
+        0.05, float(os.getenv("MESSAGE_WORKER_POLL_SECONDS", "0.25"))
+    )
+except ValueError:
+    MESSAGE_QUIET_WINDOW_SECONDS = 1.5
+    MESSAGE_MAX_BURST_WAIT_SECONDS = 5.0
+    MESSAGE_LEASE_SECONDS = 120.0
+    MESSAGE_WORKER_POLL_SECONDS = 0.25
 # Segunda llave explícita: incluso si existen credenciales demo, una aprobación
 # normal nunca crea nada. Solo sirve para probar el recorrido completo.
 DEMO_APPROVALS_ENABLED = (
@@ -214,6 +249,8 @@ ENCARGOS_PDF_URL = "{}/documents/preventa-encargos.pdf".format(PUBLIC_BASE_URL)
 CUSTOMER_POLICIES_URL = "https://beautyhousemakeup.com/politicas/"
 ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 _reminder_task = None
+_message_worker_task = None
+_message_worker_id = "{}:{}:{}".format(socket.gethostname(), os.getpid(), secrets.token_hex(4))
 
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMS = 768
@@ -759,6 +796,20 @@ def send_escalacion_isa_template(
 
 def send_whatsapp_text(phone_number: str, text: str) -> bool:
     """Send a text reply inside the customer-initiated 24-hour window."""
+    delivery_context = current_delivery_context.get()
+    if delivery_context and (
+        normalize_whatsapp_recipient(phone_number)
+        == normalize_whatsapp_recipient(delivery_context.customer_phone)
+    ):
+        delivery_context.attempted = True
+        if not processing_claim_is_current(
+            delivery_context.conversation_id,
+            delivery_context.generation,
+            delivery_context.worker_id,
+        ):
+            delivery_context.stale_discarded = True
+            print("[Conversacion] Envío obsoleto descartado por generation/lease.")
+            return False
     url = f"https://graph.facebook.com/v26.0/{WHATSAPP_PHONE_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -777,6 +828,11 @@ def send_whatsapp_text(phone_number: str, text: str) -> bool:
         print(f"[WhatsApp] HTTP {response.status_code}")
         print(f"[WhatsApp] Response: {response.text}")
         response.raise_for_status()
+        if delivery_context and (
+            normalize_whatsapp_recipient(phone_number)
+            == normalize_whatsapp_recipient(delivery_context.customer_phone)
+        ):
+            delivery_context.delivered = True
         return True
     except Exception as error:  # noqa: BLE001
         print(f"ERROR enviando texto a WhatsApp: {type(error).__name__}")
@@ -785,6 +841,20 @@ def send_whatsapp_text(phone_number: str, text: str) -> bool:
 
 def send_customer_fulfillment_buttons(phone_number: str) -> bool:
     """Ask the one closed checkout question with native WhatsApp buttons."""
+    delivery_context = current_delivery_context.get()
+    if delivery_context and (
+        normalize_whatsapp_recipient(phone_number)
+        == normalize_whatsapp_recipient(delivery_context.customer_phone)
+    ):
+        delivery_context.attempted = True
+        if not processing_claim_is_current(
+            delivery_context.conversation_id,
+            delivery_context.generation,
+            delivery_context.worker_id,
+        ):
+            delivery_context.stale_discarded = True
+            print("[Conversacion] Botones obsoletos descartados por generation/lease.")
+            return False
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -808,6 +878,11 @@ def send_customer_fulfillment_buttons(phone_number: str) -> bool:
             timeout=10,
         )
         response.raise_for_status()
+        if delivery_context and (
+            normalize_whatsapp_recipient(phone_number)
+            == normalize_whatsapp_recipient(delivery_context.customer_phone)
+        ):
+            delivery_context.delivered = True
         return True
     except Exception as error:  # noqa: BLE001
         print(f"ERROR enviando botones de entrega: {type(error).__name__}")
@@ -962,15 +1037,20 @@ async def _isa_reminder_loop() -> None:
 
 @app.on_event("startup")
 async def start_isa_reminders() -> None:
-    global _reminder_task
+    global _reminder_task, _message_worker_task
     if ISA_REMINDERS_ENABLED and _reminder_task is None:
         _reminder_task = asyncio.create_task(_isa_reminder_loop())
+    if DURABLE_MESSAGE_PROCESSING_ENABLED and _message_worker_task is None:
+        _message_worker_task = asyncio.create_task(_durable_message_worker_loop())
+        print("[Cola] Worker durable iniciado: {}".format(_message_worker_id))
 
 
 @app.on_event("shutdown")
 async def stop_isa_reminders() -> None:
     if _reminder_task:
         _reminder_task.cancel()
+    if _message_worker_task:
+        _message_worker_task.cancel()
 
 
 def _is_isa_phone(phone_number: str) -> bool:
@@ -3107,11 +3187,162 @@ async def webhook_get(request: Request):
 # WEBHOOK — MENSAJES ENTRANTES
 # ============================================================
 
+def _ingest_durable_webhook(body: dict) -> None:
+    """Persist every supported message; do not call Fred from the webhook."""
+    for inbound in extract_inbound_messages(body):
+        if _is_isa_phone(inbound.phone):
+            # Isa's operational command path remains synchronous in M1.  The
+            # customer path is the one that needs burst grouping and leasing.
+            handle_isa_message(
+                inbound.text,
+                wa_message_id=inbound.wa_message_id,
+                button_reply_id=inbound.interactive_reply_id,
+            )
+            continue
+        result = enqueue_inbound_message(
+            customer_phone=inbound.phone,
+            body=inbound.text,
+            wa_message_id=inbound.wa_message_id,
+            provider_timestamp=inbound.provider_timestamp,
+            quiet_seconds=MESSAGE_QUIET_WINDOW_SECONDS,
+            max_burst_seconds=MESSAGE_MAX_BURST_WAIT_SECONDS,
+        )
+        if result["duplicate"]:
+            print("[Cola] Mensaje duplicado ignorado: {}".format(inbound.wa_message_id))
+        else:
+            print(
+                "[Cola] Mensaje {} en conversación {}, generation {}.".format(
+                    inbound.wa_message_id,
+                    result["conversation_id"],
+                    result["generation"],
+                )
+            )
+
+
+def _claim_payload(claim: dict, message_text: str) -> dict:
+    """Build the narrow payload expected by the established Fred processor."""
+    last_message = claim["messages"][-1]
+    return {
+        "entry": [{
+            "changes": [{
+                "value": {
+                    "messages": [{
+                        "from": claim["customer_phone"],
+                        "id": last_message["wa_message_id"],
+                        "text": {"body": message_text},
+                    }]
+                }
+            }]
+        }]
+    }
+
+
+async def _renew_claim_loop(claim: dict) -> None:
+    interval = max(5.0, MESSAGE_LEASE_SECONDS / 3)
+    while True:
+        await asyncio.sleep(interval)
+        renewed = await asyncio.to_thread(
+            renew_processing_claim,
+            claim["conversation_id"],
+            claim["generation"],
+            claim["lease_owner"],
+            MESSAGE_LEASE_SECONDS,
+        )
+        if not renewed:
+            return
+
+
+async def _process_durable_claim(claim: dict) -> None:
+    message_text = ordered_turn_text(claim["messages"])
+    if not message_text:
+        await asyncio.to_thread(
+            finish_processing_claim,
+            claim["conversation_id"],
+            claim["generation"],
+            claim["lease_owner"],
+            claim["latest_message_id"],
+            False,
+        )
+        return
+
+    delivery_context = DeliveryContext(
+        conversation_id=claim["conversation_id"],
+        customer_phone=claim["customer_phone"],
+        generation=claim["generation"],
+        worker_id=claim["lease_owner"],
+    )
+    context_token = current_delivery_context.set(delivery_context)
+    heartbeat = asyncio.create_task(_renew_claim_loop(claim))
+    try:
+        print(
+            "[Cola] Procesando conversación {} generation {} ({} mensajes).".format(
+                claim["conversation_id"], claim["generation"], len(claim["messages"])
+            )
+        )
+        await _process_webhook_body(
+            _claim_payload(claim, message_text), persisted_claim=claim
+        )
+        current = await asyncio.to_thread(
+            processing_claim_is_current,
+            claim["conversation_id"],
+            claim["generation"],
+            claim["lease_owner"],
+        )
+        if current:
+            await asyncio.to_thread(
+                finish_processing_claim,
+                claim["conversation_id"],
+                claim["generation"],
+                claim["lease_owner"],
+                claim["latest_message_id"],
+                delivery_context.delivered,
+            )
+        else:
+            await asyncio.to_thread(
+                release_processing_claim,
+                claim["conversation_id"],
+                claim["lease_owner"],
+            )
+            print("[Cola] Turno obsoleto; queda pendiente la generation nueva.")
+    except Exception as error:  # noqa: BLE001
+        await asyncio.to_thread(
+            release_processing_claim,
+            claim["conversation_id"],
+            claim["lease_owner"],
+        )
+        print("ERROR procesando cola durable (tipo: {}).".format(type(error).__name__))
+    finally:
+        heartbeat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat
+        current_delivery_context.reset(context_token)
+
+
+async def _durable_message_worker_loop() -> None:
+    while True:
+        try:
+            claim = await asyncio.to_thread(
+                claim_next_conversation, _message_worker_id, MESSAGE_LEASE_SECONDS
+            )
+            if claim:
+                await _process_durable_claim(claim)
+                continue
+        except Exception as error:  # noqa: BLE001
+            print("ERROR en worker durable (tipo: {}).".format(type(error).__name__))
+        await asyncio.sleep(MESSAGE_WORKER_POLL_SECONDS)
+
 @app.post("/webhook")
 async def webhook_post(request: Request):
-    """Procesa mensajes entrantes de WhatsApp."""
-
+    """Acknowledge Meta after durable ingestion when M1 is enabled."""
     body = await request.json()
+    if DURABLE_MESSAGE_PROCESSING_ENABLED:
+        await asyncio.to_thread(_ingest_durable_webhook, body)
+        return JSONResponse(content={"ok": True})
+    return await _process_webhook_body(body)
+
+
+async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = None):
+    """Existing Fred turn processor, reusable by the durable worker."""
 
     # Meta envía un array de entries
     if (
@@ -3202,42 +3433,55 @@ async def webhook_post(request: Request):
     prior_history = []
     history_available = True
 
+    if persisted_claim:
+        customer_phone = persisted_claim["customer_phone"]
+        conversation_id = persisted_claim["conversation_id"]
+        state = persisted_claim["state"]
+        prior_history = persisted_claim["history"]
+        history_available = True
+
     # Capture the earlier conversation before saving this inbound event.  The
     # agent receives ``message_text`` separately, so this prevents the newest
     # customer turn from appearing twice in its context.
-    if BOT_RESPONSE_MODE == "agent":
+    if BOT_RESPONSE_MODE == "agent" and not persisted_claim:
         try:
             prior_history = load_history(customer_phone)
         except Exception as error:  # noqa: BLE001
             history_available = False
             print(f"ERROR cargando conversacion (tipo: {type(error).__name__})")
 
-    try:
-        conversation_id, state, duplicate = record_inbound_message(
-            customer_phone=customer_phone,
-            body=message_text,
-            wa_message_id=wa_message_id,
-        )
-        if duplicate:
-            print("[Conversacion] Mensaje duplicado ignorado.")
-            return JSONResponse(content={"ok": True})
+    if not persisted_claim:
+        try:
+            conversation_id, state, duplicate = record_inbound_message(
+                customer_phone=customer_phone,
+                body=message_text,
+                wa_message_id=wa_message_id,
+            )
+            if duplicate:
+                print("[Conversacion] Mensaje duplicado ignorado.")
+                return JSONResponse(content={"ok": True})
 
-        print(
-            f"[Conversacion] Guardado en {conversation_id} "
-            f"(estado: {state})."
-        )
-    except Exception as error:  # noqa: BLE001
-        # Do not block the current template test if the history store is down.
-        # Error details may contain database information, so log only its type.
-        history_available = False
-        print(f"ERROR guardando conversacion (tipo: {type(error).__name__})")
+            print(
+                f"[Conversacion] Guardado en {conversation_id} "
+                f"(estado: {state})."
+            )
+        except Exception as error:  # noqa: BLE001
+            # Do not block the current template test if the history store is down.
+            # Error details may contain database information, so log only its type.
+            history_available = False
+            print(f"ERROR guardando conversacion (tipo: {type(error).__name__})")
 
-    if BOT_RESPONSE_MODE == "agent" and history_available:
+    if BOT_RESPONSE_MODE == "agent" and history_available and not persisted_claim:
         try:
             # A client often writes one thought in several bubbles. Wait a
             # small, bounded window; only the newest event in that burst gets
             # to decide and it receives the complete customer turn.
-            if CONVERSATION_DEBOUNCE_SECONDS and conversation_id and wa_message_id:
+            if (
+                not persisted_claim
+                and CONVERSATION_DEBOUNCE_SECONDS
+                and conversation_id
+                and wa_message_id
+            ):
                 await asyncio.sleep(CONVERSATION_DEBOUNCE_SECONDS)
                 if not is_latest_customer_message(conversation_id, wa_message_id):
                     print("[Conversacion] Mensaje agrupado en una ráfaga posterior.")
@@ -3484,7 +3728,6 @@ async def webhook_post(request: Request):
             reply = (result.get("reply") or "").strip()
             if not reply:
                 raise RuntimeError("El agente no devolvió texto.")
-
             sale_candidate = result.get("sale_candidate")
             handoff = result.get("handoff")
             decision = result.get("decision") or {}
@@ -3620,7 +3863,12 @@ async def webhook_post(request: Request):
             # A slower model/tool turn must never answer an earlier version of
             # the customer's thought. The newer inbound webhook will own the
             # reply instead.
-            if CONVERSATION_DEBOUNCE_SECONDS and conversation_id and wa_message_id:
+            if (
+                not persisted_claim
+                and CONVERSATION_DEBOUNCE_SECONDS
+                and conversation_id
+                and wa_message_id
+            ):
                 if not is_latest_customer_message(conversation_id, wa_message_id):
                     print("[Conversacion] Respuesta obsoleta omitida por mensaje posterior.")
                     return JSONResponse(content={"ok": True})

@@ -6,7 +6,7 @@ agent. Keeping it separate makes the webhook easier to reason about and test.
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
@@ -44,31 +44,394 @@ def record_inbound_message(
     customer_phone: str,
     body: str,
     wa_message_id: Optional[str] = None,
+    provider_timestamp: Optional[datetime] = None,
 ) -> Tuple[int, str, bool]:
-    """Store one customer message and return (conversation_id, state, duplicate)."""
+    """Atomically store one customer message.
+
+    The unique ``wa_message_id`` index is the arbiter.  A Meta retry can no
+    longer pass a SELECT and race another worker before the INSERT.
+    """
     connection = _connect()
     try:
         with connection.cursor() as cursor:
             conversation_id, state = _get_or_create_conversation(cursor, customer_phone)
 
-            if wa_message_id:
-                cursor.execute(
-                    "SELECT 1 FROM messages WHERE wa_message_id = %s LIMIT 1",
-                    (wa_message_id,),
-                )
-                if cursor.fetchone():
-                    connection.commit()
-                    return conversation_id, state, True
-
             cursor.execute(
                 """
-                INSERT INTO messages (conversation_id, direction, sender, body, wa_message_id)
-                VALUES (%s, 'in', 'customer', %s, %s)
+                INSERT INTO messages (
+                    conversation_id, direction, sender, body, wa_message_id,
+                    provider_timestamp, received_at
+                )
+                VALUES (%s, 'in', 'customer', %s, %s, %s, now())
+                ON CONFLICT (wa_message_id) WHERE wa_message_id IS NOT NULL
+                DO NOTHING
+                RETURNING id
                 """,
-                (conversation_id, body, wa_message_id),
+                (conversation_id, body, wa_message_id, provider_timestamp),
+            )
+            inserted = cursor.fetchone()
+        connection.commit()
+        return conversation_id, state, inserted is None
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def enqueue_inbound_message(
+    customer_phone: str,
+    body: str,
+    wa_message_id: str,
+    provider_timestamp: Optional[datetime],
+    quiet_seconds: float,
+    max_burst_seconds: float,
+) -> Dict[str, Any]:
+    """Persist and schedule one inbound message in one transaction."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            conversation_id, state = _get_or_create_conversation(cursor, customer_phone)
+            cursor.execute(
+                """
+                INSERT INTO messages (
+                    conversation_id, direction, sender, body, wa_message_id,
+                    provider_timestamp, received_at
+                )
+                VALUES (%s, 'in', 'customer', %s, %s, %s, now())
+                ON CONFLICT (wa_message_id) WHERE wa_message_id IS NOT NULL
+                DO NOTHING
+                RETURNING id, received_at
+                """,
+                (conversation_id, body, wa_message_id, provider_timestamp),
+            )
+            inserted = cursor.fetchone()
+            if not inserted:
+                connection.commit()
+                return {
+                    "conversation_id": conversation_id,
+                    "state": state,
+                    "duplicate": True,
+                }
+
+            message_id, received_at = inserted
+            cursor.execute(
+                """
+                INSERT INTO conversation_processing (
+                    conversation_id, first_pending_at, process_after,
+                    latest_message_id, generation, last_processed_message_id,
+                    updated_at
+                )
+                VALUES (
+                    %s, %s,
+                    LEAST(
+                        %s + (%s * interval '1 second'),
+                        %s + (%s * interval '1 second')
+                    ),
+                    %s, 1,
+                    -- A conversation can already have history when it first
+                    -- enters the durable system (M1 turned on mid-history, or
+                    -- a phone that only wrote via the legacy sync path).  Seed
+                    -- the watermark so that pre-existing customer messages
+                    -- count as already processed; only this message and any
+                    -- later ones are pending work. Mirrors
+                    -- message_queue.seed_last_processed_message_id.
+                    --
+                    -- MAX() over zero rows is NULL, not 0: last_processed_message_id
+                    -- has a real FK into messages(id), so a literal 0 sentinel
+                    -- would violate it the first time a conversation has no
+                    -- prior history. NULL is what the column's own
+                    -- "ON DELETE SET NULL" design already expects, and
+                    -- claim_next_conversation already reads it through
+                    -- COALESCE(last_processed_message_id, 0).
+                    (SELECT MAX(seed.id)
+                     FROM messages seed
+                     WHERE seed.conversation_id = %s
+                       AND seed.direction = 'in'
+                       AND seed.sender = 'customer'
+                       AND seed.id < %s),
+                    now()
+                )
+                ON CONFLICT (conversation_id) DO UPDATE SET
+                    first_pending_at = COALESCE(
+                        conversation_processing.first_pending_at,
+                        EXCLUDED.first_pending_at
+                    ),
+                    process_after = LEAST(
+                        COALESCE(
+                            conversation_processing.first_pending_at,
+                            EXCLUDED.first_pending_at
+                        ) + (%s * interval '1 second'),
+                        %s + (%s * interval '1 second')
+                    ),
+                    latest_message_id = EXCLUDED.latest_message_id,
+                    generation = conversation_processing.generation + 1,
+                    updated_at = now()
+                RETURNING generation, process_after
+                """,
+                (
+                    conversation_id,
+                    received_at,
+                    received_at,
+                    max(0.0, max_burst_seconds),
+                    received_at,
+                    max(0.0, quiet_seconds),
+                    message_id,
+                    conversation_id,
+                    message_id,
+                    max(0.0, max_burst_seconds),
+                    received_at,
+                    max(0.0, quiet_seconds),
+                ),
+            )
+            generation, process_after = cursor.fetchone()
+        connection.commit()
+        return {
+            "conversation_id": conversation_id,
+            "state": state,
+            "duplicate": False,
+            "message_id": message_id,
+            "generation": generation,
+            "process_after": process_after,
+        }
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def claim_next_conversation(worker_id: str, lease_seconds: float) -> Optional[Dict[str, Any]]:
+    """Lease one ready conversation with ``SKIP LOCKED``.
+
+    Multiple Railway workers can call this concurrently; Postgres returns a
+    given conversation to at most one of them until the lease expires.
+    """
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH candidate AS (
+                    SELECT conversation_id
+                    FROM conversation_processing
+                    WHERE process_after IS NOT NULL
+                      AND process_after <= now()
+                      AND (lease_until IS NULL OR lease_until <= now())
+                    ORDER BY process_after, conversation_id
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                )
+                UPDATE conversation_processing AS processing
+                SET lease_owner = %s,
+                    lease_until = now() + (%s * interval '1 second'),
+                    updated_at = now()
+                FROM candidate
+                WHERE processing.conversation_id = candidate.conversation_id
+                RETURNING processing.conversation_id,
+                          processing.generation,
+                          processing.latest_message_id,
+                          processing.last_processed_message_id,
+                          processing.lease_until
+                """,
+                (worker_id, max(1.0, lease_seconds)),
+            )
+            leased = cursor.fetchone()
+            if not leased:
+                connection.commit()
+                return None
+
+            conversation_id, generation, latest_id, last_processed_id, lease_until = leased
+            cursor.execute(
+                "SELECT customer_phone, state FROM conversations WHERE id = %s",
+                (conversation_id,),
+            )
+            customer_phone, state = cursor.fetchone()
+            cursor.execute(
+                """
+                SELECT id, body, wa_message_id, provider_timestamp, received_at
+                FROM messages
+                WHERE conversation_id = %s
+                  AND direction = 'in'
+                  AND sender = 'customer'
+                  AND id > COALESCE(%s, 0)
+                  AND id <= %s
+                ORDER BY COALESCE(provider_timestamp, received_at), received_at, id
+                """,
+                (conversation_id, last_processed_id, latest_id),
+            )
+            message_rows = cursor.fetchall()
+            if not message_rows:
+                cursor.execute(
+                    """
+                    UPDATE conversation_processing
+                    SET lease_owner = NULL, lease_until = NULL,
+                        process_after = NULL, first_pending_at = NULL,
+                        updated_at = now()
+                    WHERE conversation_id = %s AND lease_owner = %s
+                    """,
+                    (conversation_id, worker_id),
+                )
+                connection.commit()
+                return None
+
+            first_message_id = min(row[0] for row in message_rows)
+            cursor.execute(
+                """
+                SELECT direction, sender, body
+                FROM messages
+                WHERE conversation_id = %s AND id < %s
+                ORDER BY id DESC
+                LIMIT 12
+                """,
+                (conversation_id, first_message_id),
+            )
+            history_rows = cursor.fetchall()
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+    history: List[Dict[str, Any]] = []
+    for direction, sender, text in reversed(history_rows):
+        role = "user" if direction == "in" and sender == "customer" else "assistant"
+        history.append({"role": role, "content": text})
+    return {
+        "conversation_id": conversation_id,
+        "customer_phone": customer_phone,
+        "state": state,
+        "generation": generation,
+        "latest_message_id": latest_id,
+        "last_processed_message_id": last_processed_id,
+        "lease_owner": worker_id,
+        "lease_until": lease_until,
+        "history": history,
+        "messages": [
+            {
+                "id": row[0],
+                "body": row[1],
+                "wa_message_id": row[2],
+                "provider_timestamp": row[3],
+                "received_at": row[4],
+            }
+            for row in message_rows
+        ],
+    }
+
+
+def processing_claim_is_current(conversation_id: int, generation: int, worker_id: str) -> bool:
+    """Check both ownership and the generation watermark before delivery."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT 1
+                FROM conversation_processing
+                WHERE conversation_id = %s
+                  AND generation = %s
+                  AND lease_owner = %s
+                  AND lease_until > now()
+                """,
+                (conversation_id, generation, worker_id),
+            )
+            return cursor.fetchone() is not None
+    finally:
+        connection.close()
+
+
+def renew_processing_claim(
+    conversation_id: int, generation: int, worker_id: str, lease_seconds: float
+) -> bool:
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE conversation_processing
+                SET lease_until = now() + (%s * interval '1 second'), updated_at = now()
+                WHERE conversation_id = %s
+                  AND generation = %s
+                  AND lease_owner = %s
+                  AND lease_until > now()
+                RETURNING 1
+                """,
+                (max(1.0, lease_seconds), conversation_id, generation, worker_id),
+            )
+            renewed = cursor.fetchone() is not None
+        connection.commit()
+        return renewed
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def finish_processing_claim(
+    conversation_id: int,
+    generation: int,
+    worker_id: str,
+    last_message_id: int,
+    delivered: bool,
+) -> bool:
+    """Advance processed/delivered watermarks only for the current claim."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE conversation_processing
+                SET last_processed_message_id = %s,
+                    last_delivered_message_id = CASE
+                        WHEN %s THEN %s
+                        ELSE last_delivered_message_id
+                    END,
+                    first_pending_at = NULL,
+                    process_after = NULL,
+                    lease_owner = NULL,
+                    lease_until = NULL,
+                    updated_at = now()
+                WHERE conversation_id = %s
+                  AND generation = %s
+                  AND lease_owner = %s
+                RETURNING 1
+                """,
+                (
+                    last_message_id,
+                    delivered,
+                    last_message_id,
+                    conversation_id,
+                    generation,
+                    worker_id,
+                ),
+            )
+            finished = cursor.fetchone() is not None
+        connection.commit()
+        return finished
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def release_processing_claim(conversation_id: int, worker_id: str) -> None:
+    """Release only a lease still owned by this worker; keep pending work."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE conversation_processing
+                SET lease_owner = NULL, lease_until = NULL, updated_at = now()
+                WHERE conversation_id = %s AND lease_owner = %s
+                """,
+                (conversation_id, worker_id),
             )
         connection.commit()
-        return conversation_id, state, False
     except Exception:
         connection.rollback()
         raise
@@ -116,15 +479,6 @@ def record_isa_feedback(
         with connection.cursor() as cursor:
             conversation_id, _state = _get_or_create_conversation(cursor, isa_phone)
 
-            if wa_message_id:
-                cursor.execute(
-                    "SELECT 1 FROM messages WHERE wa_message_id = %s LIMIT 1",
-                    (wa_message_id,),
-                )
-                if cursor.fetchone():
-                    connection.commit()
-                    return False
-
             cursor.execute(
                 "UPDATE conversations SET state = 'ISA', last_message_at = now() WHERE id = %s",
                 (conversation_id,),
@@ -133,11 +487,15 @@ def record_isa_feedback(
                 """
                 INSERT INTO messages (conversation_id, direction, sender, body, wa_message_id)
                 VALUES (%s, 'in', 'isa', %s, %s)
+                ON CONFLICT (wa_message_id) WHERE wa_message_id IS NOT NULL
+                DO NOTHING
+                RETURNING id
                 """,
                 (conversation_id, "FEEDBACK: " + body, wa_message_id),
             )
+            inserted = cursor.fetchone()
         connection.commit()
-        return True
+        return inserted is not None
     except Exception:
         connection.rollback()
         raise

@@ -1,0 +1,10 @@
+{"id":"two_fast_messages","expect":"one_ordered_turn"}
+{"id":"five_fast_messages","expect":"one_ordered_turn"}
+{"id":"multi_message_meta_payload","expect":"persist_all"}
+{"id":"duplicate_webhook","expect":"persist_once"}
+{"id":"out_of_order_messages","expect":"provider_order"}
+{"id":"two_workers","expect":"single_lease"}
+{"id":"worker_loses_lease","expect":"no_delivery"}
+{"id":"new_message_during_processing","expect":"generation_increments"}
+{"id":"stale_response_discarded","expect":"no_delivery"}
+{"id":"whatsapp_send_failure","expect":"processed_not_delivered"}
