@@ -1120,10 +1120,27 @@ def resolve_pending_action(action_id: int, status: str) -> Optional[Dict[str, An
 
 
 def wait_for_isa_response(action_id: int) -> bool:
-    """Mark an Isa-assisted case while Fred waits for her written answer."""
+    """Mark an Isa-assisted case while Fred waits for her written answer.
+
+    Only one pending case may await her next free-text reply at a time: if
+    she taps "Responder a Fred" on a different case before typing an answer
+    to an earlier one, that earlier flag is cleared first. Otherwise her
+    next message would be delivered to whichever case happens to be oldest,
+    not the one she just chose -- a real risk of sending her answer to the
+    wrong customer.
+    """
     connection = _connect()
     try:
         with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE pending_actions
+                SET payload = payload - 'awaiting_isa_response'
+                WHERE payload ? 'awaiting_isa_response'
+                  AND id != %s
+                """,
+                (action_id,),
+            )
             cursor.execute(
                 """
                 UPDATE pending_actions
