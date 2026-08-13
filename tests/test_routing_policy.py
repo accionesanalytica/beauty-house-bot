@@ -147,7 +147,7 @@ class GroundedDiscoveryBypassTests(unittest.TestCase):
             "decision": {
                 "action": "reply", "reason": "normal_response",
                 "response_mode": "product_discovery", "match_type": "exact_match",
-                "checks_completed": ["live_price"],
+                "required_checks": ["live_price"], "checks_completed": ["live_price"],
             },
             "handoff": None,
         }
@@ -161,6 +161,7 @@ class GroundedDiscoveryBypassTests(unittest.TestCase):
             "decision": {
                 "action": "reply", "reason": "normal_response",
                 "response_mode": "product_discovery", "match_type": "exact_match",
+                "required_checks": ["live_price"],
                 "checks_completed": [],  # nothing was actually verified live
             },
             "handoff": None,
@@ -169,6 +170,57 @@ class GroundedDiscoveryBypassTests(unittest.TestCase):
             self.GROUNDED_REPLY, routing, dynamic_requirements=self.SKU_MISSING,
         )
         self.assertEqual(reply, "Para poder verificarlo en vivo, me falta el modelo exacto o su link.")
+
+    def test_required_check_pending_blocks_bypass_even_with_other_checks_completed(self):
+        # The exact production failure this audit traced: live_stock got
+        # verified (e.g. via search_available_products), but the customer
+        # asked for price and live_price was never actually checked. Having
+        # *some* non-empty checks_completed must not be enough.
+        routing = {
+            "decision": {
+                "action": "reply", "reason": "normal_response",
+                "response_mode": "product_discovery", "match_type": "exact_match",
+                "required_checks": ["live_price"],
+                "checks_completed": ["live_stock"],  # something else was verified, not this
+            },
+            "handoff": None,
+        }
+        reply = align_reply_with_routing(
+            self.GROUNDED_REPLY, routing, dynamic_requirements=self.SKU_MISSING,
+        )
+        self.assertEqual(reply, "Para poder verificarlo en vivo, me falta el modelo exacto o su link.")
+
+    def test_stock_only_requirement_is_satisfied_by_a_completed_stock_check(self):
+        routing = {
+            "decision": {
+                "action": "reply", "reason": "normal_response",
+                "response_mode": "product_discovery", "match_type": "exact_match",
+                "required_checks": ["live_stock"],
+                "checks_completed": ["live_stock"],
+            },
+            "handoff": None,
+        }
+        reply = align_reply_with_routing(
+            self.GROUNDED_REPLY, routing, dynamic_requirements=self.SKU_MISSING,
+        )
+        self.assertEqual(reply, self.GROUNDED_REPLY)
+
+    def test_no_required_checks_never_blocks_on_an_unrelated_missing_sku_guess(self):
+        # The decision itself needed no live check at all (e.g. the customer
+        # never asked about price or stock in a way this decision tracked).
+        # An empty required_checks set is vacuously satisfied.
+        routing = {
+            "decision": {
+                "action": "reply", "reason": "normal_response",
+                "response_mode": "product_discovery", "match_type": "exact_match",
+                "required_checks": [], "checks_completed": [],
+            },
+            "handoff": None,
+        }
+        reply = align_reply_with_routing(
+            self.GROUNDED_REPLY, routing, dynamic_requirements=self.SKU_MISSING,
+        )
+        self.assertEqual(reply, self.GROUNDED_REPLY)
 
     def test_lookup_with_missing_sku_keeps_current_behaviour(self):
         # A genuine lookup never sets response_mode=product_discovery in the
@@ -205,7 +257,7 @@ class GroundedDiscoveryBypassTests(unittest.TestCase):
             "decision": {
                 "action": "handoff_to_isa", "reason": "unable_to_verify",
                 "response_mode": "product_discovery", "match_type": "exact_match",
-                "checks_completed": ["live_price"],
+                "required_checks": ["live_price"], "checks_completed": ["live_price"],
             },
             "handoff": {"reason": "unable_to_verify"},
         }
@@ -225,7 +277,7 @@ class GroundedDiscoveryBypassTests(unittest.TestCase):
             "decision": {
                 "action": "reply", "reason": "normal_response",
                 "response_mode": "product_discovery", "match_type": "exact_match",
-                "checks_completed": [],
+                "required_checks": ["live_price"], "checks_completed": [],
             },
             "handoff": None,
         }
@@ -243,7 +295,7 @@ class GroundedDiscoveryBypassTests(unittest.TestCase):
             "decision": {
                 "action": "reply", "reason": "normal_response",
                 "response_mode": "product_discovery", "match_type": "exact_match",
-                "checks_completed": ["live_price"],
+                "required_checks": ["live_price"], "checks_completed": ["live_price"],
             },
             "handoff": None,
         }

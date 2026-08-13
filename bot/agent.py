@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -431,20 +432,309 @@ def _format_price(value: Any) -> str:
     return "${:,.0f}".format(amount).replace(",", ".")
 
 
+def _credit_verified_stock_from_search(
+    matched_product: str,
+    available_products: List[Dict[str, Any]],
+    commercial_facts_by_sku: Dict[str, Dict[str, Any]],
+    checks_completed: set,
+) -> None:
+    """search_available_products already confirmed live positive stock for
+    every variant it returns (see tiendanube_tools.search_available_products:
+    stock<=0 or untracked is filtered out before the result ever comes back).
+    When the model's declared match corresponds to one of those results,
+    credit it the same way get_stock/get_product_availability already do —
+    but only "live_stock", never "live_price": this tool does not return
+    price, so price stays untouched (None unless a later get_stock sets it).
+    """
+    matched = matched_product.strip().lower()
+    if not matched:
+        return
+    for product in available_products:
+        product_name = str(product.get("name") or "").strip()
+        if not product_name:
+            continue
+        normalized_name = product_name.lower()
+        if matched not in normalized_name and normalized_name not in matched:
+            continue
+        for variant in product.get("variants") or []:
+            sku = str(variant.get("sku") or "").strip()
+            if not sku:
+                continue
+            normalized_sku = sku.lower()
+            existing = commercial_facts_by_sku.get(normalized_sku, {})
+            commercial_facts_by_sku[normalized_sku] = {
+                **existing,
+                "found": True,
+                "sku": sku,
+                "product_name": product_name,
+                "variant": variant.get("description"),
+                "status": "in_stock",
+                "quantity": variant.get("quantity"),
+                "price": existing.get("price"),
+            }
+            checks_completed.add("live_stock")
+
+
+def _match_facts_by_product_name(
+    matched_product: str,
+    facts_by_sku: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Every commercial fact whose product_name overlaps matched_product, by
+    plain case-insensitive substring in either direction. Shared by the
+    discovery renderer and the auto-fetch selector below, so "which candidate
+    does this decision actually mean" is answered the same way everywhere
+    instead of drifting into two slightly different heuristics."""
+    matched = str(matched_product or "").strip().lower()
+    if not matched:
+        return []
+    return [
+        fact for fact in facts_by_sku.values()
+        if matched in str(fact.get("product_name") or "").lower()
+        or str(fact.get("product_name") or "").lower() in matched
+    ]
+
+
 def _select_commercial_fact(
     decision: Dict[str, Any],
     facts_by_sku: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
     if not facts_by_sku:
         return {}
-    matched = str(decision.get("matched_product") or "").lower()
-    for fact in facts_by_sku.values():
-        product_name = str(fact.get("product_name") or "").lower()
-        if matched and (matched in product_name or product_name in matched):
-            return fact
+    matches = _match_facts_by_product_name(decision.get("matched_product") or "", facts_by_sku)
+    if matches:
+        return matches[0]
     if len(facts_by_sku) == 1:
         return next(iter(facts_by_sku.values()))
     return {}
+
+
+def _collect_turn_candidates(
+    available_products_seen: List[Dict[str, Any]],
+    commercial_facts_by_sku: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Every distinct product a real tool call surfaced this turn, deduped by
+    name, in first-seen order — the shared evidence base for all three tiers
+    of the graceful discovery fallback below.
+
+    Price/status are only ever attached when the specific source that
+    produced them actually verified that field:
+    - search_available_products only ever returns variants with confirmed
+      positive live stock (see tiendanube_tools.py) — that "in_stock" is a
+      real guarantee from the tool, not an assumption made here.
+    - get_stock/get_product_availability facts keep whatever status/price
+      they themselves reported (which can be out_of_stock, untracked, or a
+      real price) — never defaulted to "in_stock".
+    search_products (the non-"available" variant) never feeds this at all,
+    because it deliberately does not verify stock or price.
+    """
+    candidates: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+    def upsert(name: str, *, sku: str = "", price: Any = None, status: str = "") -> None:
+        name = name.strip()
+        if not name:
+            return
+        key = name.lower()
+        entry = candidates.setdefault(
+            key, {"product_name": name, "sku": "", "price": None, "status": ""}
+        )
+        if sku and not entry["sku"]:
+            entry["sku"] = sku
+        if price is not None:
+            entry["price"] = price
+        if status and not entry["status"]:
+            entry["status"] = status
+
+    for product in available_products_seen:
+        variants = product.get("variants") or []
+        sku = str(variants[0].get("sku") or "").strip() if variants else ""
+        upsert(str(product.get("name") or ""), sku=sku, status="in_stock")
+
+    for fact in commercial_facts_by_sku.values():
+        upsert(
+            str(fact.get("product_name") or ""),
+            sku=str(fact.get("sku") or ""),
+            price=fact.get("price"),
+            status=str(fact.get("status") or ""),
+        )
+
+    return list(candidates.values())
+
+
+ACCESSORY_KEYWORDS = frozenset(
+    {
+        "pega",
+        "pegamento",
+        "adhesivo",
+        "glue",
+        "removedor",
+        "rizador",
+        "curler",
+        "pinza",
+        "pinzas",
+        "aplicador",
+        "separador",
+        "cepillo",
+    }
+)
+
+
+def _filter_relevant_candidates(
+    candidates: List[Dict[str, Any]],
+    user_message: str,
+) -> List[Dict[str, Any]]:
+    """Drop generic accessory/tool candidates (glue, tweezers, curlers, ...)
+    from the list offered as a primary discovery candidate, unless the
+    customer's own message names that accessory type explicitly.
+
+    This is a category-level filter, not a per-product one: it never checks
+    a specific SKU or brand, only whether the candidate's name contains a
+    generic accessory noun — the same style of exclusion already used by
+    tiendanube_tools.search_available_products() for "sorpresa" items.
+
+    Never mutates available_products_seen or commercial_facts_by_sku, and
+    never removes anything from the catalog or from what a later, separate
+    upsell flow could still offer — it only narrows what this turn's
+    discovery reply presents as the main answer.
+    """
+    normalized_message = (user_message or "").lower()
+    if any(keyword in normalized_message for keyword in ACCESSORY_KEYWORDS):
+        return candidates
+    return [
+        candidate
+        for candidate in candidates
+        if not any(
+            keyword in str(candidate.get("product_name") or "").lower()
+            for keyword in ACCESSORY_KEYWORDS
+        )
+    ]
+
+
+def classify_graceful_discovery_fallback(
+    *,
+    product_discovery_turn: bool,
+    handoff_request: Optional[Dict[str, Any]],
+    candidates: List[Dict[str, Any]],
+    required_checks: Any,
+    checks_completed: Any,
+) -> str:
+    """Which tier applies when the model exhausted the turn without ever
+    closing a valid set_turn_decision. Pure — only counts and set membership,
+    never a guess about which candidate "is" the right one.
+
+    Returns:
+      "none"     — this fallback does not apply (not a discovery turn, or a
+                   handoff is already required — that keeps its existing
+                   priority untouched).
+      "single"   — exactly one candidate, with a real SKU, and every check
+                   this turn required already verified by a real tool.
+      "multi"    — 2 or 3 verified candidates; not enough certainty to pick
+                   one, but enough to offer a short menu.
+      "escalate" — 0 candidates, more than 3, or exactly one candidate that
+                   could not be fully verified — never answered with the old
+                   rigid "necesito el modelo exacto o link" message; only a
+                   short offer to explore options or talk to Isa.
+    """
+    if not product_discovery_turn or handoff_request:
+        return "none"
+    count = len(candidates)
+    if count == 1:
+        sku = str(candidates[0].get("sku") or "").strip()
+        if sku and set(required_checks or ()) <= set(checks_completed or ()):
+            return "single"
+        return "escalate"
+    if 2 <= count <= 3:
+        return "multi"
+    return "escalate"
+
+
+def _render_single_candidate_reply(
+    candidate: Dict[str, Any],
+    *,
+    price_requested: bool,
+    greeting_required: bool,
+) -> str:
+    """Conservative recommendation from the one verified candidate, with no
+    semantic classification available. Never claims equivalence to what the
+    customer asked for — only reports what got verified."""
+    product_name = candidate.get("product_name") or "esta opción"
+    text = "Encontré {} y pude verificar estos datos en vivo.".format(product_name)
+
+    status = candidate.get("status")
+    if status == "in_stock":
+        text += " Está disponible."
+    elif status == "out_of_stock":
+        text += " En este momento está sin stock."
+    elif status == "untracked_stock":
+        text += " No pude confirmar su disponibilidad en vivo."
+
+    if price_requested:
+        price = _format_price(candidate.get("price"))
+        if price:
+            text += " Sale {}.".format(price)
+        else:
+            text += " No pude confirmar el precio en vivo ahora, así que prefiero no inventártelo."
+
+    text += (
+        " No sé si es exactamente lo que buscabas, pero es lo único que ya "
+        "pude confirmar. ¿Querés que te cuente algún detalle más? 😊"
+    )
+    return _ensure_first_greeting(text, greeting_required)
+
+
+def _render_multi_candidate_reply(
+    candidates: List[Dict[str, Any]],
+    *,
+    greeting_required: bool,
+) -> str:
+    """Short menu of 2-3 already-verified candidates. Price/stock only ever
+    appear per-candidate when that specific candidate's own data has them —
+    never inferred just because the candidate is in the list."""
+    lines = []
+    for candidate in candidates[:3]:
+        details = []
+        price = _format_price(candidate.get("price"))
+        if price:
+            details.append(price)
+        status = candidate.get("status")
+        if status == "in_stock":
+            details.append("disponible")
+        elif status == "out_of_stock":
+            details.append("sin stock por ahora")
+        name = candidate.get("product_name") or "Opción"
+        lines.append("• {}{}".format(name, " — {}".format(", ".join(details)) if details else ""))
+    text = "Tengo algunas opciones que pueden ir con lo que buscás:\n" + "\n".join(lines)
+    text += "\n¿Cuál te gusta más, o preferís que te ayude a elegir? 😊"
+    return _ensure_first_greeting(text, greeting_required)
+
+
+def _render_discovery_escalation_offer(*, greeting_required: bool) -> str:
+    """Last-resort, still-graceful reply when nothing converged with enough
+    confidence: only an offer, in text — never an executed handoff, never a
+    sales_intake, never a guessed product."""
+    text = (
+        "Tengo algunas opciones que pueden ir con lo que buscás. Te puedo "
+        "mostrar 2 o 3 para que elijas, o si preferís te paso con Isa para "
+        "una recomendación más personalizada. 😊"
+    )
+    return _ensure_first_greeting(text, greeting_required)
+
+
+def _select_fact_for_auto_fetch(
+    decision: Optional[Dict[str, Any]],
+    facts_by_sku: Dict[str, Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """The one commercial fact the auto-fetch may safely complete a pending
+    required check for — never a guess. With exactly one known candidate,
+    that is unambiguous by construction (current behaviour, unchanged). With
+    more than one (the model explored several before deciding), only a
+    decision whose matched_product names exactly one of them unambiguously
+    qualifies; two or more matches, or zero, means "don't know which one" and
+    the auto-fetch must stay out of it.
+    """
+    if len(facts_by_sku) == 1:
+        return next(iter(facts_by_sku.values()))
+    matches = _match_facts_by_product_name((decision or {}).get("matched_product") or "", facts_by_sku)
+    return matches[0] if len(matches) == 1 else None
 
 
 def _render_product_discovery_reply(
@@ -529,6 +819,7 @@ def answer(
     handoff_request: Optional[Dict[str, Any]] = None
     verified_in_stock_skus: Dict[str, Dict[str, Any]] = {}
     commercial_facts_by_sku: Dict[str, Dict[str, Any]] = {}
+    available_products_seen: List[Dict[str, Any]] = []
     checks_completed = set()
     sale_candidate: Optional[Dict[str, str]] = None
     proposed_decision: Optional[Dict[str, Any]] = None
@@ -565,38 +856,7 @@ def answer(
             ).format(json.dumps(result, ensure_ascii=False, default=str)),
         })
 
-    proactive_discovery_nudge_sent = False
     for round_number in range(MAX_TOOL_ROUNDS):
-        # A discovery turn with no clean catalog match (e.g. an attribute like
-        # "dramático" with no obvious product type) can make the model keep
-        # re-searching instead of closing set_turn_decision. The reactive nudge
-        # below only fires once the model pauses and returns empty tool_calls;
-        # if it never pauses, MAX_TOOL_ROUNDS/MAX_TOOL_CALLS_PER_TURN run out
-        # first and set_turn_decision is silently dropped by the tool-budget
-        # guard before it is ever validated. Nudge proactively, once, before
-        # that happens, without touching either limit.
-        if (
-            not proactive_discovery_nudge_sent
-            and not proposed_decision
-            and (round_number >= 2 or tool_call_count >= 6)
-            and _is_product_discovery_turn(user_message, rag_context, tool_calls_made)
-        ):
-            proactive_discovery_nudge_sent = True
-            messages.append({
-                "role": "system",
-                "content": (
-                    "Ya usaste varias herramientas en este turno sin registrar "
-                    "una decisión de producto. No seguir buscando indefinidamente: "
-                    "con la mejor evidencia que ya tenés, llamá set_turn_decision "
-                    "ahora con response_mode=product_discovery y el match_type que "
-                    "corresponda — exact_match si encontraste el mismo tipo de "
-                    "producto pedido, close_alternative si es una alternativa "
-                    "relacionada de otro tipo o formato, o no_match si ninguna "
-                    "candidata es suficientemente segura. No hace falta seguir "
-                    "buscando más para poder cerrar la decisión."
-                ),
-            })
-
         message = _ask_deepseek(messages)
         _add_usage(usage_totals, message.get("_fred_usage") or {})
         tool_calls = message.get("tool_calls") or []
@@ -632,8 +892,11 @@ def answer(
             if availability_requested and (proposed_decision or {}).get("match_type") != "no_match":
                 required_checks.add("live_stock")
             missing_checks = required_checks - checks_completed
-            if missing_checks and len(commercial_facts_by_sku) == 1:
-                current_fact = next(iter(commercial_facts_by_sku.values()))
+            current_fact = (
+                _select_fact_for_auto_fetch(proposed_decision, commercial_facts_by_sku)
+                if missing_checks else None
+            )
+            if current_fact:
                 sku = str(current_fact.get("sku") or "").strip()
                 if sku and "live_price" in missing_checks:
                     arguments = {"sku": sku}
@@ -769,8 +1032,18 @@ def answer(
                     "summary": (sanitized_arguments or {}).get("summary", ""),
                 }
 
+            if name == "search_available_products" and isinstance(result, list):
+                available_products_seen.extend(result)
+
             if name == "set_turn_decision" and isinstance(result, dict):
                 proposed_decision = result.get("decision_recorded")
+                if proposed_decision and proposed_decision.get("matched_product"):
+                    _credit_verified_stock_from_search(
+                        proposed_decision["matched_product"],
+                        available_products_seen,
+                        commercial_facts_by_sku,
+                        checks_completed,
+                    )
 
             if name == "get_stock" and isinstance(result, dict):
                 if result.get("found") and result.get("sku"):
@@ -869,6 +1142,85 @@ def answer(
                 "required_checks": sorted(required_checks),
                 "checks_completed": sorted(checks_completed),
             },
+            "rounds": MAX_TOOL_ROUNDS,
+            "model_calls": MAX_TOOL_ROUNDS,
+            "usage": usage_totals,
+        }
+
+    # The model never closed set_turn_decision. Rather than keep nudging it
+    # to converge, or defaulting to "necesito el modelo exacto o link" on
+    # every discovery turn, degrade gracefully from what real tools already
+    # verified this turn — reusing that evidence, never calling another tool,
+    # never fabricating a semantic match, a price, or a stock claim (see the
+    # Problem A architectural audit and the graceful-fallback design).
+    candidates = _collect_turn_candidates(available_products_seen, commercial_facts_by_sku)
+    candidates = _filter_relevant_candidates(candidates, user_message)
+    fallback_required_checks = set()
+    if price_requested:
+        fallback_required_checks.add("live_price")
+    if availability_requested:
+        fallback_required_checks.add("live_stock")
+    fallback_tier = classify_graceful_discovery_fallback(
+        product_discovery_turn=_is_product_discovery_turn(
+            user_message, rag_context, tool_calls_made
+        ),
+        handoff_request=handoff_request,
+        candidates=candidates,
+        required_checks=fallback_required_checks,
+        checks_completed=checks_completed,
+    )
+    if fallback_tier != "none":
+        if fallback_tier == "single":
+            reply = _render_single_candidate_reply(
+                candidates[0], price_requested=price_requested, greeting_required=greeting_required,
+            )
+            match_type = "unclassified"
+            matched_product = candidates[0].get("product_name") or ""
+            required_checks_out = sorted(fallback_required_checks)
+            summary = (
+                "Recomendación conservadora desde un único candidato ya "
+                "verificado por herramientas; sin clasificación semántica "
+                "del modelo."
+            )
+        elif fallback_tier == "multi":
+            reply = _render_multi_candidate_reply(candidates, greeting_required=greeting_required)
+            match_type = "multiple_candidates"
+            matched_product = ""
+            required_checks_out = []
+            summary = (
+                "Se ofrecieron 2-3 candidatas ya verificadas para que la "
+                "clienta elija; sin clasificación semántica del modelo."
+            )
+        else:
+            reply = _render_discovery_escalation_offer(greeting_required=greeting_required)
+            match_type = "unresolved"
+            matched_product = ""
+            required_checks_out = []
+            summary = (
+                "El turno no convergió con confianza suficiente; se ofreció "
+                "explorar opciones verificadas o hablar con Isa, sin "
+                "ejecutar ninguna escalación todavía."
+            )
+        decision = {
+            "action": "reply",
+            "reason": "normal_response",
+            "summary": summary,
+            "response_mode": "product_discovery",
+            "match_type": match_type,
+            "requested_product": "",
+            "matched_product": matched_product,
+            "requested_product_type": "",
+            "matched_product_type": "",
+            "required_checks": required_checks_out,
+            "checks_completed": sorted(checks_completed),
+        }
+        return {
+            "reply": reply,
+            "tool_calls": tool_calls_made,
+            "handoff": handoff_request,
+            "sale_candidate": sale_candidate,
+            "decision": decision,
+            "graceful_fallback_tier": fallback_tier,
             "rounds": MAX_TOOL_ROUNDS,
             "model_calls": MAX_TOOL_ROUNDS,
             "usage": usage_totals,

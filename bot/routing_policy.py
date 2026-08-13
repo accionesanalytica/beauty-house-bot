@@ -164,6 +164,11 @@ def visible_routing_contract(
         # availability call succeeded). This is the evidence that a discovery
         # answer is grounded, not merely a syntactically valid decision.
         "checks_completed": list(decision.get("checks_completed") or ()),
+        # What this specific decision itself said it needed verified — the
+        # other half of the grounded-discovery evidence. "Something got
+        # checked" is not the same claim as "what this decision needed got
+        # checked"; both fields are required to tell them apart.
+        "required_checks": list(decision.get("required_checks") or ()),
         "next_step": (
             "isa_review" if action == "handoff_to_isa"
             else "provide_missing_information" if missing
@@ -231,11 +236,19 @@ def align_reply_with_routing(
         # completed this turn (checks_completed is never set from free-form
         # model text — see agent.py). A lookup or a genuine ambiguity has no
         # completed check to point to, so this never bypasses those.
+        #
+        # required_checks <= checks_completed, not merely bool(checks_completed):
+        # "something was checked" is not the same claim as "what this decision
+        # said it needed got checked". A decision that only proved live_stock
+        # (e.g. via search_available_products) while still owing live_price
+        # (the customer asked for a price) must not be treated as grounded —
+        # required_checks is exactly the set that would let that distinction
+        # through a bare truthiness check.
         grounded_discovery = (
             set(contract["missing_information"]) <= {"sku"}
             and contract["response_mode"] == "product_discovery"
             and contract["match_type"] not in ("", "no_match")
-            and bool(contract["checks_completed"])
+            and set(contract["required_checks"]) <= set(contract["checks_completed"])
         )
         if not grounded_discovery:
             # A missing live-check argument is the only useful next step.

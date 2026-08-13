@@ -49,6 +49,15 @@ seguridad, pruebas y observabilidad.
 3. Registrar el nuevo número de Fred en Meta cuando llegue el QR del eSIM.
 4. Habilitar el número al público de forma gradual y revisar las primeras
    conversaciones todos los días.
+5. **Auditoría end-to-end del handoff a Isa** (checkpoint pendiente, todavía
+   sin implementar ni auditar). Verificar qué existe realmente, sin asumir
+   que el flujo ya está armado, para cada paso:
+   cliente pide Isa → Fred conserva/resume el contexto → se crea la
+   escalación → Isa recibe el contexto → Isa responde → la respuesta llega a
+   WhatsApp → se resuelve la escalación → Fred puede continuar con el
+   contexto. No tocar M1, Knowledge V1, checkout, sales intake, Railway,
+   Supabase, Meta ni Tiendanube durante esa auditoría; sólo lectura/trazado
+   hasta tener el diagnóstico.
 
 ## Más adelante
 
