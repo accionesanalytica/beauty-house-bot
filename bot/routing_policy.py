@@ -50,6 +50,29 @@ def lifting_clarification_reply(text: str) -> str:
     )
 
 
+def _order_status_needs_isa(dynamic_requirements: Sequence[Any]) -> Optional[str]:
+    """A verified order_status result can itself demand Isa, deterministically
+    -- not left to the model's judgment: the order genuinely doesn't exist,
+    or the data is internally inconsistent (marked shipped/delivered with no
+    tracking on file). Returns None when neither condition is met."""
+    for item in dynamic_requirements:
+        if getattr(item, "fact", "") != "order_status" or getattr(item, "status", "") != "completed":
+            continue
+        result = getattr(item, "result", {}) or {}
+        if result.get("found") is False:
+            return "order_not_found"
+        status_text = _normalise(
+            "{} {}".format(result.get("status") or "", result.get("shipping_status") or "")
+        )
+        shipped_or_delivered = any(
+            keyword in status_text
+            for keyword in ("enviado", "entregado", "despachado", "shipped", "delivered")
+        )
+        if shipped_or_delivered and not result.get("tracking"):
+            return "order_status_contradiction"
+    return None
+
+
 def resolve_harness_routing(
     message_text: str,
     prior_history: Sequence[Mapping[str, Any]],
@@ -70,6 +93,7 @@ def resolve_harness_routing(
         if getattr(item, "status", "") in {"unavailable_tool", "failed"}
         and "isa" in _normalise(getattr(item, "customer_fallback", ""))
     ), None)
+    order_status_isa_reason = _order_status_needs_isa(dynamic_requirements)
 
     if governing_topic and obligations and obligations.escalation_required:
         reason = (
@@ -100,6 +124,28 @@ def resolve_harness_routing(
             "summary": "Routing determinado por un requerimiento dinámico no verificable.",
         }
         source = "dynamic_requirement_fallback"
+    elif order_status_isa_reason:
+        # A real, verified Tiendanube lookup already answered these -- no
+        # model judgment needed or wanted: the order doesn't exist, or its
+        # own data is inconsistent (marked shipped/delivered with no
+        # tracking on file). Never guess or reassure the customer here.
+        summaries = {
+            "order_not_found": "La orden consultada no existe en Tiendanube.",
+            "order_status_contradiction": (
+                "El estado de la orden es inconsistente (marcado enviado/entregado "
+                "sin tracking registrado)."
+            ),
+        }
+        effective_handoff = {
+            "reason": "unable_to_verify",
+            "summary": summaries[order_status_isa_reason],
+        }
+        effective_decision = {
+            "action": "handoff_to_isa",
+            "reason": "unable_to_verify",
+            "summary": summaries[order_status_isa_reason],
+        }
+        source = "order_status_" + order_status_isa_reason
     elif not governing_topic and legacy_special_sale_context(message_text, prior_history):
         # Knowledge can be disabled or fail. In that degraded mode, retain the
         # established safety boundary instead of allowing a normal checkout.

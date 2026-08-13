@@ -263,7 +263,18 @@ def get_product_availability(product_id: int) -> Dict[str, Any]:
 
 def get_order_status(order_number: str) -> Dict[str, Any]:
     """Look up an order by its number. Replaces the simulated version."""
-    orders = _get("/orders", {"q": order_number, "per_page": 5})
+    try:
+        orders = _get("/orders", {"q": order_number, "per_page": 5})
+    except requests.exceptions.HTTPError as error:
+        # Tiendanube's search returns 404 (not an empty 200 list) when a
+        # query matches nothing -- a customer typo or a real "this order
+        # doesn't exist" is a normal outcome here, not an infrastructure
+        # failure, and must not be reported as one (that would wrongly skip
+        # the deterministic "order not found" handoff and instead look like
+        # a live-data outage).
+        if error.response is not None and error.response.status_code == 404:
+            return {"found": False, "message": "No encontré esa orden."}
+        raise
 
     if not orders:
         return {"found": False, "message": "No encontré esa orden."}

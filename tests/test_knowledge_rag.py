@@ -386,6 +386,33 @@ class KnowledgeRagTests(unittest.TestCase):
         self.assertEqual(requirement.status, "ready")
         self.assertEqual(requirement.arguments, {"order_number": "12345"})
 
+    def test_order_number_extraction_handles_non_adjacent_phrasing(self):
+        # The original regex only matched digits immediately after
+        # "orden"/"pedido"/"#" -- real customers say "el número es 1234" or
+        # "mi pedido es el 1234", which previously fell through to the
+        # model's own (unreliable) extraction instead of the deterministic,
+        # zero-LLM-round path.
+        for query in (
+            "¿dónde está mi pedido? El número es 1234",
+            "mi pedido es el 1234",
+            "el numero de orden es 1234",
+            "pedido: 1234",
+        ):
+            requirement = infer_dynamic_requirements(query, "order_tracking")[0]
+            self.assertEqual(requirement.status, "ready", query)
+            self.assertEqual(requirement.arguments, {"order_number": "1234"}, query)
+
+    def test_order_number_extraction_does_not_swallow_an_unrelated_number(self):
+        # "pedidos" (plural) must not match the singular-keyword boundary and
+        # grab an unrelated number appearing later in the same sentence, even
+        # when real tracking evidence ("mi pedido") is also present.
+        requirement = infer_dynamic_requirements(
+            "mi pedido no llegó. tengo 5 pedidos y necesito saber si llegan en 3000 minutos",
+            "order_tracking",
+        )[0]
+        self.assertEqual(requirement.status, "missing_arguments")
+        self.assertEqual(requirement.missing_arguments, ("order_number",))
+
     def test_escalation_triggers_are_conditional_not_topic_wide(self):
         root = Path(__file__).resolve().parents[1] / "knowledge"
         chunks = load_knowledge_chunks(root)

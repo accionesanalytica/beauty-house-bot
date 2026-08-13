@@ -3649,8 +3649,14 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     dynamic_context = format_dynamic_check_context(
                         dynamic_check_outcomes
                     )
+                    # Verified live facts (e.g. a real get_order_status/get_stock
+                    # result) go first: build_turn_messages bounds rag_context
+                    # to MAX_RAG_CONTEXT_CHARS by truncating the tail, and the
+                    # one thing that must never be the part that gets cut is
+                    # data a real tool already confirmed -- static approved
+                    # prose can afford to be the part trimmed instead.
                     knowledge_context = "\n\n".join(
-                        item for item in (knowledge_bundle.context, dynamic_context) if item
+                        item for item in (dynamic_context, knowledge_bundle.context) if item
                     )
                 else:
                     # Knowledge is optional. A temporary embedding/provider

@@ -584,9 +584,18 @@ def infer_dynamic_requirements(
     args = dict(available_arguments or {})
     normalised = _normalise(query)
     requirements: List[DynamicRequirement] = []
-    order_match = re.search(r"(?:#|orden\s+|pedido\s+)(\d{4,})", normalised)
+    # A customer rarely puts the number immediately after "orden"/"pedido":
+    # "el número es 1234", "mi pedido es el 1234", "pedido: 1234" are all
+    # real phrasings that a same-message-only, adjacent-word regex misses,
+    # silently falling back to the LLM's own (unreliable) extraction. Allow
+    # a short run of filler words between the keyword and the digits, with a
+    # word boundary so "pedidos" (plural) can't match and swallow an
+    # unrelated number later in the sentence.
+    order_match = re.search(
+        r"\b(?:orden|pedido|numero)\b\D{0,20}?(\d{4,})|#(\d{4,})", normalised,
+    )
     if order_match:
-        args.setdefault("order_number", order_match.group(1))
+        args.setdefault("order_number", order_match.group(1) or order_match.group(2))
 
     def add(
         fact: str, verifier: str, required: Sequence[str], fallback: str,

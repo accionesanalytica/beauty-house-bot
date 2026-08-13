@@ -9,6 +9,7 @@ from types import SimpleNamespace
 BOT_DIR = Path(__file__).resolve().parents[1] / "bot"
 sys.path.insert(0, str(BOT_DIR))
 
+from dynamic_checks import DynamicCheckOutcome  # noqa: E402
 from knowledge_rag import DynamicRequirement, KnowledgeObligations, KnowledgeRetrieval  # noqa: E402
 from routing_policy import align_reply_with_routing, resolve_harness_routing  # noqa: E402
 
@@ -308,6 +309,80 @@ class GroundedDiscoveryBypassTests(unittest.TestCase):
         )
         self.assertNotEqual(reply, self.GROUNDED_REPLY)
         self.assertIn("número de orden", reply)
+
+
+class OrderStatusDeterministicEscalationTests(unittest.TestCase):
+    """A real, completed get_order_status result can itself force a handoff
+    -- the order genuinely doesn't exist, or its own data is inconsistent --
+    without leaving that judgment to the model."""
+
+    def test_order_not_found_forces_handoff(self):
+        outcome = DynamicCheckOutcome(
+            fact="order_status", verifier="get_order_status", status="completed",
+            result={"found": False, "message": "No encontré esa orden."},
+        )
+        result = resolve_harness_routing(
+            "¿Dónde está mi pedido 9999?", [],
+            decision={"action": "reply", "reason": "normal_response"},
+            dynamic_requirements=(outcome,),
+        )
+        self.assertEqual(result["decision"]["action"], "handoff_to_isa")
+        self.assertEqual(result["source"], "order_status_order_not_found")
+
+    def test_shipped_status_without_tracking_forces_handoff(self):
+        outcome = DynamicCheckOutcome(
+            fact="order_status", verifier="get_order_status", status="completed",
+            result={"found": True, "status": "enviado", "shipping_status": "shipped", "tracking": None},
+        )
+        result = resolve_harness_routing(
+            "¿Cómo va mi pedido 1234?", [],
+            decision={"action": "reply", "reason": "normal_response"},
+            dynamic_requirements=(outcome,),
+        )
+        self.assertEqual(result["decision"]["action"], "handoff_to_isa")
+        self.assertEqual(result["source"], "order_status_order_status_contradiction")
+
+    def test_found_order_with_consistent_tracking_never_escalates(self):
+        outcome = DynamicCheckOutcome(
+            fact="order_status", verifier="get_order_status", status="completed",
+            result={"found": True, "status": "enviado", "shipping_status": "shipped",
+                     "tracking": "RR123456789AR"},
+        )
+        result = resolve_harness_routing(
+            "¿Cómo va mi pedido 1234?", [],
+            decision={"action": "reply", "reason": "normal_response"},
+            dynamic_requirements=(outcome,),
+        )
+        self.assertEqual(result["decision"]["action"], "reply")
+        self.assertIsNone(result["handoff"])
+
+    def test_order_still_in_preparation_never_escalates(self):
+        outcome = DynamicCheckOutcome(
+            fact="order_status", verifier="get_order_status", status="completed",
+            result={"found": True, "status": "pending", "shipping_status": None, "tracking": None},
+        )
+        result = resolve_harness_routing(
+            "¿Cómo va mi pedido 1234?", [],
+            decision={"action": "reply", "reason": "normal_response"},
+            dynamic_requirements=(outcome,),
+        )
+        self.assertEqual(result["decision"]["action"], "reply")
+
+    def test_customer_facing_reply_mentions_isa_without_a_missing_argument_prompt(self):
+        outcome = DynamicCheckOutcome(
+            fact="order_status", verifier="get_order_status", status="completed",
+            result={"found": False, "message": "No encontré esa orden."},
+        )
+        routing = resolve_harness_routing(
+            "¿Dónde está mi pedido 9999?", [],
+            decision={"action": "reply", "reason": "normal_response"},
+            dynamic_requirements=(outcome,),
+        )
+        reply = align_reply_with_routing(
+            "No encontré esa orden con ese número.", routing, dynamic_requirements=(outcome,),
+        )
+        self.assertIn("Isa", reply)
+        self.assertNotIn("me falta", reply)
 
 
 if __name__ == "__main__":
