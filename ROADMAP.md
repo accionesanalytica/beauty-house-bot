@@ -49,15 +49,18 @@ seguridad, pruebas y observabilidad.
 3. Registrar el nuevo número de Fred en Meta cuando llegue el QR del eSIM.
 4. Habilitar el número al público de forma gradual y revisar las primeras
    conversaciones todos los días.
-5. **Auditoría end-to-end del handoff a Isa** (checkpoint pendiente, todavía
-   sin implementar ni auditar). Verificar qué existe realmente, sin asumir
-   que el flujo ya está armado, para cada paso:
-   cliente pide Isa → Fred conserva/resume el contexto → se crea la
-   escalación → Isa recibe el contexto → Isa responde → la respuesta llega a
-   WhatsApp → se resuelve la escalación → Fred puede continuar con el
-   contexto. No tocar M1, Knowledge V1, checkout, sales intake, Railway,
-   Supabase, Meta ni Tiendanube durante esa auditoría; sólo lectura/trazado
-   hasta tener el diagnóstico.
+5. **Handoff a Isa** — auditado y corregido (contexto reciente ahora llega
+   en toda escalación, y una condición de carrera que podía entregar la
+   respuesta de Isa al cliente equivocado quedó resuelta). Pendiente:
+   validación real por WhatsApp.
+6. **Escalación por plazo excedido en tracking** — umbrales aprobados por
+   Isa: 72 horas hábiles desde acreditación sin tracking, y 5 días hábiles
+   desde despacho sin entrega (ya reflejados en
+   `knowledge/procedures/order-tracking.md`). Falta la aplicación
+   determinística por código: `get_order_status` no devuelve fechas de pago
+   ni de despacho hoy, así que el cálculo de plazo excedido no puede
+   ejecutarse sin esa información. No implementar hasta salir de la
+   validación real del MVP en curso.
 
 ## Más adelante
 
