@@ -614,8 +614,6 @@ def classify_graceful_discovery_fallback(
     product_discovery_turn: bool,
     handoff_request: Optional[Dict[str, Any]],
     candidates: List[Dict[str, Any]],
-    required_checks: Any,
-    checks_completed: Any,
 ) -> str:
     """Which tier applies when the model exhausted the turn without ever
     closing a valid set_turn_decision. Pure — only counts and set membership,
@@ -625,23 +623,24 @@ def classify_graceful_discovery_fallback(
       "none"     — this fallback does not apply (not a discovery turn, or a
                    handoff is already required — that keeps its existing
                    priority untouched).
-      "single"   — exactly one candidate, with a real SKU, and every check
-                   this turn required already verified by a real tool.
+      "single"   — exactly one real, identifiable (has a SKU) candidate ->
+                   show it immediately. Price/stock render honestly as
+                   confirmed or not; a pending check is never a reason to
+                   withhold the candidate itself (a promise with nothing
+                   shown is worse than a caveat).
       "multi"    — 2 or 3 verified candidates; not enough certainty to pick
-                   one, but enough to offer a short menu.
-      "escalate" — 0 candidates, more than 3, or exactly one candidate that
-                   could not be fully verified — never answered with the old
-                   rigid "necesito el modelo exacto o link" message; only a
-                   short offer to explore options or talk to Isa.
+                   one, but enough to show a short menu immediately.
+      "escalate" — 0 candidates, more than 3, or a single candidate with no
+                   usable SKU — never answered with the old rigid "necesito
+                   el modelo exacto o link" message; only a short, honest
+                   admission plus an offer to explore further or talk to Isa.
     """
     if not product_discovery_turn or handoff_request:
         return "none"
     count = len(candidates)
     if count == 1:
         sku = str(candidates[0].get("sku") or "").strip()
-        if sku and set(required_checks or ()) <= set(checks_completed or ()):
-            return "single"
-        return "escalate"
+        return "single" if sku else "escalate"
     if 2 <= count <= 3:
         return "multi"
     return "escalate"
@@ -709,12 +708,15 @@ def _render_multi_candidate_reply(
 
 def _render_discovery_escalation_offer(*, greeting_required: bool) -> str:
     """Last-resort, still-graceful reply when nothing converged with enough
-    confidence: only an offer, in text — never an executed handoff, never a
-    sales_intake, never a guessed product."""
+    confidence: only an honest admission plus an offer, in text — never an
+    executed handoff, never a sales_intake, never a guessed product, and
+    never a promise to "show options" that this same message doesn't
+    actually deliver (that broken promise was the exact production bug this
+    copy replaces)."""
     text = (
-        "Tengo algunas opciones que pueden ir con lo que buscás. Te puedo "
-        "mostrar 2 o 3 para que elijas, o si preferís te paso con Isa para "
-        "una recomendación más personalizada. 😊"
+        "No encontré todavía una opción que pueda recomendarte con "
+        "confianza. Puedo seguir buscando con más detalles tuyos, o te paso "
+        "directo con Isa para que te ayude a elegir. ¿Qué preferís? 😊"
     )
     return _ensure_first_greeting(text, greeting_required)
 
@@ -735,6 +737,277 @@ def _select_fact_for_auto_fetch(
         return next(iter(facts_by_sku.values()))
     matches = _match_facts_by_product_name((decision or {}).get("matched_product") or "", facts_by_sku)
     return matches[0] if len(matches) == 1 else None
+
+
+def _build_fallback_response(
+    tier: str,
+    candidates: List[Dict[str, Any]],
+    *,
+    price_requested: bool,
+    greeting_required: bool,
+    checks_completed: Any,
+) -> Dict[str, Any]:
+    """Render one of the 3 graceful-discovery tiers into a reply + decision.
+    Shared by the no-decision fallback and the elliptical follow-up
+    shortcut below, so both degrade identically instead of drifting apart.
+    required_checks is always [] here: these decisions are Python-built, not
+    model claims, and the renderers already say plainly when a field wasn't
+    verified — there is nothing left for routing_policy's grounded-discovery
+    gate to usefully enforce, and letting it apply here previously caused it
+    to silently override this reply with a stale lookup message.
+    """
+    if tier == "single":
+        reply = _render_single_candidate_reply(
+            candidates[0], price_requested=price_requested, greeting_required=greeting_required,
+        )
+        match_type = "unclassified"
+        matched_product = candidates[0].get("product_name") or ""
+        summary = (
+            "Recomendación conservadora desde un único candidato ya "
+            "verificado por herramientas; sin clasificación semántica "
+            "del modelo."
+        )
+    elif tier == "multi":
+        reply = _render_multi_candidate_reply(candidates, greeting_required=greeting_required)
+        match_type = "multiple_candidates"
+        matched_product = ""
+        summary = (
+            "Se ofrecieron 2-3 candidatas ya verificadas para que la "
+            "clienta elija; sin clasificación semántica del modelo."
+        )
+    else:
+        reply = _render_discovery_escalation_offer(greeting_required=greeting_required)
+        match_type = "unresolved"
+        matched_product = ""
+        summary = (
+            "El turno no convergió con confianza suficiente; se ofreció "
+            "explorar opciones verificadas o hablar con Isa, sin "
+            "ejecutar ninguna escalación todavía."
+        )
+    decision = {
+        "action": "reply",
+        "reason": "normal_response",
+        "summary": summary,
+        "response_mode": "product_discovery",
+        "match_type": match_type,
+        "requested_product": "",
+        "matched_product": matched_product,
+        "requested_product_type": "",
+        "matched_product_type": "",
+        "required_checks": [],
+        "checks_completed": sorted(checks_completed or ()),
+    }
+    return {"reply": reply, "decision": decision}
+
+
+def _refresh_missing_prices(
+    candidates: List[Dict[str, Any]],
+    *,
+    price_requested: bool,
+    tool_calls_made: List[Dict[str, Any]],
+) -> None:
+    """Fill in price for graceful-fallback candidates with one deterministic
+    get_stock call each, when the customer asked for a price and the
+    evidence gathered so far doesn't have it yet (e.g. it only ever came
+    from search_available_products, which never returns price). Mutates
+    candidates in place. Never guesses: if get_stock can't confirm it,
+    price stays None and the renderer says so honestly.
+    """
+    if not price_requested:
+        return
+    for candidate in candidates:
+        if candidate.get("price") is not None:
+            continue
+        sku = str(candidate.get("sku") or "").strip()
+        if not sku:
+            continue
+        arguments = {"sku": sku}
+        fact = _run_tool("get_stock", arguments)
+        tool_calls_made.append({"name": "get_stock", "arguments": arguments})
+        if isinstance(fact, dict) and fact.get("found"):
+            if fact.get("price") is not None:
+                candidate["price"] = fact["price"]
+            if fact.get("status"):
+                candidate["status"] = fact["status"]
+
+
+_MULTI_CANDIDATE_HEADER = "Tengo algunas opciones que pueden ir con lo que buscás"
+_BULLET_LINE_RE = re.compile(r"^•\s*(.+?)(?:\s+—\s+.+)?$")
+# Tier "single" fallback reply (_render_single_candidate_reply) and the
+# model's own successful exact_match/close_alternative decision
+# (_render_product_discovery_reply) phrase this differently, but both name
+# exactly one real candidate Fred just showed — either is worth remembering.
+_SINGLE_CANDIDATE_PATTERNS = [
+    re.compile(r"Encontré (.+?) y pude verificar estos datos en vivo\."),
+    re.compile(r"Sí, encontré (.+?)\."),
+    re.compile(r"pero sí tenemos (.+?)\. Es una alternativa relacionada"),
+]
+
+
+def _parse_recent_discovery_candidates(history: List[Dict[str, Any]]) -> List[str]:
+    """Recover the product names from the most recent assistant turn, if (and
+    only if) that turn named one or more real candidates Fred just showed —
+    our own tier "single"/"multi" fallback replies, or the model's own
+    successful exact_match/close_alternative decision text. This is
+    deliberately literal text parsing of Fred's own last message — not a new
+    persistence layer — because that message is already exactly what
+    conversation history stores and what the customer just read. If the last
+    assistant turn wasn't a discovery reply, there is nothing recent to
+    reference: return [] rather than searching further back, so a stale list
+    from an unrelated earlier topic never resurfaces.
+    """
+    last_assistant_text = next(
+        (
+            str(entry.get("content") or "")
+            for entry in reversed(history or [])
+            if entry.get("role") == "assistant"
+        ),
+        "",
+    )
+    if not last_assistant_text:
+        return []
+    if _MULTI_CANDIDATE_HEADER in last_assistant_text:
+        names = [
+            match.group(1).strip()
+            for line in last_assistant_text.splitlines()
+            for match in [_BULLET_LINE_RE.match(line.strip())]
+            if match
+        ]
+        return [name for name in names if name]
+    for pattern in _SINGLE_CANDIDATE_PATTERNS:
+        match = pattern.search(last_assistant_text)
+        if match:
+            return [match.group(1).strip()]
+    return []
+
+
+_DISCOVERY_ORDINAL_PATTERNS = [
+    (re.compile(r"\bla\s+primera\b", re.IGNORECASE), 0),
+    (re.compile(r"\bla\s+segunda\b", re.IGNORECASE), 1),
+    (re.compile(r"\bla\s+tercera\b", re.IGNORECASE), 2),
+    (re.compile(r"\bla\s+[uú]ltima\b", re.IGNORECASE), -1),
+    (re.compile(r"\bla\s+otra\b", re.IGNORECASE), -1),
+]
+_DISCOVERY_FOLLOWUP_RE = re.compile(
+    r"\bcu[aá]les?\b|\bmostrame\b|\bmu[eé]stra(?:me|las|los)?\b|\bopciones\b|"
+    r"\bno\s+s[eé]\s+cu[aá]l\b|\besas\b|\bcu[aá]les?\s+eran\b",
+    re.IGNORECASE,
+)
+
+
+def _resolve_discovery_followup_names(
+    user_message: str,
+    recent_names: List[str],
+) -> Optional[List[str]]:
+    """None means "this message isn't a discovery follow-up at all" (proceed
+    normally). Otherwise, the subset of recent_names this turn refers to —
+    one name for an ordinal reference ("la primera", "la otra"), or the full
+    list for a generic one ("¿cuáles?", "mostrame opciones", "no sé cuál
+    elegir"). An ordinal that is out of range falls back to the full list
+    rather than guessing which one was meant.
+    """
+    if not recent_names:
+        return None
+    for pattern, index in _DISCOVERY_ORDINAL_PATTERNS:
+        if pattern.search(user_message):
+            try:
+                return [recent_names[index]]
+            except IndexError:
+                return list(recent_names)
+    if _DISCOVERY_FOLLOWUP_RE.search(user_message):
+        return list(recent_names)
+    return None
+
+
+def _answer_discovery_followup(
+    names: List[str],
+    *,
+    price_requested: bool,
+    greeting_required: bool,
+) -> Optional[Dict[str, Any]]:
+    """Re-verify and re-render up to 3 previously-shown candidates directly,
+    with real tool calls but no LLM round at all. This is the deterministic
+    fix for elliptical follow-ups ("¿cuáles?", "la primera", "la otra") that
+    used to restart discovery from scratch through the model and could
+    contradict — or simply fail to find again — what Fred had just shown.
+    Returns None when nothing can be re-verified, so the caller falls back
+    to the normal pipeline instead of answering with an empty menu.
+    """
+    tool_calls_made: List[Dict[str, Any]] = []
+    available_products_seen: List[Dict[str, Any]] = []
+    commercial_facts_by_sku: Dict[str, Dict[str, Any]] = {}
+    seen_names: set = set()
+
+    for name in names[:3]:
+        arguments = {"query": name}
+        result = _run_tool("search_available_products", arguments)
+        tool_calls_made.append({"name": "search_available_products", "arguments": arguments})
+        if isinstance(result, list) and result:
+            available_products_seen.extend(result)
+            seen_names.update(str(p.get("name") or "").strip().lower() for p in result)
+
+    for name in names[:3]:
+        normalized = name.strip().lower()
+        if any(normalized in seen or seen in normalized for seen in seen_names):
+            continue
+        # search_available_products only ever returns positive-stock
+        # matches, so a candidate Fred already named that is genuinely out
+        # of stock right now would otherwise silently vanish from the
+        # follow-up instead of being shown honestly, the same way it was
+        # the first time. One unfiltered name search plus a real get_stock
+        # call recovers it without inventing anything.
+        fallback_arguments = {"query": name}
+        fallback_result = _run_tool("search_products", fallback_arguments)
+        tool_calls_made.append({"name": "search_products", "arguments": fallback_arguments})
+        if not isinstance(fallback_result, list):
+            continue
+        for product in fallback_result:
+            variants = product.get("variants") or []
+            sku = str(variants[0].get("sku") or "").strip() if variants else ""
+            if not sku:
+                continue
+            stock_arguments = {"sku": sku}
+            fact = _run_tool("get_stock", stock_arguments)
+            tool_calls_made.append({"name": "get_stock", "arguments": stock_arguments})
+            if isinstance(fact, dict) and fact.get("found"):
+                commercial_facts_by_sku[sku.lower()] = fact
+            break
+
+    candidates = _collect_turn_candidates(available_products_seen, commercial_facts_by_sku)
+    if not candidates:
+        return None
+
+    checks_completed: set = set()
+    if 1 <= len(candidates) <= 3:
+        _refresh_missing_prices(
+            candidates, price_requested=price_requested, tool_calls_made=tool_calls_made,
+        )
+        if any(candidate.get("price") is not None for candidate in candidates):
+            checks_completed.add("live_price")
+    if any(candidate.get("status") == "in_stock" for candidate in candidates):
+        checks_completed.add("live_stock")
+
+    tier = classify_graceful_discovery_fallback(
+        product_discovery_turn=True,
+        handoff_request=None,
+        candidates=candidates,
+    )
+    built = _build_fallback_response(
+        tier, candidates,
+        price_requested=price_requested, greeting_required=greeting_required,
+        checks_completed=checks_completed,
+    )
+    return {
+        "reply": built["reply"],
+        "tool_calls": tool_calls_made,
+        "handoff": None,
+        "sale_candidate": None,
+        "decision": built["decision"],
+        "graceful_fallback_tier": tier,
+        "rounds": 0,
+        "model_calls": 0,
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
 
 
 def _render_product_discovery_reply(
@@ -828,6 +1101,22 @@ def answer(
     usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     price_requested = _price_requested(user_message)
     availability_requested = _availability_requested(user_message)
+
+    # An elliptical reference to what Fred just showed ("¿cuáles?", "la
+    # primera", "la otra") must never restart discovery from scratch through
+    # the model — that both risks a different/no result than what the
+    # customer is looking at, and (see the graceful-fallback tiers below)
+    # can silently swap a real menu for a generic "no encontré" message.
+    # Resolve it deterministically from the customer's own conversation
+    # history instead, with no LLM round.
+    recent_candidate_names = _parse_recent_discovery_candidates(history or [])
+    followup_names = _resolve_discovery_followup_names(user_message, recent_candidate_names)
+    if followup_names:
+        followup_result = _answer_discovery_followup(
+            followup_names, price_requested=price_requested, greeting_required=greeting_required,
+        )
+        if followup_result is not None:
+            return followup_result
 
     # app.py already verified that this section comes from a published live
     # Tiendanube product. If it contains one SKU and the customer asks for a
@@ -1155,71 +1444,33 @@ def answer(
     # Problem A architectural audit and the graceful-fallback design).
     candidates = _collect_turn_candidates(available_products_seen, commercial_facts_by_sku)
     candidates = _filter_relevant_candidates(candidates, user_message)
-    fallback_required_checks = set()
-    if price_requested:
-        fallback_required_checks.add("live_price")
-    if availability_requested:
-        fallback_required_checks.add("live_stock")
+    if 1 <= len(candidates) <= 3:
+        # One extra deterministic check per candidate (never an LLM round) so
+        # a real, relevant candidate is never withheld or escalated away
+        # just because price wasn't the specific tool call the model
+        # happened to make before giving up.
+        _refresh_missing_prices(
+            candidates, price_requested=price_requested, tool_calls_made=tool_calls_made,
+        )
     fallback_tier = classify_graceful_discovery_fallback(
         product_discovery_turn=_is_product_discovery_turn(
             user_message, rag_context, tool_calls_made
         ),
         handoff_request=handoff_request,
         candidates=candidates,
-        required_checks=fallback_required_checks,
-        checks_completed=checks_completed,
     )
     if fallback_tier != "none":
-        if fallback_tier == "single":
-            reply = _render_single_candidate_reply(
-                candidates[0], price_requested=price_requested, greeting_required=greeting_required,
-            )
-            match_type = "unclassified"
-            matched_product = candidates[0].get("product_name") or ""
-            required_checks_out = sorted(fallback_required_checks)
-            summary = (
-                "Recomendación conservadora desde un único candidato ya "
-                "verificado por herramientas; sin clasificación semántica "
-                "del modelo."
-            )
-        elif fallback_tier == "multi":
-            reply = _render_multi_candidate_reply(candidates, greeting_required=greeting_required)
-            match_type = "multiple_candidates"
-            matched_product = ""
-            required_checks_out = []
-            summary = (
-                "Se ofrecieron 2-3 candidatas ya verificadas para que la "
-                "clienta elija; sin clasificación semántica del modelo."
-            )
-        else:
-            reply = _render_discovery_escalation_offer(greeting_required=greeting_required)
-            match_type = "unresolved"
-            matched_product = ""
-            required_checks_out = []
-            summary = (
-                "El turno no convergió con confianza suficiente; se ofreció "
-                "explorar opciones verificadas o hablar con Isa, sin "
-                "ejecutar ninguna escalación todavía."
-            )
-        decision = {
-            "action": "reply",
-            "reason": "normal_response",
-            "summary": summary,
-            "response_mode": "product_discovery",
-            "match_type": match_type,
-            "requested_product": "",
-            "matched_product": matched_product,
-            "requested_product_type": "",
-            "matched_product_type": "",
-            "required_checks": required_checks_out,
-            "checks_completed": sorted(checks_completed),
-        }
+        built = _build_fallback_response(
+            fallback_tier, candidates,
+            price_requested=price_requested, greeting_required=greeting_required,
+            checks_completed=checks_completed,
+        )
         return {
-            "reply": reply,
+            "reply": built["reply"],
             "tool_calls": tool_calls_made,
             "handoff": handoff_request,
             "sale_candidate": sale_candidate,
-            "decision": decision,
+            "decision": built["decision"],
             "graceful_fallback_tier": fallback_tier,
             "rounds": MAX_TOOL_ROUNDS,
             "model_calls": MAX_TOOL_ROUNDS,

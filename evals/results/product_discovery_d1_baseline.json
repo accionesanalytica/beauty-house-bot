@@ -30,8 +30,8 @@
     "routing_overrode_reply": false,
     "found_live_candidates": true,
     "model_calls": 5,
-    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - Soft & Short / Foxy #1. ¿Querés que te cuente algún detalle más? 😊",
-    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - Soft & Short / Foxy #1. ¿Querés que te cuente algún detalle más? 😊"
+    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - FOXY #1 y SOFT & SHORT. ¿Querés que te cuente algún detalle más? 😊",
+    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - FOXY #1 y SOFT & SHORT. ¿Querés que te cuente algún detalle más? 😊"
   },
   {
     "id": "discovery-everyday-01",
@@ -45,9 +45,9 @@
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 4,
-    "reply_before_routing": "¡Hola! No encontré algo para todos los días publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊",
-    "reply_after_routing": "¡Hola! No encontré algo para todos los días publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊"
+    "model_calls": 3,
+    "reply_before_routing": "¡Hola! No encontré producto para uso diario publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊",
+    "reply_after_routing": "¡Hola! No encontré producto para uso diario publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊"
   },
   {
     "id": "discovery-dramatic-01",
@@ -56,14 +56,14 @@
     "failures": [],
     "final_action": "reply",
     "final_reason": "normal_response",
-    "response_mode": null,
-    "match_type": null,
+    "response_mode": "product_discovery",
+    "match_type": "no_match",
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
     "model_calls": 5,
-    "reply_before_routing": "¡Hola! Te dejo con Isa para que te confirme si hay pestañas dramáticas disponibles, así no te doy información que no está verificada. ¡Gracias por tu paciencia! 😊",
-    "reply_after_routing": "¡Hola! Te dejo con Isa para que te confirme si hay pestañas dramáticas disponibles, así no te doy información que no está verificada. ¡Gracias por tu paciencia! 😊"
+    "reply_before_routing": "¡Hola! No encontré pestañas dramáticas publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊",
+    "reply_after_routing": "¡Hola! No encontré pestañas dramáticas publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊"
   },
   {
     "id": "discovery-unsure-01",
@@ -93,7 +93,7 @@
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 3,
+    "model_calls": 4,
     "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SOFT & SHORT (10PAIRS). ¿Querés que te cuente algún detalle más? 😊",
     "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SOFT & SHORT (10PAIRS). ¿Querés que te cuente algún detalle más? 😊"
   },
@@ -127,7 +127,7 @@
     ],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 3,
+    "model_calls": 4,
     "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SET DE PESTAÑAS SORPRESA. Está disponible. ¿Querés que te cuente algún detalle más? 😊",
     "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SET DE PESTAÑAS SORPRESA. Está disponible. ¿Querés que te cuente algún detalle más? 😊"
   },
@@ -171,13 +171,13 @@
     "final_action": "reply",
     "final_reason": "normal_response",
     "response_mode": "product_discovery",
-    "match_type": "close_alternative",
+    "match_type": "exact_match",
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 3,
-    "reply_before_routing": "¡Hola! Isabel I chocolate como tal no encontré, pero sí tenemos SHOOW TOOLS - ISABEL I. Es una alternativa relacionada, aunque no es el mismo tipo de producto. Está disponible. Sale $30.000. ¿Querés que te cuente algún detalle más? 😊",
-    "reply_after_routing": "¡Hola! Isabel I chocolate como tal no encontré, pero sí tenemos SHOOW TOOLS - ISABEL I. Es una alternativa relacionada, aunque no es el mismo tipo de producto. Está disponible. Sale $30.000. ¿Querés que te cuente algún detalle más? 😊"
+    "model_calls": 4,
+    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - ISABEL I (CHOCOLATE). Está disponible. Sale $30.000. ¿Querés que te cuente algún detalle más? 😊",
+    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - ISABEL I (CHOCOLATE). Está disponible. Sale $30.000. ¿Querés que te cuente algún detalle más? 😊"
   },
   {
     "id": "ambiguity-vague-model-01",
@@ -223,7 +223,7 @@
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 4,
+    "model_calls": 5,
     "reply_before_routing": "¡Hola! No encontré Valentina Deluxe publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊",
     "reply_after_routing": "¡Hola! No encontré Valentina Deluxe publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊"
   },
@@ -235,15 +235,15 @@
     "final_action": "reply",
     "final_reason": "normal_response",
     "response_mode": "product_discovery",
-    "match_type": "exact_match",
+    "match_type": "multiple_candidates",
     "missing_information": [
       "sku"
     ],
     "routing_overrode_reply": false,
     "found_live_candidates": false,
     "model_calls": 5,
-    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - NATURAL SHOOW (10 PAIRS). Está disponible. Sale $36.000. ¿Querés que te cuente algún detalle más? 😊",
-    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - NATURAL SHOOW (10 PAIRS). Está disponible. Sale $36.000. ¿Querés que te cuente algún detalle más? 😊"
+    "reply_before_routing": "¡Hola! Tengo algunas opciones que pueden ir con lo que buscás:\n• PESTAÑAS 10 PAR — sin stock por ahora\n• SHOOW TOOLS - NATURAL SHOOW (10 PAIRS) — $36.000, disponible\n¿Cuál te gusta más, o preferís que te ayude a elegir? 😊",
+    "reply_after_routing": "¡Hola! Tengo algunas opciones que pueden ir con lo que buscás:\n• PESTAÑAS 10 PAR — sin stock por ahora\n• SHOOW TOOLS - NATURAL SHOOW (10 PAIRS) — $36.000, disponible\n¿Cuál te gusta más, o preferís que te ayude a elegir? 😊"
   },
   {
     "id": "regression-price-stock-live-01",
@@ -292,8 +292,8 @@
     "routing_overrode_reply": false,
     "found_live_candidates": false,
     "model_calls": 1,
-    "reply_before_routing": "¡Hola! 😊 Gracias por escribirnos.\n\nMirá, sobre el pago en efectivo al recibir el envío no tengo confirmado cómo se maneja eso hoy. Para no darte información equivocada, prefiero consultarlo con Isa y que ella te confirme bien la modalidad.\n\n¿Querés que la pase a ella para que te aclare esa duda?",
-    "reply_after_routing": "¡Hola! 😊 Gracias por escribirnos.\n\nMirá, sobre el pago en efectivo al recibir el envío no tengo confirmado cómo se maneja eso hoy. Para no darte información equivocada, prefiero consultarlo con Isa y que ella te confirme bien la modalidad.\n\n¿Querés que la pase a ella para que te aclare esa duda?"
+    "reply_before_routing": "¡Hola! Buenas. 😊\n\nMirá, eso no lo tengo confirmado de forma segura. Para no tirarte fruta, mejor lo consulto con Isa que maneja los medios de pago y envíos.\n\n¿Te parece si te paso con ella así te confirma bien cómo se puede abonar?",
+    "reply_after_routing": "¡Hola! Buenas. 😊\n\nMirá, eso no lo tengo confirmado de forma segura. Para no tirarte fruta, mejor lo consulto con Isa que maneja los medios de pago y envíos.\n\n¿Te parece si te paso con ella así te confirma bien cómo se puede abonar?"
   },
   {
     "id": "regression-wholesale-boundary-01",
@@ -308,7 +308,7 @@
     "routing_overrode_reply": true,
     "found_live_candidates": false,
     "model_calls": 5,
-    "reply_before_routing": "¡Hola! Tengo algunas opciones que pueden ir con lo que buscás. Te puedo mostrar 2 o 3 para que elijas, o si preferís te paso con Isa para una recomendación más personalizada. 😊",
+    "reply_before_routing": "¡Hola! No encontré todavía una opción que pueda recomendarte con confianza. Puedo seguir buscando con más detalles tuyos, o te paso directo con Isa para que te ayude a elegir. ¿Qué preferís? 😊",
     "reply_after_routing": "El mínimo y el precio mayorista dependen de la publicación o presupuesto vigente. Los descuentos, recargos o comisiones vigentes necesitan confirmación de Isa.\n\nSe lo paso con lo que ya me contaste y seguimos por acá."
   }
 ]
