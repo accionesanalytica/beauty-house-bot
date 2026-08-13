@@ -99,6 +99,19 @@ def _tokens(value: str) -> set[str]:
     }
 
 
+# Real evidence of a previous purchase the customer wants tracked -- not
+# just words that happen to score against the order_tracking knowledge
+# topic (that scoring is fuzzy; this gate is the hard customer-facing
+# boundary for actually demanding an order number). Operates on already
+# accent-stripped, lowercased text (see _normalise).
+_TRACKING_EVIDENCE_RE = re.compile(
+    r"\bmi\s+pedido\b|\bmi\s+orden\b|\btracking\b|\bseguimiento\b|"
+    r"numero\s+de\s+(?:orden|pedido)|"
+    r"donde\s+esta\s+mi\s+(?:compra|pedido|orden)|"
+    r"no\s+me\s+lleg[oa]\b"
+)
+
+
 def canonical_knowledge_embedding_text(chunk: KnowledgeChunk) -> str:
     """Return the single semantic representation used by every retriever.
 
@@ -592,7 +605,15 @@ def infer_dynamic_requirements(
             customer_fallback=customer_fallback,
         ))
 
-    if governing_topic == "order_tracking":
+    if governing_topic == "order_tracking" and (order_match or _TRACKING_EVIDENCE_RE.search(normalised)):
+        # governing_topic alone is not enough: keyword/embedding topic scoring
+        # is fuzzy (e.g. "envío" is aliased to "pedido" for matching purposes,
+        # see _tokens above) and can tip a plain shipping-cost or product
+        # question into this topic. Demanding an order number is a hard
+        # customer-facing boundary, so it requires the customer's own message
+        # to actually say something tracking-shaped -- an order number, "mi
+        # pedido/orden", "no me llegó", "tracking/seguimiento" -- not just a
+        # topic-classifier side effect.
         add(
             "order_status", "get_order_status", ("order_number",),
             "Pedí el número de orden; si no existe o no se encuentra, derivá a Isa sin inventar estado.",

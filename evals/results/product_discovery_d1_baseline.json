@@ -7,15 +7,15 @@
     "final_action": "reply",
     "final_reason": "normal_response",
     "response_mode": "product_discovery",
-    "match_type": "exact_match",
+    "match_type": "multiple_candidates",
     "missing_information": [
       "sku"
     ],
     "routing_overrode_reply": false,
     "found_live_candidates": false,
     "model_calls": 5,
-    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - NATURAL SHOOW (10 PAIRS). Está disponible. Sale $36.000. ¿Querés que te cuente algún detalle más? 😊",
-    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - NATURAL SHOOW (10 PAIRS). Está disponible. Sale $36.000. ¿Querés que te cuente algún detalle más? 😊"
+    "reply_before_routing": "¡Hola! Tengo algunas opciones que pueden ir con lo que buscás:\n• PESTAÑAS 10 PAR — sin stock por ahora\n• SHOOW TOOLS - NATURAL SHOOW (10 PAIRS) — $36.000, disponible\n¿Cuál te gusta más, o preferís que te ayude a elegir? 😊",
+    "reply_after_routing": "¡Hola! Tengo algunas opciones que pueden ir con lo que buscás:\n• PESTAÑAS 10 PAR — sin stock por ahora\n• SHOOW TOOLS - NATURAL SHOOW (10 PAIRS) — $36.000, disponible\n¿Cuál te gusta más, o preferís que te ayude a elegir? 😊"
   },
   {
     "id": "discovery-natural-01",
@@ -29,9 +29,9 @@
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 5,
-    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - FOXY #1 y SOFT & SHORT. ¿Querés que te cuente algún detalle más? 😊",
-    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - FOXY #1 y SOFT & SHORT. ¿Querés que te cuente algún detalle más? 😊"
+    "model_calls": 3,
+    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SOFT & SHORT (10PAIRS). ¿Querés que te cuente algún detalle más? 😊",
+    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SOFT & SHORT (10PAIRS). ¿Querés que te cuente algún detalle más? 😊"
   },
   {
     "id": "discovery-everyday-01",
@@ -46,8 +46,8 @@
     "routing_overrode_reply": false,
     "found_live_candidates": true,
     "model_calls": 3,
-    "reply_before_routing": "¡Hola! No encontré producto para uso diario publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊",
-    "reply_after_routing": "¡Hola! No encontré producto para uso diario publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊"
+    "reply_before_routing": "¡Hola! No encontré algo para todos los días publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊",
+    "reply_after_routing": "¡Hola! No encontré algo para todos los días publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊"
   },
   {
     "id": "discovery-dramatic-01",
@@ -57,13 +57,13 @@
     "final_action": "reply",
     "final_reason": "normal_response",
     "response_mode": "product_discovery",
-    "match_type": "no_match",
+    "match_type": "multiple_candidates",
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
     "model_calls": 5,
-    "reply_before_routing": "¡Hola! No encontré pestañas dramáticas publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊",
-    "reply_after_routing": "¡Hola! No encontré pestañas dramáticas publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊"
+    "reply_before_routing": "¡Hola! Tengo algunas opciones que pueden ir con lo que buscás:\n• SHOOW TOOLS - FOXY CAT EYE (10PAIRS) — $36.000, disponible\n• SHOOW TOOLS - FOXY #3 (10PAIRS) — $36.000, disponible\n• SHOOW TOOLS - FOXY #2 (10PAIRS) — $36.000, sin stock por ahora\n¿Cuál te gusta más, o preferís que te ayude a elegir? 😊",
+    "reply_after_routing": "¡Hola! Tengo algunas opciones que pueden ir con lo que buscás:\n• SHOOW TOOLS - FOXY CAT EYE (10PAIRS) — $36.000, disponible\n• SHOOW TOOLS - FOXY #3 (10PAIRS) — $36.000, disponible\n• SHOOW TOOLS - FOXY #2 (10PAIRS) — $36.000, sin stock por ahora\n¿Cuál te gusta más, o preferís que te ayude a elegir? 😊"
   },
   {
     "id": "discovery-unsure-01",
@@ -77,9 +77,9 @@
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 3,
-    "reply_before_routing": "¡Hola! Sí, encontré pestañas postizas. ¿Querés que te cuente algún detalle más? 😊",
-    "reply_after_routing": "¡Hola! Sí, encontré pestañas postizas. ¿Querés que te cuente algún detalle más? 😊"
+    "model_calls": 5,
+    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SOFT & SHORT (10PAIRS). Está disponible. ¿Querés que te cuente algún detalle más? 😊",
+    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SOFT & SHORT (10PAIRS). Está disponible. ¿Querés que te cuente algún detalle más? 😊"
   },
   {
     "id": "discovery-no-model-01",
@@ -89,13 +89,13 @@
     "final_action": "reply",
     "final_reason": "normal_response",
     "response_mode": "product_discovery",
-    "match_type": "exact_match",
+    "match_type": "close_alternative",
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 4,
-    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SOFT & SHORT (10PAIRS). ¿Querés que te cuente algún detalle más? 😊",
-    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SOFT & SHORT (10PAIRS). ¿Querés que te cuente algún detalle más? 😊"
+    "model_calls": 3,
+    "reply_before_routing": "¡Hola! pestañas como tal no encontré, pero sí tenemos SHOOW TOOLS - SOFT & SHORT (10PAIRS). Es una alternativa relacionada, aunque no es el mismo tipo de producto. ¿Querés que te cuente algún detalle más? 😊",
+    "reply_after_routing": "¡Hola! pestañas como tal no encontré, pero sí tenemos SHOOW TOOLS - SOFT & SHORT (10PAIRS). Es una alternativa relacionada, aunque no es el mismo tipo de producto. ¿Querés que te cuente algún detalle más? 😊"
   },
   {
     "id": "discovery-price-01",
@@ -110,8 +110,8 @@
     "routing_overrode_reply": false,
     "found_live_candidates": true,
     "model_calls": 4,
-    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SET DE PESTAÑAS SORPRESA. Está disponible. ¿Querés que te cuente algún detalle más? 😊",
-    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SET DE PESTAÑAS SORPRESA. Está disponible. ¿Querés que te cuente algún detalle más? 😊"
+    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SET DE PESTAÑAS SORPRESA. Está disponible. No pude confirmar el precio en vivo ahora, así que prefiero no inventártelo. ¿Querés que te cuente algún detalle más? 😊",
+    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - SET DE PESTAÑAS SORPRESA. Está disponible. No pude confirmar el precio en vivo ahora, así que prefiero no inventártelo. ¿Querés que te cuente algún detalle más? 😊"
   },
   {
     "id": "discovery-stock-01",
@@ -144,8 +144,8 @@
     "routing_overrode_reply": false,
     "found_live_candidates": true,
     "model_calls": 3,
-    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - TAYLOR (BLACK y CHOCOLATE). ¿Querés que te cuente algún detalle más? 😊",
-    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - TAYLOR (BLACK y CHOCOLATE). ¿Querés que te cuente algún detalle más? 😊"
+    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - TAYLOR (CHOCOLATE). Está disponible. Sale $30.000. ¿Querés que te cuente algún detalle más? 😊",
+    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - TAYLOR (CHOCOLATE). Está disponible. Sale $30.000. ¿Querés que te cuente algún detalle más? 😊"
   },
   {
     "id": "lookup-stock-isabel-01",
@@ -159,9 +159,9 @@
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 3,
-    "reply_before_routing": "¡Hola! Sí, encontré PERLAS MEDIANAS - 200UNID. Está disponible. ¿Querés que te cuente algún detalle más? 😊",
-    "reply_after_routing": "¡Hola! Sí, encontré PERLAS MEDIANAS - 200UNID. Está disponible. ¿Querés que te cuente algún detalle más? 😊"
+    "model_calls": 4,
+    "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - ISABEL I. Está disponible. ¿Querés que te cuente algún detalle más? 😊",
+    "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - ISABEL I. Está disponible. ¿Querés que te cuente algún detalle más? 😊"
   },
   {
     "id": "lookup-price-known-brand-01",
@@ -223,7 +223,7 @@
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 5,
+    "model_calls": 4,
     "reply_before_routing": "¡Hola! No encontré Valentina Deluxe publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊",
     "reply_after_routing": "¡Hola! No encontré Valentina Deluxe publicado ahora. Si tenés el nombre exacto o el link, pasámelo y lo reviso. 😊"
   },
@@ -257,7 +257,7 @@
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 4,
+    "model_calls": 5,
     "reply_before_routing": "¡Hola! Sí, encontré SHOOW TOOLS - ISABEL I (CHOCOLATE). Está disponible. Sale $30.000. ¿Querés que te cuente algún detalle más? 😊",
     "reply_after_routing": "¡Hola! Sí, encontré SHOOW TOOLS - ISABEL I (CHOCOLATE). Está disponible. Sale $30.000. ¿Querés que te cuente algún detalle más? 😊"
   },
@@ -273,7 +273,7 @@
     "missing_information": [],
     "routing_overrode_reply": false,
     "found_live_candidates": true,
-    "model_calls": 4,
+    "model_calls": 5,
     "reply_before_routing": "Sí, encontré SHOOW TOOLS - ISABEL I (CHOCOLATE). Está disponible. Sale $30.000. ¿Querés que te cuente algún detalle más? 😊",
     "reply_after_routing": "Sí, encontré SHOOW TOOLS - ISABEL I (CHOCOLATE). Está disponible. Sale $30.000. ¿Querés que te cuente algún detalle más? 😊"
   },
@@ -292,8 +292,8 @@
     "routing_overrode_reply": false,
     "found_live_candidates": false,
     "model_calls": 1,
-    "reply_before_routing": "¡Hola! Buenas. 😊\n\nMirá, eso no lo tengo confirmado de forma segura. Para no tirarte fruta, mejor lo consulto con Isa que maneja los medios de pago y envíos.\n\n¿Te parece si te paso con ella así te confirma bien cómo se puede abonar?",
-    "reply_after_routing": "¡Hola! Buenas. 😊\n\nMirá, eso no lo tengo confirmado de forma segura. Para no tirarte fruta, mejor lo consulto con Isa que maneja los medios de pago y envíos.\n\n¿Te parece si te paso con ella así te confirma bien cómo se puede abonar?"
+    "reply_before_routing": "¡Hola! Buenas tardes 😊\n\nMirá, el tema de pagos en efectivo contra entrega no lo tengo confirmado en este momento. Para no darte información que después no se cumpla, te sugiero que lo consultes con Isa, que es quien maneja esos detalles con precisión.\n\n¿Te puedo ayudar con algo más mientras tanto?",
+    "reply_after_routing": "¡Hola! Buenas tardes 😊\n\nMirá, el tema de pagos en efectivo contra entrega no lo tengo confirmado en este momento. Para no darte información que después no se cumpla, te sugiero que lo consultes con Isa, que es quien maneja esos detalles con precisión.\n\n¿Te puedo ayudar con algo más mientras tanto?"
   },
   {
     "id": "regression-wholesale-boundary-01",

@@ -190,6 +190,11 @@ Datos y catálogo:
 - No inventes beneficios, compatibilidad con lifting, descuentos, pagos,
   plazos, transporte, dirección, promociones ni políticas. Si no está verificado,
   pedí una precisión o consultá con Isa.
+- Si preguntan cuánto sale el envío de un producto que están evaluando o por
+  comprar, pedí el código postal si no lo tenés y aclará que el valor exacto
+  se confirma en el checkout o con Isa; nunca inventes un monto de envío. Esa
+  pregunta es sobre el producto, no sobre un pedido ya hecho: no la trates
+  como seguimiento ni pidas número de orden por eso.
 - Lifting: nunca asegures compatibilidad. Si todavía no identificaste el
   producto, pedí el nombre exacto o el link del producto (no pidas foto: hoy
   no podés analizar imágenes). Si el producto ya está identificado pero no hay
@@ -379,10 +384,19 @@ def _add_usage(total: Dict[str, int], usage: Dict[str, Any]) -> None:
 def _price_requested(text: str) -> bool:
     """Recognize an explicit price request without depending on a product name."""
     return bool(re.search(
-        r"\b(precio|valor|cu[aá]nto\s+(?:sale|cuesta)|a\s+qu[eé]\s+precio)\b",
+        r"\b(precio|valor|cu[aá]nto\s+(?:sale[n]?|cuesta[n]?|vale[n]?|"
+        r"costar[ií]a|saldr[ií]a|valdr[ií]a)|a\s+qu[eé]\s+precio)\b",
         text,
         flags=re.IGNORECASE,
     ))
+
+
+def _shipping_cost_requested(text: str) -> bool:
+    """A shipping-cost question about a product under consideration. This is
+    never order tracking by itself -- see the real-evidence gate in
+    knowledge_rag.infer_dynamic_requirements, which a bare "envío" no longer
+    satisfies."""
+    return bool(re.search(r"\benv[ií]o\b", text, flags=re.IGNORECASE))
 
 
 def _availability_requested(text: str) -> bool:
@@ -418,7 +432,7 @@ def _is_product_discovery_turn(
         return True
     return bool(re.search(
         r"\b(busco|tienen|ten[eé]s|tendr[aá]n|hay|producto|modelo|"
-        r"precio|cu[aá]nto\s+(?:sale|cuesta)|comprar)\b",
+        r"precio|cu[aá]nto\s+(?:sale[n]?|cuesta[n]?|vale[n]?)|comprar)\b",
         user_message,
         flags=re.IGNORECASE,
     ))
@@ -651,6 +665,7 @@ def _render_single_candidate_reply(
     *,
     price_requested: bool,
     greeting_required: bool,
+    shipping_requested: bool = False,
 ) -> str:
     """Conservative recommendation from the one verified candidate, with no
     semantic classification available. Never claims equivalence to what the
@@ -672,6 +687,12 @@ def _render_single_candidate_reply(
             text += " Sale {}.".format(price)
         else:
             text += " No pude confirmar el precio en vivo ahora, así que prefiero no inventártelo."
+
+    if shipping_requested:
+        text += (
+            " Para cotizarte el envío necesito tu código postal; el valor "
+            "exacto se confirma en el checkout o con Isa."
+        )
 
     text += (
         " No sé si es exactamente lo que buscabas, pero es lo único que ya "
@@ -746,6 +767,7 @@ def _build_fallback_response(
     price_requested: bool,
     greeting_required: bool,
     checks_completed: Any,
+    shipping_requested: bool = False,
 ) -> Dict[str, Any]:
     """Render one of the 3 graceful-discovery tiers into a reply + decision.
     Shared by the no-decision fallback and the elliptical follow-up
@@ -759,6 +781,7 @@ def _build_fallback_response(
     if tier == "single":
         reply = _render_single_candidate_reply(
             candidates[0], price_requested=price_requested, greeting_required=greeting_required,
+            shipping_requested=shipping_requested,
         )
         match_type = "unclassified"
         matched_product = candidates[0].get("product_name") or ""
@@ -924,6 +947,7 @@ def _answer_discovery_followup(
     *,
     price_requested: bool,
     greeting_required: bool,
+    shipping_requested: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Re-verify and re-render up to 3 previously-shown candidates directly,
     with real tool calls but no LLM round at all. This is the deterministic
@@ -995,7 +1019,7 @@ def _answer_discovery_followup(
     built = _build_fallback_response(
         tier, candidates,
         price_requested=price_requested, greeting_required=greeting_required,
-        checks_completed=checks_completed,
+        checks_completed=checks_completed, shipping_requested=shipping_requested,
     )
     return {
         "reply": built["reply"],
@@ -1016,6 +1040,7 @@ def _render_product_discovery_reply(
     *,
     price_requested: bool,
     greeting_required: bool,
+    shipping_requested: bool = False,
 ) -> str:
     """Render product discovery from structured state, not free-form claims."""
     match_type = decision.get("match_type") or "no_match"
@@ -1055,6 +1080,12 @@ def _render_product_discovery_reply(
             text += " Sale {}.".format(price)
         else:
             text += " No pude confirmar el precio en vivo ahora, así que prefiero no inventártelo."
+
+    if shipping_requested and match_type in {"exact_match", "close_alternative"}:
+        text += (
+            " Para cotizarte el envío necesito tu código postal; el valor "
+            "exacto se confirma en el checkout o con Isa."
+        )
 
     if match_type in {"exact_match", "close_alternative"}:
         text += " ¿Querés que te cuente algún detalle más? 😊"
@@ -1101,6 +1132,7 @@ def answer(
     usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     price_requested = _price_requested(user_message)
     availability_requested = _availability_requested(user_message)
+    shipping_requested = _shipping_cost_requested(user_message)
 
     # An elliptical reference to what Fred just showed ("¿cuáles?", "la
     # primera", "la otra") must never restart discovery from scratch through
@@ -1114,6 +1146,7 @@ def answer(
     if followup_names:
         followup_result = _answer_discovery_followup(
             followup_names, price_requested=price_requested, greeting_required=greeting_required,
+            shipping_requested=shipping_requested,
         )
         if followup_result is not None:
             return followup_result
@@ -1224,6 +1257,7 @@ def answer(
                     commercial_facts_by_sku,
                     price_requested=price_requested,
                     greeting_required=greeting_required,
+                    shipping_requested=shipping_requested,
                 )
             else:
                 reply = _ensure_first_greeting(
@@ -1415,6 +1449,7 @@ def answer(
                 commercial_facts_by_sku,
                 price_requested=price_requested,
                 greeting_required=greeting_required,
+                shipping_requested=shipping_requested,
             ),
             "tool_calls": tool_calls_made,
             "handoff": handoff_request,
@@ -1463,7 +1498,7 @@ def answer(
         built = _build_fallback_response(
             fallback_tier, candidates,
             price_requested=price_requested, greeting_required=greeting_required,
-            checks_completed=checks_completed,
+            checks_completed=checks_completed, shipping_requested=shipping_requested,
         )
         return {
             "reply": built["reply"],

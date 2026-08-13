@@ -355,6 +355,37 @@ class KnowledgeRagTests(unittest.TestCase):
         self.assertEqual(requirement.missing_arguments, ("order_number",))
         self.assertEqual(requirement.status, "missing_arguments")
 
+    def test_order_tracking_topic_without_real_evidence_never_demands_order_number(self):
+        # Root cause of a real production bug: "envío" is aliased to "pedido"
+        # for topic keyword matching (see _tokens), which can tip a plain
+        # shipping-cost/product question into the order_tracking topic even
+        # though the customer never said anything tracking-shaped. Demanding
+        # an order number is a hard customer-facing boundary and must require
+        # real evidence in the customer's own message, not just a fuzzy
+        # topic-classifier side effect.
+        requirements = infer_dynamic_requirements(
+            "cuanto fuera el envio si elijo esa opcion", "order_tracking",
+        )
+        self.assertEqual(requirements, ())
+
+    def test_order_tracking_topic_with_real_evidence_still_asks_for_order_number(self):
+        for query in (
+            "¿cómo va mi pedido?",
+            "quiero el tracking de mi orden",
+            "¿dónde está mi compra?",
+            "no me llegó todavía",
+        ):
+            requirement = infer_dynamic_requirements(query, "order_tracking")[0]
+            self.assertEqual(requirement.fact, "order_status")
+            self.assertEqual(requirement.missing_arguments, ("order_number",))
+
+    def test_order_tracking_topic_with_an_actual_order_number_is_ready(self):
+        requirement = infer_dynamic_requirements(
+            "¿cómo va el pedido 12345?", "order_tracking",
+        )[0]
+        self.assertEqual(requirement.status, "ready")
+        self.assertEqual(requirement.arguments, {"order_number": "12345"})
+
     def test_escalation_triggers_are_conditional_not_topic_wide(self):
         root = Path(__file__).resolve().parents[1] / "knowledge"
         chunks = load_knowledge_chunks(root)
