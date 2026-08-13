@@ -159,6 +159,11 @@ def visible_routing_contract(
         # question when no product could be identified.
         "response_mode": str(decision.get("response_mode") or ""),
         "match_type": str(decision.get("match_type") or ""),
+        # Which live checks actually returned a verified Tiendanube fact this
+        # turn (set by agent.py only after a real get_stock/get_product_
+        # availability call succeeded). This is the evidence that a discovery
+        # answer is grounded, not merely a syntactically valid decision.
+        "checks_completed": list(decision.get("checks_completed") or ()),
         "next_step": (
             "isa_review" if action == "handoff_to_isa"
             else "provide_missing_information" if missing
@@ -215,9 +220,27 @@ def align_reply_with_routing(
         return "\n\n".join(part for part in (base, " ".join(clauses)) if part).strip()
 
     if missing:
-        # A missing live-check argument is the only useful next step. Avoid a
-        # free-form answer that asks several unrelated questions.
-        return "Para poder verificarlo en vivo, me falta {}.".format(" y ".join(missing))
+        # A product-discovery turn that already resolved a real match against
+        # verified Tiendanube facts must not be thrown away just because the
+        # generic live-check gate also asked for a bare "sku" argument — the
+        # product was already found and verified, there is nothing left to
+        # ask the customer. This is deliberately narrow: it only waives the
+        # "sku" argument (never order_number or anything else), only when the
+        # agent's own decision says product_discovery, only when it landed on
+        # an actual match (not "no_match"), and only when a live check truly
+        # completed this turn (checks_completed is never set from free-form
+        # model text — see agent.py). A lookup or a genuine ambiguity has no
+        # completed check to point to, so this never bypasses those.
+        grounded_discovery = (
+            set(contract["missing_information"]) <= {"sku"}
+            and contract["response_mode"] == "product_discovery"
+            and contract["match_type"] not in ("", "no_match")
+            and bool(contract["checks_completed"])
+        )
+        if not grounded_discovery:
+            # A missing live-check argument is the only useful next step.
+            # Avoid a free-form answer that asks several unrelated questions.
+            return "Para poder verificarlo en vivo, me falta {}.".format(" y ".join(missing))
 
     if contract["unavailable_messages"]:
         if contract["action"].startswith("clarify"):

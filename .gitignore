@@ -23,6 +23,8 @@ data/catalog_flat.csv
 !evals/knowledge_v1_cases.jsonl
 # Benchmark determinístico de M1 (cola durable); sí forma parte del proyecto.
 !evals/multimessage_m1_cases.jsonl
+# Benchmark de Product Discovery D1 (lookup vs. discovery); sí forma parte del proyecto.
+!evals/product_discovery_d1_cases.jsonl
 bot/*.save
 
 # Sistema

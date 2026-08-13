@@ -565,7 +565,38 @@ def answer(
             ).format(json.dumps(result, ensure_ascii=False, default=str)),
         })
 
+    proactive_discovery_nudge_sent = False
     for round_number in range(MAX_TOOL_ROUNDS):
+        # A discovery turn with no clean catalog match (e.g. an attribute like
+        # "dramático" with no obvious product type) can make the model keep
+        # re-searching instead of closing set_turn_decision. The reactive nudge
+        # below only fires once the model pauses and returns empty tool_calls;
+        # if it never pauses, MAX_TOOL_ROUNDS/MAX_TOOL_CALLS_PER_TURN run out
+        # first and set_turn_decision is silently dropped by the tool-budget
+        # guard before it is ever validated. Nudge proactively, once, before
+        # that happens, without touching either limit.
+        if (
+            not proactive_discovery_nudge_sent
+            and not proposed_decision
+            and (round_number >= 2 or tool_call_count >= 6)
+            and _is_product_discovery_turn(user_message, rag_context, tool_calls_made)
+        ):
+            proactive_discovery_nudge_sent = True
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Ya usaste varias herramientas en este turno sin registrar "
+                    "una decisión de producto. No seguir buscando indefinidamente: "
+                    "con la mejor evidencia que ya tenés, llamá set_turn_decision "
+                    "ahora con response_mode=product_discovery y el match_type que "
+                    "corresponda — exact_match si encontraste el mismo tipo de "
+                    "producto pedido, close_alternative si es una alternativa "
+                    "relacionada de otro tipo o formato, o no_match si ninguna "
+                    "candidata es suficientemente segura. No hace falta seguir "
+                    "buscando más para poder cerrar la decisión."
+                ),
+            })
+
         message = _ask_deepseek(messages)
         _add_usage(usage_totals, message.get("_fred_usage") or {})
         tool_calls = message.get("tool_calls") or []

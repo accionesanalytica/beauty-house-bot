@@ -128,5 +128,135 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertIn("Se lo paso", reply)
 
 
+class GroundedDiscoveryBypassTests(unittest.TestCase):
+    """D1.1: a missing bare 'sku' argument must not erase a discovery answer
+    that already resolved a real match against a verified live Tiendanube
+    fact this same turn. Every other case keeps the pre-D1.1 behaviour."""
+
+    GROUNDED_REPLY = (
+        "¡Hola! Sí, encontré SHOOW TOOLS - NATURAL SHOOW (10 PAIRS). "
+        "Está disponible. Sale $36.000. ¿Querés que te cuente algún detalle más? 😊"
+    )
+    SKU_MISSING = (DynamicRequirement(
+        fact="live_price", verifier="get_stock",
+        status="missing_arguments", missing_arguments=("sku",),
+    ),)
+
+    def test_grounded_discovery_with_missing_sku_preserves_the_reply(self):
+        routing = {
+            "decision": {
+                "action": "reply", "reason": "normal_response",
+                "response_mode": "product_discovery", "match_type": "exact_match",
+                "checks_completed": ["live_price"],
+            },
+            "handoff": None,
+        }
+        reply = align_reply_with_routing(
+            self.GROUNDED_REPLY, routing, dynamic_requirements=self.SKU_MISSING,
+        )
+        self.assertEqual(reply, self.GROUNDED_REPLY)
+
+    def test_discovery_without_verified_candidates_still_gets_the_generic_gate(self):
+        routing = {
+            "decision": {
+                "action": "reply", "reason": "normal_response",
+                "response_mode": "product_discovery", "match_type": "exact_match",
+                "checks_completed": [],  # nothing was actually verified live
+            },
+            "handoff": None,
+        }
+        reply = align_reply_with_routing(
+            self.GROUNDED_REPLY, routing, dynamic_requirements=self.SKU_MISSING,
+        )
+        self.assertEqual(reply, "Para poder verificarlo en vivo, me falta el modelo exacto o su link.")
+
+    def test_lookup_with_missing_sku_keeps_current_behaviour(self):
+        # A genuine lookup never sets response_mode=product_discovery in the
+        # effective decision the way this bypass expects; it must not be
+        # rescued just because a live check happened to complete.
+        routing = {
+            "decision": {
+                "action": "reply", "reason": "normal_response",
+                "checks_completed": ["live_price"],
+            },
+            "handoff": None,
+        }
+        reply = align_reply_with_routing(
+            "Un modelo cualquiera.", routing, dynamic_requirements=self.SKU_MISSING,
+        )
+        self.assertEqual(reply, "Para poder verificarlo en vivo, me falta el modelo exacto o su link.")
+
+    def test_real_ambiguity_no_match_keeps_current_behaviour(self):
+        routing = {
+            "decision": {
+                "action": "reply", "reason": "normal_response",
+                "response_mode": "product_discovery", "match_type": "no_match",
+                "checks_completed": [],
+            },
+            "handoff": None,
+        }
+        reply = align_reply_with_routing(
+            "No encontré ese modelo.", routing, dynamic_requirements=self.SKU_MISSING,
+        )
+        self.assertEqual(reply, "Para poder verificarlo en vivo, me falta el modelo exacto o su link.")
+
+    def test_handoff_keeps_priority_over_the_bypass(self):
+        routing = {
+            "decision": {
+                "action": "handoff_to_isa", "reason": "unable_to_verify",
+                "response_mode": "product_discovery", "match_type": "exact_match",
+                "checks_completed": ["live_price"],
+            },
+            "handoff": {"reason": "unable_to_verify"},
+        }
+        reply = align_reply_with_routing(
+            self.GROUNDED_REPLY, routing, dynamic_requirements=self.SKU_MISSING,
+        )
+        self.assertNotEqual(reply, self.GROUNDED_REPLY)
+        self.assertIn("Isa", reply)
+        self.assertIn("modelo exacto o su link", reply)
+
+    def test_unverified_price_is_never_let_through_as_fact(self):
+        # Same shape as a grounded case, but nothing was actually verified
+        # (checks_completed empty) and the model still claims a match. The
+        # gate must win: no invented price or stock reaches the customer.
+        claimed_price_reply = "Sale $99.999, tenemos stock. 😊"
+        routing = {
+            "decision": {
+                "action": "reply", "reason": "normal_response",
+                "response_mode": "product_discovery", "match_type": "exact_match",
+                "checks_completed": [],
+            },
+            "handoff": None,
+        }
+        reply = align_reply_with_routing(
+            claimed_price_reply, routing, dynamic_requirements=self.SKU_MISSING,
+        )
+        self.assertNotIn("99.999", reply)
+        self.assertEqual(reply, "Para poder verificarlo en vivo, me falta el modelo exacto o su link.")
+
+    def test_bypass_never_swallows_an_unrelated_missing_argument(self):
+        # If a second, unrelated argument is also missing (e.g. order_number
+        # from a different topic in the same turn), the narrow "sku"
+        # exception must not accidentally absorb it.
+        routing = {
+            "decision": {
+                "action": "reply", "reason": "normal_response",
+                "response_mode": "product_discovery", "match_type": "exact_match",
+                "checks_completed": ["live_price"],
+            },
+            "handoff": None,
+        }
+        reply = align_reply_with_routing(
+            self.GROUNDED_REPLY, routing,
+            dynamic_requirements=(DynamicRequirement(
+                fact="live_price", verifier="get_stock",
+                status="missing_arguments", missing_arguments=("sku", "order_number"),
+            ),),
+        )
+        self.assertNotEqual(reply, self.GROUNDED_REPLY)
+        self.assertIn("número de orden", reply)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
