@@ -112,6 +112,55 @@ class WebhookHarnessTests(unittest.TestCase):
         self.assertFalse(observation["knowledge_context_used"])
         self.assertGreaterEqual(observation["duration_ms"], 0)
 
+    @patch.object(app, "record_agent_turn")
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "get_product_selection", return_value=None)
+    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
+    @patch.object(app, "load_history", return_value=[])
+    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
+    def test_escalate_tier_shows_the_universal_menu_instead_of_the_raw_hedge(
+        self, history, inbound, get_selection, send_message, record_message, record_turn
+    ):
+        agent_result = {
+            "reply": "No encontré todavía una opción que pueda recomendarte con confianza.",
+            "tool_calls": [], "usage": {}, "graceful_fallback_tier": "escalate",
+            "decision": {"action": "reply", "reason": "normal_response"},
+        }
+        with patch.object(app, "search_similar_products", return_value=""), patch.object(
+            app, "answer", return_value=agent_result
+        ):
+            response = self._post("no sé qué elegir", "wamid-escalate")
+
+        self.assertEqual(response.status_code, 200)
+        delivered = send_message.call_args.args[1]
+        self.assertEqual(delivered, app._render_fallback_menu())
+        record_message.assert_called_once_with(7, delivered)
+
+    @patch.object(app, "record_agent_turn")
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "get_product_selection", return_value={"product_name": "SHOOW TOOLS - ISABEL I"})
+    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
+    @patch.object(app, "load_history", return_value=[])
+    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
+    def test_generic_hedge_reply_also_becomes_the_menu_with_the_active_product(
+        self, history, inbound, get_selection, send_message, record_message, record_turn
+    ):
+        agent_result = {
+            "reply": "Mirá, eso no lo tengo confirmado de forma segura ahora mismo.",
+            "tool_calls": [], "usage": {},
+            "decision": {"action": "reply", "reason": "normal_response"},
+        }
+        with patch.object(app, "search_similar_products", return_value=""), patch.object(
+            app, "answer", return_value=agent_result
+        ):
+            response = self._post("¿Puedo pagar en efectivo al recibir el envío?", "wamid-hedge")
+
+        self.assertEqual(response.status_code, 200)
+        delivered = send_message.call_args.args[1]
+        self.assertEqual(delivered, app._render_fallback_menu("SHOOW TOOLS - ISABEL I"))
+
     @patch.object(app, "record_agent_turn", side_effect=RuntimeError("database unavailable"))
     def test_observability_failure_is_non_blocking(self, record_turn):
         app._record_agent_turn_safely(

@@ -244,6 +244,61 @@ class SalesFlowTests(unittest.TestCase):
     @patch.object(app, "record_bot_message")
     @patch.object(app, "_queue_for_isa")
     @patch.object(app, "mark_sales_intake_ready")
+    def test_numeric_alias_1_confirms_at_the_confirmation_step(
+        self, mark_ready, queue_for_isa, record_message, send_message
+    ):
+        handled = app._handle_sales_intake(11, "5491111111111", "1", _intake(), [])
+        self.assertTrue(handled)
+        mark_ready.assert_called_once_with(11)
+        queue_for_isa.assert_called_once()
+        self.assertEqual(queue_for_isa.call_args.args[2], "purchase_review")
+
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_bot_message")
+    def test_numeric_alias_2_asks_what_to_modify(self, record_message, send_message):
+        handled = app._handle_sales_intake(11, "5491111111111", "2", _intake(), [])
+        self.assertTrue(handled)
+        self.assertIn("qué querés cambiar", send_message.call_args.args[1])
+
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "cancel_sales_intake")
+    def test_numeric_alias_3_cancels(self, cancel_intake, record_message, send_message):
+        handled = app._handle_sales_intake(11, "5491111111111", "3", _intake(), [])
+        self.assertTrue(handled)
+        cancel_intake.assert_called_once_with(11)
+        self.assertIn("cancelé", send_message.call_args.args[1])
+
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "_queue_for_isa")
+    def test_numeric_alias_4_escalates_to_isa_without_touching_the_draft(
+        self, queue_for_isa, record_message, send_message
+    ):
+        handled = app._handle_sales_intake(11, "5491111111111", "4", _intake(), [])
+        self.assertTrue(handled)
+        queue_for_isa.assert_called_once()
+        self.assertEqual(queue_for_isa.call_args.args[2], "human_handoff")
+        self.assertIn("Isa", send_message.call_args.args[1])
+
+    @patch.object(app, "send_customer_fulfillment_buttons", return_value=True)
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "update_sales_intake_fields")
+    @patch.object(app, "set_sales_intake_quantity")
+    def test_numeric_reply_before_confirmation_step_is_not_a_menu_alias(
+        self, set_quantity, update_fields, record_message, send_buttons
+    ):
+        # "2" during the quantity step means 2 unidades, not "modificar" --
+        # the alias must only apply once the summary was actually shown.
+        intake = _intake(status="quantity")
+        intake.update({"quantity": None, "fulfillment": None, "customer_name": None, "customer_email": None})
+        app._handle_sales_intake(11, "5491111111111", "2", intake, [])
+        set_quantity.assert_called_once_with(11, 2)
+
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "_queue_for_isa")
+    @patch.object(app, "mark_sales_intake_ready")
     def test_complete_draft_confirms_even_if_legacy_status_is_customer(
         self, mark_ready, queue_for_isa, record_message, send_message
     ):

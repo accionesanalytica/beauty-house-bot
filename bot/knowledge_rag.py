@@ -111,6 +111,26 @@ _TRACKING_EVIDENCE_RE = re.compile(
     r"no\s+me\s+lleg[oa]\b"
 )
 
+# A customer rarely puts the order number immediately after "orden"/"pedido":
+# "el número es 1234", "mi pedido es el 1234", "pedido: 1234" are all real
+# phrasings that a same-message-only, adjacent-word regex misses. Allow a
+# short run of filler words between the keyword and the digits, with a word
+# boundary so "pedidos" (plural) can't match and swallow an unrelated number
+# later in the sentence. Shared with app.py's deterministic tracking-flow
+# router, not just this module, so both extract an order number identically.
+ORDER_NUMBER_RE = re.compile(
+    r"\b(?:orden|pedido|numero)\b\D{0,20}?(\d{4,})|#(\d{4,})",
+)
+
+
+def extract_order_number(query: str) -> Optional[str]:
+    """The order number a customer's own message names, if any -- accent/case
+    insensitive, same extraction used by infer_dynamic_requirements below."""
+    match = ORDER_NUMBER_RE.search(_normalise(query))
+    if not match:
+        return None
+    return match.group(1) or match.group(2)
+
 
 def canonical_knowledge_embedding_text(chunk: KnowledgeChunk) -> str:
     """Return the single semantic representation used by every retriever.
@@ -584,16 +604,7 @@ def infer_dynamic_requirements(
     args = dict(available_arguments or {})
     normalised = _normalise(query)
     requirements: List[DynamicRequirement] = []
-    # A customer rarely puts the number immediately after "orden"/"pedido":
-    # "el número es 1234", "mi pedido es el 1234", "pedido: 1234" are all
-    # real phrasings that a same-message-only, adjacent-word regex misses,
-    # silently falling back to the LLM's own (unreliable) extraction. Allow
-    # a short run of filler words between the keyword and the digits, with a
-    # word boundary so "pedidos" (plural) can't match and swallow an
-    # unrelated number later in the sentence.
-    order_match = re.search(
-        r"\b(?:orden|pedido|numero)\b\D{0,20}?(\d{4,})|#(\d{4,})", normalised,
-    )
+    order_match = ORDER_NUMBER_RE.search(normalised)
     if order_match:
         args.setdefault("order_number", order_match.group(1) or order_match.group(2))
 

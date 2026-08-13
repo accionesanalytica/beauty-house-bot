@@ -37,7 +37,12 @@ import numpy as np
 from google import genai
 from google.genai import types
 
-from agent import answer
+from agent import (
+    answer,
+    _collect_turn_candidates,
+    _filter_relevant_candidates,
+    _format_price,
+)
 from catalog_rag import (
     format_catalog_context,
     fuse_catalog_candidates,
@@ -46,8 +51,11 @@ from catalog_rag import (
 from knowledge_rag import (
     DEFAULT_KNOWLEDGE_TOP_K,
     KnowledgeRetrieval,
+    _normalise as _knowledge_normalise,
+    _TRACKING_EVIDENCE_RE,
     approved_knowledge_rows,
     build_knowledge_retrieval,
+    extract_order_number,
     load_knowledge_chunks,
     retrieve_local_knowledge,
     retrieve_with_recent_context,
@@ -55,6 +63,7 @@ from knowledge_rag import (
     extract_https_urls,
 )
 from dynamic_checks import (
+    DynamicCheckOutcome,
     execute_dynamic_requirements,
     format_dynamic_check_context,
 )
@@ -67,6 +76,7 @@ from routing_policy import (
     lifting_clarification_reply,
     resolve_harness_routing,
     visible_routing_contract,
+    _order_status_needs_isa,
 )
 from tiendanube_checkout import CheckoutError, checkout_enabled, create_approved_checkout
 from tiendanube_draft_orders import DraftOrderDemoError, create_demo_draft_order
@@ -1255,6 +1265,356 @@ def _queue_for_isa(
     return action_id
 
 
+# ============================================================
+# DETERMINISTIC ACTION LAYER
+#
+# "LLM responde, flows ejecutan": the model handles open conversation
+# (knowledge, catalog explanation, natural follow-ups using recent
+# history) but never decides or executes a commercial action itself. This
+# small router runs before the model is ever called and owns exactly four
+# actions -- ver productos, comprar, consultar pedido, hablar con Isa --
+# plus the one universal fallback that offers them. It reuses the existing
+# building blocks (graceful-fallback candidate search, sales_intakes,
+# get_order_status, _queue_for_isa) rather than re-implementing them.
+# ============================================================
+
+FALLBACK_MENU_MARKER = "¿Cómo querés seguir?"
+ORDER_NUMBER_PROMPT_TEXT = "¿Cuál es tu número de orden?"
+PRODUCTS_FLOW_MARKER = "Estas son las opciones que encontré"
+_PRODUCTS_FLOW_LINE_RE = re.compile(r"^(\d+)\.\s*(.+?)(?:\s+—\s+.+)?$")
+_MENU_SELECTION_RE = re.compile(r"^(?:opcion\s*)?([1-4])\.?$")
+_BARE_ORDER_NUMBER_RE = re.compile(r"^\D*(\d{3,})\D*$")
+# A generic, non-product-discovery hedge (a Knowledge question Fred can't
+# answer confidently, no obligation/escalation already matched it). Narrow
+# and literal on purpose: this only ever fires on the model's *own* final
+# wording, guarded by "not already escalating", so a false positive just
+# means an extra offer of the same menu, never a lost real answer.
+_HEDGE_PHRASES = (
+    "no tengo confirmado", "no lo tengo confirmado", "no tengo esa informacion",
+    "no tengo ese dato", "no estoy segura de eso", "no estoy seguro de eso",
+    "no sabria decirte", "no cuento con esa informacion",
+)
+
+
+def _looks_like_a_hedge(text: str) -> bool:
+    normalized = _normalized_text(text)
+    return any(phrase in normalized for phrase in _HEDGE_PHRASES)
+# The bare presence of "mi pedido"/"mi orden" is real evidence for the
+# knowledge_rag order_tracking gate (a required check inside an LLM turn),
+# but it is too weak on its own to bypass the model entirely -- "mi pedido
+# llegó perfecto, gracias" would wrongly get treated as a status request.
+# This stricter subset is safe to trigger the flow with zero LLM rounds.
+_STRONG_TRACKING_TRIGGER_RE = re.compile(
+    r"donde\s+esta\s+mi\s+(?:compra|pedido|orden)|no\s+me\s+lleg[oa]\b|"
+    r"\btracking\b|\bseguimiento\b|numero\s+de\s+(?:orden|pedido)"
+)
+
+
+def _render_fallback_menu(active_product_name: str = "") -> str:
+    buy_label = "Comprar {}".format(active_product_name) if active_product_name else "Comprar un producto"
+    return (
+        "No tengo información segura para responder eso todavía.\n\n"
+        "{}\n\n"
+        "1. Ver opciones de productos\n"
+        "2. {}\n"
+        "3. Consultar un pedido\n"
+        "4. Hablar con Isa"
+    ).format(FALLBACK_MENU_MARKER, buy_label)
+
+
+def _last_assistant_message(history: list) -> str:
+    return next(
+        (str(item.get("content") or "") for item in reversed(history or []) if item.get("role") == "assistant"),
+        "",
+    )
+
+
+def _most_recent_customer_message(history: list) -> str:
+    return next(
+        (
+            str(item.get("content") or "").strip()
+            for item in reversed(history or [])
+            if item.get("role") == "user" and str(item.get("content") or "").strip()
+        ),
+        "",
+    )
+
+
+def _extract_menu_selection(text: str) -> Optional[str]:
+    match = _MENU_SELECTION_RE.match(_normalized_text(text).strip())
+    return match.group(1) if match else None
+
+
+def _extract_bare_order_number(text: str) -> Optional[str]:
+    """Once Fred already asked "¿cuál es tu número de orden?", the reply is
+    almost always just the number by itself -- no "pedido"/"orden" keyword
+    to anchor on, unlike extract_order_number's general-purpose regex."""
+    match = _BARE_ORDER_NUMBER_RE.match(text.strip())
+    return match.group(1) if match else None
+
+
+def _deliver_flow_reply(customer_phone: str, conversation_id: int, reply: str) -> None:
+    if reply == "__FULFILLMENT_BUTTONS__":
+        delivered = send_customer_fulfillment_buttons(customer_phone)
+        reply_to_store = "¿Cómo preferís recibir tu compra? [Envío / Retiro]"
+    else:
+        delivered = send_whatsapp_text(customer_phone, reply)
+        reply_to_store = reply
+    if delivered:
+        record_bot_message(conversation_id, reply_to_store)
+
+
+# --- Opción 3: consultar pedido -----------------------------------------
+
+def _render_order_status_reply(result: dict) -> str:
+    """Honest, deterministic status text from only what Tiendanube returned.
+    Never invents a stage, a carrier or a date that wasn't in the result."""
+    order_number = result.get("order_number")
+    tracking = result.get("tracking")
+    shipping_status = str(result.get("shipping_status") or "").lower()
+    payment_status = str(result.get("payment_status") or "").lower()
+    if tracking:
+        return "Tu pedido #{} ya está en camino. Número de seguimiento: {}.".format(
+            order_number, tracking,
+        )
+    if payment_status and payment_status not in ("paid", "approved"):
+        return (
+            "Tu pedido #{} todavía no tiene el pago acreditado (estado: {}). "
+            "En cuanto se acredite, empezamos a prepararlo."
+        ).format(order_number, payment_status)
+    if shipping_status in ("", "unpacked", "unfulfilled", "pending"):
+        return (
+            "Tu pedido #{} está en preparación. El plazo habitual es de 24 a 72 "
+            "horas hábiles desde que se acredita el pago."
+        ).format(order_number)
+    return "Tu pedido #{} figura como {}. Todavía no tengo un número de seguimiento cargado.".format(
+        order_number, shipping_status,
+    )
+
+
+def _run_tracking_lookup(
+    conversation_id: int, customer_phone: str, order_number: str, prior_history: list,
+) -> str:
+    """Zero LLM rounds: real Tiendanube lookup, deterministic reply, and a
+    deterministic handoff (never left to model judgment) when the order
+    doesn't exist or its own data is inconsistent."""
+    try:
+        result = get_order_status(order_number)
+    except Exception as error:  # noqa: BLE001
+        print("ERROR consultando get_order_status (tipo: {})".format(type(error).__name__))
+        _queue_for_isa(
+            conversation_id, customer_phone, "bot_fallback",
+            "No pude consultar el pedido {} en Tiendanube.".format(order_number),
+            "Consulta de pedido #{}".format(order_number),
+            conversation_context=prior_history,
+        )
+        return (
+            "No pude consultar tu pedido en este momento. Se lo paso a Isa junto "
+            "con el número de orden y seguimos por acá."
+        )
+
+    outcome = DynamicCheckOutcome(
+        fact="order_status", verifier="get_order_status", status="completed", result=result,
+    )
+    escalation_reason = _order_status_needs_isa((outcome,))
+    if escalation_reason:
+        summaries = {
+            "order_not_found": "La orden {} no existe en Tiendanube.".format(order_number),
+            "order_status_contradiction": (
+                "El pedido {} está marcado enviado/entregado pero no tiene "
+                "tracking registrado."
+            ).format(order_number),
+        }
+        summary = summaries[escalation_reason]
+        _queue_for_isa(
+            conversation_id, customer_phone, "bot_fallback", summary,
+            "Consulta de pedido #{}".format(order_number),
+            conversation_context=prior_history,
+        )
+        if escalation_reason == "order_not_found":
+            return (
+                "Busqué el pedido {} y no me aparece en el sistema. Se lo paso a "
+                "Isa junto con lo que ya me contaste para que lo revise."
+            ).format(order_number)
+        return (
+            "El estado de tu pedido {} tiene una inconsistencia que prefiero que "
+            "revise Isa directamente; ya le pasé el contexto."
+        ).format(order_number)
+
+    return _render_order_status_reply(result)
+
+
+# --- Opción 1: ver productos ---------------------------------------------
+
+def _run_products_flow(query: str) -> str:
+    if not query:
+        return (
+            "Contame qué tipo de producto buscás (por ejemplo pestañas, algún "
+            "look en particular) y te muestro opciones reales. 😊"
+        )
+    try:
+        results = search_available_products(query)
+    except Exception as error:  # noqa: BLE001
+        print("ERROR buscando catálogo en flujo de productos (tipo: {})".format(type(error).__name__))
+        results = []
+    candidates = _filter_relevant_candidates(_collect_turn_candidates(results, {}), query)
+    if not candidates:
+        return (
+            "No tengo opciones verificadas para mostrarte todavía. ¿Me contás "
+            "un poco más de lo que buscás? También puedo pasarte con Isa. 😊"
+        )
+    lines = ["{}:".format(PRODUCTS_FLOW_MARKER)]
+    for index, candidate in enumerate(candidates[:3], start=1):
+        details = []
+        price = _format_price(candidate.get("price"))
+        if price:
+            details.append(price)
+        if candidate.get("status") == "in_stock":
+            details.append("disponible")
+        elif candidate.get("status") == "out_of_stock":
+            details.append("sin stock por ahora")
+        name = candidate.get("product_name") or "Opción"
+        suffix = " — {}".format(", ".join(details)) if details else ""
+        lines.append("{}. {}{}".format(index, name, suffix))
+    lines.append("{}. Hablar con Isa".format(len(candidates[:3]) + 1))
+    return "\n".join(lines)
+
+
+def _parse_products_flow_options(last_assistant_text: str) -> list:
+    if PRODUCTS_FLOW_MARKER not in last_assistant_text:
+        return []
+    names = []
+    for line in last_assistant_text.splitlines():
+        match = _PRODUCTS_FLOW_LINE_RE.match(line.strip())
+        if match and "hablar con isa" not in match.group(2).strip().lower():
+            names.append(match.group(2).strip())
+    return names
+
+
+def _resolve_products_flow_selection(name: str) -> Optional[dict]:
+    """Re-verify the chosen option live before adopting it as the active
+    product -- the list shown may be a turn or more old by the time the
+    customer replies with a number."""
+    try:
+        results = search_available_products(name)
+    except Exception as error:  # noqa: BLE001
+        print("ERROR re-verificando selección de producto (tipo: {})".format(type(error).__name__))
+        return None
+    normalized_name = _normalized_text(name)
+    for product in results:
+        product_name = str(product.get("name") or "")
+        if normalized_name not in _normalized_text(product_name) and _normalized_text(product_name) not in normalized_name:
+            continue
+        variants = product.get("variants") or []
+        sku = str(variants[0].get("sku") or "").strip() if variants else ""
+        if not sku:
+            continue
+        stock = get_stock(sku)
+        if not stock.get("found"):
+            continue
+        return {
+            "product_name": stock.get("product_name") or product_name,
+            "sku": sku,
+            "variant": stock.get("variant"),
+            "unit_price": stock.get("price"),
+        }
+    return None
+
+
+# --- Opción 2: comprar -----------------------------------------------------
+
+def _run_purchase_menu_entry(conversation_id: int) -> str:
+    selection = get_product_selection(conversation_id)
+    if not selection or not selection.get("sku"):
+        return "Decime qué producto querés comprar (nombre o link) y arranco con el pedido. 😊"
+    fresh = get_stock(selection["sku"])
+    if not fresh.get("found") or fresh.get("status") != "in_stock":
+        return (
+            "Recién revisé de nuevo y esa opción ya no tiene stock confirmado. "
+            "¿Buscamos otra? Puedo mostrarte opciones."
+        )
+    candidate = {
+        "product_name": fresh.get("product_name") or selection.get("product_name"),
+        "sku": selection["sku"],
+        "variant": fresh.get("variant") or selection.get("variant"),
+        "unit_price": fresh.get("price") or selection.get("unit_price"),
+    }
+    return _start_sales_intake(conversation_id, candidate)
+
+
+# --- Opción 4: hablar con Isa ----------------------------------------------
+
+def _run_isa_menu_flow(conversation_id: int, customer_phone: str, prior_history: list) -> str:
+    active_product = get_product_selection(conversation_id)
+    summary = "La clienta eligió hablar con Isa desde el menú."
+    if active_product and active_product.get("product_name"):
+        summary += " Producto actual: {}.".format(active_product["product_name"])
+    _queue_for_isa(
+        conversation_id, customer_phone, "human_handoff", summary,
+        "Opción 4 del menú: hablar con Isa.",
+        conversation_context=prior_history,
+    )
+    return (
+        "Listo, se lo pasé a Isa junto con el contexto de la conversación para "
+        "que no tengas que repetir todo. 😊"
+    )
+
+
+def _try_deterministic_flow(
+    conversation_id: int, customer_phone: str, message_text: str, prior_history: list,
+) -> Optional[str]:
+    """The action layer. Returns a reply if this message was handled by a
+    deterministic flow (menu, tracking, products, purchase, Isa); None means
+    "let the model answer this normally" -- knowledge/catalog conversation
+    stays entirely with the LLM."""
+    last_assistant_text = _last_assistant_message(prior_history)
+    normalised = _knowledge_normalise(message_text)
+
+    # Tracking: continuing an already-open ask, or an unambiguous request in
+    # a single message. Zero LLM rounds either way.
+    if ORDER_NUMBER_PROMPT_TEXT in last_assistant_text:
+        order_number = extract_order_number(message_text) or _extract_bare_order_number(message_text)
+        if order_number:
+            return _run_tracking_lookup(conversation_id, customer_phone, order_number, prior_history)
+        return "No pasa nada, decime sólo el número de orden y lo reviso. 😊"
+
+    order_number = extract_order_number(message_text)
+    strong_tracking_evidence = bool(_STRONG_TRACKING_TRIGGER_RE.search(normalised))
+    if order_number and (strong_tracking_evidence or FALLBACK_MENU_MARKER in last_assistant_text):
+        return _run_tracking_lookup(conversation_id, customer_phone, order_number, prior_history)
+    if strong_tracking_evidence and not order_number:
+        return ORDER_NUMBER_PROMPT_TEXT
+
+    # Universal fallback menu selection.
+    if FALLBACK_MENU_MARKER in last_assistant_text:
+        selection = _extract_menu_selection(message_text)
+        if selection == "1":
+            return _run_products_flow(_most_recent_customer_message(prior_history))
+        if selection == "2":
+            return _run_purchase_menu_entry(conversation_id)
+        if selection == "3":
+            return ORDER_NUMBER_PROMPT_TEXT
+        if selection == "4":
+            return _run_isa_menu_flow(conversation_id, customer_phone, prior_history)
+
+    # Products-flow continuation: picking one of the just-shown options.
+    options = _parse_products_flow_options(last_assistant_text)
+    if options:
+        selection = _extract_menu_selection(message_text)
+        if selection:
+            index = int(selection)
+            if 1 <= index <= len(options):
+                candidate = _resolve_products_flow_selection(options[index - 1])
+                if not candidate:
+                    return "Justo esa opción ya no está disponible. ¿Buscamos otra? 😊"
+                save_product_selection(conversation_id, candidate)
+                return "Dale, seguimos con {} 😊 ¿Qué querés saber?".format(candidate["product_name"])
+            if index == len(options) + 1:
+                return _run_isa_menu_flow(conversation_id, customer_phone, prior_history)
+
+    return None
+
+
 def _customer_escalation_type(message_text: str, has_bot_history: bool) -> str:
     """Recognize direct human handoffs; sales intake handles purchase intent."""
     normalized = message_text.lower()
@@ -1798,9 +2158,23 @@ def _handle_sales_intake(
     next missing fact, or sends the completed record to Isa after confirmation.
     """
     normalized = _normalized_text(message_text)
+    # Numeric aliases (1=confirmar, 2=modificar, 3=cancelar, 4=hablar con Isa)
+    # only mean this once the summary has actually been shown -- during
+    # "quantity" a bare "2" is 2 unidades, not a menu selection.
+    if intake.get("status") == "confirmation" and normalized in {"1", "2", "3", "4"}:
+        normalized = {"1": "confirmo", "2": "cambiar", "3": "cancelar", "4": "hablar con isa"}[normalized]
+        message_text = normalized
     if re.fullmatch(r"(?:cancelar|cancelo|dejalo|no sigo)", normalized):
         cancel_sales_intake(conversation_id)
         reply = "Dale, cancelé esta preparación. Si querés volver a empezar, avisame 😊"
+    elif normalized == "hablar con isa" and intake.get("status") == "confirmation":
+        _queue_for_isa(
+            conversation_id, customer_phone, "human_handoff",
+            "La clienta quiere hablar con Isa durante la confirmación de una compra.",
+            "Opción 4 durante confirmación de compra.",
+            conversation_context=prior_history,
+        )
+        reply = "Listo, se lo pasé a Isa junto con el contexto de la conversación. 😊"
     elif intake["status"] == "product" and not intake.get("selected_sku"):
         # This fallback only applies when Fred truly has no verified product
         # yet. Normal checkout always starts with a verified SKU above.
@@ -3562,6 +3936,18 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             print("[IA] Mensaje social resuelto sin modelo.")
             return JSONResponse(content={"ok": True})
 
+        try:
+            flow_reply = _try_deterministic_flow(
+                conversation_id, customer_phone, message_text, prior_history,
+            )
+        except Exception as error:  # noqa: BLE001
+            flow_reply = None
+            print("ERROR en flujo determinístico (tipo: {})".format(type(error).__name__))
+        if flow_reply is not None:
+            _deliver_flow_reply(customer_phone, conversation_id, flow_reply)
+            print("[Flow] Resuelto sin modelo.")
+            return JSONResponse(content={"ok": True})
+
         escalation_type = _customer_escalation_type(
             message_text,
             has_bot_history=any(
@@ -3743,6 +4129,32 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             reply = (result.get("reply") or "").strip()
             if not reply:
                 raise RuntimeError("El agente no devolvió texto.")
+
+            if result.get("graceful_fallback_tier") == "escalate":
+                # The model could not close a confident answer. Present the
+                # one universal fallback (menú de 4 opciones) instead of its
+                # raw hedge text, and skip the presentation-layer routing
+                # machinery entirely -- this is a deterministic action, same
+                # as _try_deterministic_flow above, not a model reply to be
+                # polished.
+                if (
+                    not persisted_claim
+                    and CONVERSATION_DEBOUNCE_SECONDS
+                    and conversation_id
+                    and wa_message_id
+                    and not is_latest_customer_message(conversation_id, wa_message_id)
+                ):
+                    print("[Conversacion] Respuesta obsoleta omitida por mensaje posterior.")
+                    return JSONResponse(content={"ok": True})
+                active_product = get_product_selection(conversation_id)
+                menu_reply = _render_fallback_menu(
+                    active_product.get("product_name") if active_product else ""
+                )
+                if send_whatsapp_text(customer_phone, menu_reply):
+                    record_bot_message(conversation_id, menu_reply)
+                print("[Flow] Fallback universal ofrecido tras respuesta insegura del modelo.")
+                return JSONResponse(content={"ok": True})
+
             sale_candidate = result.get("sale_candidate")
             handoff = result.get("handoff")
             decision = result.get("decision") or {}
@@ -3873,6 +4285,16 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                         final_routing,
                         dynamic_requirements=dynamic_check_outcomes,
                     ),
+                )
+
+            # A generic "I don't know" the specific mechanisms above didn't
+            # already turn into a handoff or a grounded discovery answer:
+            # offer the same universal menu instead of a bare hedge, so
+            # "Fred no sabe" always ends in the same four concrete options.
+            if not handoff and not sale_candidate and _looks_like_a_hedge(reply):
+                active_product = get_product_selection(conversation_id)
+                reply = _render_fallback_menu(
+                    active_product.get("product_name") if active_product else ""
                 )
 
             # A slower model/tool turn must never answer an earlier version of

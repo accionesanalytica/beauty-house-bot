@@ -20,6 +20,7 @@ from knowledge_rag import (  # noqa: E402
     chunk_markdown,
     collect_topic_obligations,
     enforce_knowledge_obligations,
+    extract_order_number,
     format_knowledge_context,
     infer_dynamic_requirements,
     load_knowledge_chunks,
@@ -401,6 +402,12 @@ class KnowledgeRagTests(unittest.TestCase):
             requirement = infer_dynamic_requirements(query, "order_tracking")[0]
             self.assertEqual(requirement.status, "ready", query)
             self.assertEqual(requirement.arguments, {"order_number": "1234"}, query)
+
+    def test_extract_order_number_is_the_same_shared_helper(self):
+        # app.py's deterministic tracking-flow router reuses this directly,
+        # so it must behave identically to the dynamic-requirements path.
+        self.assertEqual(extract_order_number("el número es 1234"), "1234")
+        self.assertEqual(extract_order_number("no tengo ningún dato"), None)
 
     def test_order_number_extraction_does_not_swallow_an_unrelated_number(self):
         # "pedidos" (plural) must not match the singular-keyword boundary and
