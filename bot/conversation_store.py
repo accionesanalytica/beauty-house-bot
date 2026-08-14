@@ -1162,7 +1162,8 @@ def list_pending_actions(limit: int = 10) -> List[Dict[str, Any]]:
                     pending_actions.summary,
                     pending_actions.payload,
                     pending_actions.created_at,
-                    conversations.customer_phone
+                    conversations.customer_phone,
+                    pending_actions.conversation_id
                 FROM pending_actions
                 JOIN conversations ON conversations.id = pending_actions.conversation_id
                 WHERE pending_actions.status = 'pending'
@@ -1183,6 +1184,7 @@ def list_pending_actions(limit: int = 10) -> List[Dict[str, Any]]:
             "payload": row[3] or {},
             "created_at": row[4],
             "customer_phone": row[5],
+            "conversation_id": int(row[6]),
         }
         for row in rows
     ]
@@ -1259,6 +1261,67 @@ def wait_for_isa_response(action_id: int) -> bool:
             updated = cursor.rowcount == 1
         connection.commit()
         return updated
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def set_isa_awaiting(action_id: int, kind: str) -> bool:
+    """Record WHAT Isa's next free-text message is answering for one case.
+
+    Same exclusivity rule as wait_for_isa_response: only one case may await
+    her typing at a time, so an answer can never be delivered against the
+    wrong customer. Unlike that helper this one also covers purchase_review
+    (rejection reason, question for the customer) and remembers the kind, so
+    the same message can mean "motivo del rechazo" or "pregunta para la
+    clienta" without guessing from its text.
+    """
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE pending_actions
+                SET payload = (payload - 'awaiting_isa_response') - 'awaiting_isa_kind'
+                WHERE (payload ? 'awaiting_isa_response' OR payload ? 'awaiting_isa_kind')
+                  AND id != %s
+                """,
+                (action_id,),
+            )
+            cursor.execute(
+                """
+                UPDATE pending_actions
+                SET payload = jsonb_set(payload, '{awaiting_isa_kind}', to_jsonb(%s::text), true)
+                WHERE id = %s AND status = 'pending'
+                """,
+                (kind, action_id),
+            )
+            updated = cursor.rowcount == 1
+        connection.commit()
+        return updated
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def clear_isa_awaiting(action_id: int) -> None:
+    """Forget a pending question once it was answered or abandoned."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE pending_actions
+                SET payload = (payload - 'awaiting_isa_response') - 'awaiting_isa_kind'
+                WHERE id = %s
+                """,
+                (action_id,),
+            )
+        connection.commit()
     except Exception:
         connection.rollback()
         raise

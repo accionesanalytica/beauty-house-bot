@@ -86,10 +86,13 @@ class SalesFlowTests(unittest.TestCase):
         set_quantity.assert_called_once_with(11, 3)
         update_fields.assert_called_once_with(11, "confirmation")
 
-    def test_missing_fulfillment_uses_closed_choice_step(self):
+    def test_missing_fulfillment_is_asked_in_words_unless_buttons_are_enabled(self):
         intake = _intake()
         intake["fulfillment"] = None
-        self.assertEqual(app._sales_missing_step(intake), "__FULFILLMENT_BUTTONS__")
+        with patch.object(app, "FULFILLMENT_BUTTONS_ENABLED", False):
+            self.assertIn("envío o retiro", app._sales_missing_step(intake))
+        with patch.object(app, "FULFILLMENT_BUTTONS_ENABLED", True):
+            self.assertEqual(app._sales_missing_step(intake), "__FULFILLMENT_BUTTONS__")
 
     def test_confirmation_tolerates_typo_but_not_a_correction_sentence(self):
         self.assertTrue(app._is_sale_confirmation("si confimo"))

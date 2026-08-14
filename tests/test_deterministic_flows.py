@@ -445,11 +445,14 @@ class SalesMissingStepTests(unittest.TestCase):
             self.assertIn(expected, reply)
         self.assertIn("todo junto", reply)
 
-    def test_only_fulfillment_missing_uses_the_real_buttons(self):
-        reply = app._sales_missing_step({
-            "quantity": 4, "customer_name": "Ana", "customer_email": "a@b.com",
-        })
-        self.assertEqual(reply, "__FULFILLMENT_BUTTONS__")
+    def test_only_fulfillment_missing_asks_in_words_by_default(self):
+        # Buttons are a shortcut, never a requirement -- Fred reads "envío"
+        # written naturally, so the default flow stays conversational.
+        intake = {"quantity": 4, "customer_name": "Ana", "customer_email": "a@b.com"}
+        with patch.object(app, "FULFILLMENT_BUTTONS_ENABLED", False):
+            self.assertIn("envío o retiro", app._sales_missing_step(intake))
+        with patch.object(app, "FULFILLMENT_BUTTONS_ENABLED", True):
+            self.assertEqual(app._sales_missing_step(intake), "__FULFILLMENT_BUTTONS__")
 
     def test_a_single_remaining_field_is_asked_alone(self):
         reply = app._sales_missing_step({

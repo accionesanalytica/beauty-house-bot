@@ -156,6 +156,8 @@ from conversation_store import (
     start_sales_intake,
     snooze_isa_reminders,
     wait_for_isa_response,
+    set_isa_awaiting,
+    clear_isa_awaiting,
 )
 
 load_dotenv()
@@ -193,6 +195,11 @@ FRED_BETA_ALLOWED_PHONES = {
 }
 ISA_WHATSAPP_NUMBER = os.getenv("ISA_WHATSAPP_NUMBER", "")
 SALES_INTAKE_ENABLED = os.getenv("SALES_INTAKE_ENABLED", "false").lower() == "true"
+# The two-button envío/retiro screen is a shortcut, not a requirement: Fred
+# understands "envío"/"retiro" written naturally, and the checkout never
+# depends on the buttons being pressed. Off by default so the flow reads as a
+# conversation; set to "true" to bring the shortcut back.
+FULFILLMENT_BUTTONS_ENABLED = os.getenv("FULFILLMENT_BUTTONS_ENABLED", "false").lower() == "true"
 # A short pause lets WhatsApp users finish a natural burst ("hola" / "quiero
 # dos" / "retiro") before Fred decides. The database decides which event is
 # newest, so this remains safe if Railway later has more than one instance.
@@ -1247,8 +1254,8 @@ def send_isa_pending_buttons(action: dict) -> bool:
     if LIVE_CHECKOUTS_ENABLED and action["action_type"] == "purchase_review":
         buttons = [
             {"type": "reply", "reply": {"id": "approve_checkout:{}".format(action_id), "title": "Aprobar compra"}},
-            {"type": "reply", "reply": {"id": "reject:{}".format(action_id), "title": "Cancelar compra"}},
-            {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver detalles"}},
+            {"type": "reply", "reply": {"id": "reject_purchase:{}".format(action_id), "title": "Rechazar"}},
+            {"type": "reply", "reply": {"id": "ask_customer:{}".format(action_id), "title": "Pedir algo"}},
         ]
     elif DEMO_APPROVALS_ENABLED and action["action_type"] == "purchase_review":
         buttons = [
@@ -1258,9 +1265,9 @@ def send_isa_pending_buttons(action: dict) -> bool:
         ]
     elif action["action_type"] == "bot_fallback":
         buttons = [
-            {"type": "reply", "reply": {"id": "reply_to_fred:{}".format(action_id), "title": "Responder a Fred"}},
+            {"type": "reply", "reply": {"id": "reply_to_fred:{}".format(action_id), "title": "Responder y cerrar"}},
+            {"type": "reply", "reply": {"id": "reply_keep_open:{}".format(action_id), "title": "Seguir conversando"}},
             {"type": "reply", "reply": {"id": "resume_bot:{}".format(action_id), "title": "Que siga Fred"}},
-            {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
         ]
     elif action["action_type"] == "special_sale_request":
         buttons = [
@@ -1270,9 +1277,9 @@ def send_isa_pending_buttons(action: dict) -> bool:
         ]
     elif action["action_type"] == "human_handoff":
         buttons = [
-            {"type": "reply", "reply": {"id": "reply_to_fred:{}".format(action_id), "title": "Responder a Fred"}},
-            {"type": "reply", "reply": {"id": "pause_bot:{}".format(action_id), "title": "Pausar a Fred"}},
-            {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
+            {"type": "reply", "reply": {"id": "reply_to_fred:{}".format(action_id), "title": "Responder y cerrar"}},
+            {"type": "reply", "reply": {"id": "reply_keep_open:{}".format(action_id), "title": "Seguir conversando"}},
+            {"type": "reply", "reply": {"id": "close_consultation:{}".format(action_id), "title": "Cerrar consulta"}},
         ]
     else:
         buttons = [
@@ -1319,8 +1326,16 @@ def _queue_for_isa(
     customer_message: str,
     conversation_context: list = None,
     sale_draft: dict = None,
-) -> int:
-    """Create an escalation and notify Isa only when the queue was empty."""
+) -> bool:
+    """Create an escalation and try to reach Isa. Returns whether Isa was
+    actually notified NOW.
+
+    The case is always persisted first, so nothing is ever lost -- but Fred
+    must not tell a customer "ya se lo pasé a Isa" when the WhatsApp send
+    failed and Isa has no idea the case exists. Callers word their reply from
+    this result. A False here means "registrado, Isa lo ve al abrir su cola",
+    not "perdido".
+    """
     pending_before = pending_action_count()
     payload = {"customer_phone": customer_phone, "customer_message": customer_message}
     if action_type == "purchase_review":
@@ -1356,21 +1371,32 @@ def _queue_for_isa(
     # Previously every escalation set ESCALATED and silently ignored any later
     # customer message, which made normal support feel abandoned.
     set_conversation_state(conversation_id, "BOT")
-    if pending_before == 0:
-        action = {
-            "id": action_id,
-            "action_type": action_type,
-            "summary": summary,
-            "payload": payload,
-            "customer_phone": customer_phone,
-        }
-        # If Isa wrote recently, WhatsApp permits the detailed interactive card
-        # immediately. Outside that window Meta rejects it, so fall back to the
-        # approved template and wait for Isa to reply "ver".
-        if not send_isa_pending_buttons(action):
-            send_isa_pending_notification(pending_before + 1)
-    print(f"[Isa] Pendiente #{action_id} creado ({action_type}).")
-    return action_id
+    action = {
+        "id": action_id,
+        "action_type": action_type,
+        "summary": summary,
+        "payload": payload,
+        "customer_phone": customer_phone,
+    }
+    # If Isa wrote recently, WhatsApp permits the detailed interactive card
+    # immediately. Outside that window Meta rejects it, so fall back to the
+    # approved template and wait for Isa to reply "ver".
+    notified = False
+    try:
+        # The interactive card only lands inside Meta's 24h window, i.e. when
+        # Isa is already active -- always worth trying, never spam.
+        notified = bool(send_isa_pending_buttons(action))
+        if not notified and pending_before == 0:
+            # Outside that window only the approved template can reach her, and
+            # it is reserved for opening a queue that was empty so a busy hour
+            # doesn't become one template per case.
+            notified = bool(send_isa_pending_notification(pending_before + 1))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR notificando a Isa (tipo: {}).".format(type(error).__name__))
+    print("[Isa] Pendiente #{} creado ({}). Notificada: {}.".format(
+        action_id, action_type, "sí" if notified else "NO",
+    ))
+    return notified
 
 
 # ============================================================
@@ -1418,6 +1444,22 @@ def _reads_as_affirmation(text: str) -> bool:
 def _reads_as_negation(text: str) -> bool:
     """A plain human "no"/"cancel" to whatever was just asked."""
     return bool(_NEGATION_RE.match(_normalized_text(text).strip()))
+
+
+def _isa_handoff_confirmation(notified: bool) -> str:
+    """Say what actually happened. "Se lo pasé a Isa" is a claim about a
+    message that either arrived or didn't; when it didn't, the case is still
+    safely registered and saying so is both true and reassuring."""
+    if notified:
+        return (
+            "Listo, se lo pasé a Isa junto con el contexto de la conversación para "
+            "que no tengas que repetir todo. 😊"
+        )
+    return (
+        "Tu consulta quedó registrada para que la revise Isa, con todo el contexto "
+        "de la conversación así no tenés que repetir nada. Apenas la vea, te "
+        "respondo por acá. 😊"
+    )
 
 
 def _remember_pending_intent(conversation_id: int, intent: Optional[str]) -> None:
@@ -1794,16 +1836,13 @@ def _fred_core_run_isa_handoff(
     order_number = core_state.get("order_number")
     if order_number:
         summary = "{} Pedido en cuestión: #{}.".format(summary, order_number)
-    _queue_for_isa(
+    notified = _queue_for_isa(
         conversation_id, customer_phone, "human_handoff", summary,
         "Solicitud de hablar con Isa.",
         conversation_context=prior_history,
     )
     save_fred_core_state(conversation_id, mode="CHAT")
-    return (
-        "Listo, se lo pasé a Isa junto con el contexto de la conversación para "
-        "que no tengas que repetir todo. 😊"
-    )
+    return _isa_handoff_confirmation(notified)
 
 
 # --- mode=MENU ------------------------------------------------------------
@@ -2322,9 +2361,12 @@ def _start_sales_intake(
             unit_price=sale_candidate.get("unit_price"),
             quantity=quantity or None,
         )
-        if quantity:
-            return "__FULFILLMENT_BUTTONS__"
-        return _customer_details_prompt(include_quantity=True)
+        # Ask in words for everything still missing instead of forcing the
+        # two-button screen: the customer can answer in one natural line.
+        return _sales_missing_step({
+            "quantity": quantity or None, "fulfillment": None,
+            "customer_name": None, "customer_email": None,
+        })
 
     start_sales_intake(conversation_id)
     return (
@@ -2434,9 +2476,13 @@ def _sales_missing_step(intake: dict) -> str:
 
     if not missing:
         return ""
-    # Fulfillment alone is better served by the two real WhatsApp buttons.
     if missing == ["si preferís envío o retiro"]:
-        return "__FULFILLMENT_BUTTONS__"
+        # Buttons stay available as a shortcut, never as a requirement: Fred
+        # reads "envío"/"retiro" written in words just as well, so the reply
+        # is worded as a question either way.
+        return "__FULFILLMENT_BUTTONS__" if FULFILLMENT_BUTTONS_ENABLED else (
+            "Me falta únicamente saber si preferís envío o retiro 😊"
+        )
     if len(missing) == 1:
         return "Me falta únicamente {} y lo dejamos listo 😊".format(missing[0])
     joined = "{} y {}".format(", ".join(missing[:-1]), missing[-1])
@@ -2475,13 +2521,12 @@ def _handle_sales_intake(
         cancel_sales_intake(conversation_id)
         reply = "Dale, cancelé esta preparación. Si querés volver a empezar, avisame 😊"
     elif normalized == "hablar con isa" and intake.get("status") == "confirmation":
-        _queue_for_isa(
+        reply = _isa_handoff_confirmation(_queue_for_isa(
             conversation_id, customer_phone, "human_handoff",
             "La clienta quiere hablar con Isa durante la confirmación de una compra.",
             "Opción 4 durante confirmación de compra.",
             conversation_context=prior_history,
-        )
-        reply = "Listo, se lo pasé a Isa junto con el contexto de la conversación. 😊"
+        ))
     elif (
         _looks_like_new_customer_request(message_text)
         and not _message_refers_to_intake_product(message_text, intake)
@@ -2538,7 +2583,7 @@ def _handle_sales_intake(
                 "customer_email": updated_intake["customer_email"],
                 "order_creation": "disabled until Isa approval",
             }
-            _queue_for_isa(
+            notified = _queue_for_isa(
                 conversation_id,
                 customer_phone,
                 "purchase_review",
@@ -2547,7 +2592,16 @@ def _handle_sales_intake(
                 conversation_context=prior_history,
                 sale_draft=sale_draft,
             )
-            reply = "Perfecto, ya se lo pasé a Isa para que revise los detalles antes de generar cualquier link 😊"
+            if notified:
+                reply = (
+                    "Perfecto, ya se lo pasé a Isa para que revise los detalles antes "
+                    "de generar cualquier link 😊"
+                )
+            else:
+                reply = (
+                    "Perfecto, tu solicitud quedó registrada para que Isa la revise antes "
+                    "de generar cualquier link. Apenas la apruebe te mando el link por acá 😊"
+                )
         elif re.match(r"^(?:quiero\s+)?(?:cambiar|corregir)(?:lo)?\b", normalized):
             reply = "Claro 😊 Decime qué querés cambiar y actualizo el resumen."
         elif (
@@ -2938,7 +2992,147 @@ def _isa_customer_instruction(message_text: str, action: dict) -> str:
     return ""
 
 
-def _deliver_isa_response(action: dict, message_text: str) -> bool:
+ISA_OPTIONS_LEGEND = (
+    "Te cuento qué hace cada opción 😊\n\n"
+    "EN UNA COMPRA PARA REVISAR:\n"
+    "• Aprobar compra: reviso stock y precio en vivo otra vez y, si sigue todo bien, "
+    "genero el link de pago y se lo mando a la clienta. Recién ahí se crea el checkout.\n"
+    "• Rechazar: te pido el motivo en un mensaje y se lo explico a la clienta con mis "
+    "palabras. No se genera ningún link.\n"
+    "• Pedir algo: me escribís qué necesitás preguntarle y yo se lo pregunto. La compra "
+    "queda abierta esperando su respuesta, y te aviso apenas conteste.\n\n"
+    "EN UNA CONSULTA:\n"
+    "• Responder a Fred: me escribís la respuesta y yo se la paso. La consulta queda cerrada.\n"
+    "• Seguir conversando: igual que la anterior, pero la consulta queda abierta para "
+    "ida y vuelta: lo que ella responda te lo reenvío.\n"
+    "• Cerrar consulta: la doy por resuelta y sigo atendiendo normalmente.\n\n"
+    "En cualquier momento podés escribirme “ver” para ver el próximo pendiente."
+)
+
+_ISA_HELP_RE = re.compile(
+    r"\b(que hace cada|que significa cada|para que sirve cada|no entiendo las opciones|"
+    r"que hace cada opcion|explicame las opciones|ayuda|dudas con las opciones|"
+    r"que hago con cada|opciones)\b"
+)
+
+
+def _isa_asks_for_legend(message_text: str) -> bool:
+    """Isa asking what the options do -- answered with the legend instead of
+    being treated as an answer to whatever case is open."""
+    return bool(_ISA_HELP_RE.search(_normalized_text(message_text)))
+
+
+def _forward_customer_answer_to_isa(
+    conversation_id: int, customer_phone: str, message_text: str,
+) -> None:
+    """Relay this customer's message to Isa when it answers something she
+    asked through Fred on a still-open case.
+
+    Deliberately narrow (see the "an open case must not block Fred" rule): it
+    only fires for the one case that is explicitly waiting on THIS customer,
+    and it never stops Fred from also answering the message normally.
+    """
+    try:
+        waiting = next(
+            (
+                item for item in list_pending_actions(limit=20)
+                if item.get("conversation_id") == conversation_id
+                and item.get("payload", {}).get("awaiting_isa_kind") == "customer_answer"
+            ),
+            None,
+        )
+    except Exception as error:  # noqa: BLE001
+        print("ERROR revisando casos abiertos de Isa (tipo: {}).".format(type(error).__name__))
+        return
+    if not waiting:
+        return
+    label = "compra en revisión" if waiting["action_type"] == "purchase_review" else "consulta"
+    delivered = send_whatsapp_text(
+        ISA_WHATSAPP_NUMBER,
+        "Respuesta de la clienta ({} #{}):\n\n“{}”\n\n"
+        "Escribime “ver” para retomar ese pendiente y decidir.".format(
+            label, waiting["id"], message_text.strip()[:600],
+        ),
+    )
+    if delivered:
+        try:
+            clear_isa_awaiting(waiting["id"])
+        except Exception as error:  # noqa: BLE001
+            print("ERROR limpiando espera de la clienta (tipo: {}).".format(type(error).__name__))
+        print("[Isa] Respuesta de la clienta reenviada al pendiente #{}.".format(waiting["id"]))
+
+
+def _reject_purchase_with_reason(action: dict, reason: str) -> None:
+    """Isa declined a purchase and said why. The customer gets that reason in
+    plain language plus a real way forward -- never a bare "no se pudo" -- and
+    no checkout is ever created."""
+    reason = " ".join((reason or "").split())
+    customer_text = (
+        "Isa revisó tu compra y por ahora no podemos avanzar.\n\n{}\n\n"
+        "¿Querés que busquemos otra cantidad u otra opción, o preferís que le "
+        "consulte algo puntual a Isa? 😊"
+    ).format(reason) if reason else (
+        "Isa revisó tu compra y por ahora no podemos avanzar con el pedido tal "
+        "como estaba. ¿Querés que busquemos otra cantidad u otra opción? 😊"
+    )
+    if not send_whatsapp_text(action["customer_phone"], customer_text):
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "No pude avisarle a la clienta; el pendiente sigue abierto. Probá de nuevo.",
+        )
+        return
+    result = resolve_pending_action(action["id"], "rejected")
+    conversation_id = action.get("conversation_id") or (result or {}).get("conversation_id")
+    if conversation_id:
+        record_bot_message(conversation_id, customer_text)
+        set_conversation_state(conversation_id, "BOT")
+        try:
+            # The purchase is off, but the product and the conversation stay:
+            # she may well want a different quantity of the same thing.
+            cancel_sales_intake(conversation_id)
+            reset_fred_core_checkout(conversation_id)
+        except Exception as error:  # noqa: BLE001
+            print("ERROR limpiando checkout rechazado (tipo: {}).".format(type(error).__name__))
+    send_whatsapp_text(
+        ISA_WHATSAPP_NUMBER,
+        "Listo, le expliqué el motivo y no generé ningún link. Fred sigue atendiéndola 😊",
+    )
+    if pending_action_count():
+        send_next_pending_to_isa()
+
+
+def _ask_customer_for_purchase(action: dict, question: str) -> None:
+    """Isa needs something from the customer before deciding. The purchase
+    review stays OPEN so her answer comes back to this same case instead of
+    restarting the checkout."""
+    question = " ".join((question or "").split())
+    customer_text = (
+        "Isa necesita confirmar algo antes de aprobar tu compra:\n\n{}"
+    ).format(question)
+    if not send_whatsapp_text(action["customer_phone"], customer_text):
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "No pude enviarle la pregunta; el pendiente sigue abierto. Probá de nuevo.",
+        )
+        return
+    conversation_id = action.get("conversation_id")
+    if conversation_id:
+        record_bot_message(conversation_id, customer_text)
+        set_conversation_state(conversation_id, "BOT")
+    try:
+        # Not awaiting Isa any more -- now we are waiting on the customer, and
+        # the case must stay pending so her reply can be attached to it.
+        clear_isa_awaiting(action["id"])
+        set_isa_awaiting(action["id"], "customer_answer")
+    except Exception as error:  # noqa: BLE001
+        print("ERROR marcando espera de respuesta (tipo: {}).".format(type(error).__name__))
+    send_whatsapp_text(
+        ISA_WHATSAPP_NUMBER,
+        "Listo, se lo pregunté. La compra queda abierta y te aviso apenas responda 😊",
+    )
+
+
+def _deliver_isa_response(action: dict, message_text: str, keep_open: bool = False) -> bool:
     """Deliver reviewed owner context, then return the chat to normal BOT mode."""
     customer_text = _isa_customer_instruction(message_text, action) or message_text
     if customer_text == "__SEND_SPECIAL_CONDITIONS__":
@@ -2951,6 +3145,19 @@ def _deliver_isa_response(action: dict, message_text: str) -> bool:
             "No pude enviar esa respuesta a la clienta; no la pierdo. Probá mandarla de nuevo.",
         )
         return False
+
+    if keep_open:
+        # Isa wants the back-and-forth: the case stays open so the customer's
+        # next relevant message comes back to her inside this same thread.
+        clear_isa_awaiting(action["id"])
+        record_bot_message(action["conversation_id"], customer_text)
+        set_conversation_state(action["conversation_id"], "BOT")
+        send_whatsapp_text(
+            ISA_WHATSAPP_NUMBER,
+            "Listo, se lo mandé. Dejo la consulta abierta: si te responde algo, te lo "
+            "reenvío acá. Cuando quieras cerrarla, escribime “cerrar consulta”.",
+        )
+        return True
 
     result = resolve_pending_action(action["id"], "approved")
     if not result:
@@ -3083,6 +3290,35 @@ def handle_isa_message(
             send_whatsapp_text(ISA_WHATSAPP_NUMBER, "No pude preparar esa consulta para responder ahora.")
         return
 
+    # Isa chose an option that needs her to type something (rejection reason,
+    # question for the customer, reply that keeps a consultation open). That
+    # message is answered against THAT case, never guessed from its text.
+    awaiting_kind_action = next(
+        (
+            item for item in list_pending_actions(limit=20)
+            if item.get("payload", {}).get("awaiting_isa_kind")
+        ),
+        None,
+    )
+    if awaiting_kind_action and not button_reply_id:
+        if _isa_asks_for_legend(message_text):
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, ISA_OPTIONS_LEGEND)
+            return
+        kind = awaiting_kind_action["payload"]["awaiting_isa_kind"]
+        if kind == "reject_purchase":
+            _reject_purchase_with_reason(awaiting_kind_action, message_text)
+            return
+        if kind == "ask_customer":
+            _ask_customer_for_purchase(awaiting_kind_action, message_text)
+            return
+        if kind == "reply_keep_open":
+            _deliver_isa_response(awaiting_kind_action, message_text, keep_open=True)
+            return
+
+    if _isa_asks_for_legend(message_text) and not button_reply_id:
+        send_whatsapp_text(ISA_WHATSAPP_NUMBER, ISA_OPTIONS_LEGEND)
+        return
+
     # Isa's text is intentionally handled before her own internal-sale draft:
     # once she chose “Responder a Fred”, her next message belongs to the
     # customer consultation and is delivered verbatim as reviewed information.
@@ -3157,7 +3393,9 @@ def handle_isa_message(
         return
 
     match = re.match(
-        r"^(approve|approve_demo|approve_checkout|send_special_conditions|reject|view|take_handoff|pause_bot|resume_bot):(\d+)$",
+        r"^(approve|approve_demo|approve_checkout|send_special_conditions|reject|view|"
+        r"take_handoff|pause_bot|resume_bot|reject_purchase|ask_customer|reply_keep_open|"
+        r"close_consultation):(\d+)$",
         button_reply_id or "",
     )
     if not match:
@@ -3166,6 +3404,47 @@ def handle_isa_message(
 
     action, action_id_text = match.groups()
     action_id = int(action_id_text)
+
+    if action in ("reject_purchase", "ask_customer", "reply_keep_open"):
+        pending_action = _pending_action_by_id(action_id)
+        if not pending_action:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya no está disponible.")
+            return
+        if action == "reject_purchase" and pending_action["action_type"] != "purchase_review":
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente no es una compra para rechazar.")
+            return
+        prompts = {
+            "reject_purchase": (
+                "Dale. Contame en un mensaje por qué no podemos avanzar (por ejemplo "
+                "“no hay stock para esa cantidad”) y se lo explico a la clienta con mis "
+                "palabras. No genero ningún link.",
+            ),
+            "ask_customer": (
+                "Dale. Escribime qué necesitás preguntarle y se lo pregunto. La compra "
+                "queda abierta esperando su respuesta y te aviso apenas conteste.",
+            ),
+            "reply_keep_open": (
+                "Dale. Escribime la respuesta y se la paso. La consulta queda abierta "
+                "para seguir el ida y vuelta.",
+            ),
+        }
+        if set_isa_awaiting(action_id, action):
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, prompts[action][0])
+        else:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "No pude preparar ese pendiente ahora.")
+        return
+
+    if action == "close_consultation":
+        result = resolve_pending_action(action_id, "approved")
+        if not result:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya fue resuelto.")
+            return
+        set_conversation_state(result["conversation_id"], "BOT")
+        send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Listo, cerré la consulta. Fred sigue atendiendo 😊")
+        if pending_action_count():
+            send_next_pending_to_isa()
+        return
+
     if action == "view":
         actions = [item for item in list_pending_actions(limit=20) if item["id"] == action_id]
         if actions:
@@ -4278,6 +4557,12 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # product and released itself back to CHAT -- fall through and
             # reprocess this same message there.
             core_state = get_fred_core_state(conversation_id)
+
+        # Isa asked this customer something through Fred and the case is still
+        # open: her answer belongs to that case, so it goes back to Isa instead
+        # of being handled as an ordinary message. Fred still replies normally
+        # to everything else -- only the answer to the open question is routed.
+        _forward_customer_answer_to_isa(conversation_id, customer_phone, message_text)
 
         # A confirmation answers the question Fred actually asked. This runs
         # before any CHAT interpretation so a bare "sí"/"dale" can never be
