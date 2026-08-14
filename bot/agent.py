@@ -238,23 +238,55 @@ Calidad:
 
 Decisión estructurada:
 - Cuando uses select_sale_candidate o request_isa_handoff, registrá también
-  set_turn_decision antes de cerrar el turno. Para una respuesta normal o una
-  pregunta de aclaración también podés registrarla. El código acepta una venta
-  o escalación sólo si las herramientas dejaron evidencia verificable.
-- En toda búsqueda de producto registrá set_turn_decision con
-  response_mode=product_discovery, match_type, requested_product,
-  matched_product, requested_product_type, matched_product_type y
-  required_checks antes de redactar. Los tipos deben ser el sustantivo
-  comercial específico que se vende, sin marca/color/variante y sin reducirlos
-  a una familia paraguas: perfume no es bruma corporal; pestañas no es adhesivo
-  para pestañas. exact_match exige el mismo tipo comercial de producto;
-  parecido semántico no significa que sea equivalente. close_alternative cubre una alternativa relacionada pero de
-  otro formato/tipo; same_brand_other_category comparte marca pero resuelve
-  otra necesidad; no_match indica que no hay candidata suficientemente segura.
-- Si preguntan precio y hay un único SKU identificable, required_checks debe
-  incluir live_price y tenés que usar get_stock en este mismo turno. No vuelvas
-  a ofrecer confirmar un precio que ya fue pedido. Para stock, exigí
-  live_stock. Una alternativa nunca se presenta como coincidencia exacta.
+  set_turn_decision antes de cerrar el turno. El código acepta una venta o
+  escalación sólo si las herramientas dejaron evidencia verificable.
+- Antes de redactar cualquier respuesta sobre un producto, registrá
+  set_turn_decision eligiendo UNO de estos dos response_mode. La elección
+  correcta es la que menos rodeos necesita, no la más cauta:
+  - product_advice: cubre dos situaciones, y las dos son el caso normal, no
+    la excepción:
+    (a) el producto ya está identificado sin ambigüedad (nombre exacto en el
+        mensaje, o ya es el producto activo de la conversación) y la clienta
+        pide información, opinión, comparación o uso -- "tengo dudas sobre X",
+        "contame de X", "qué onda X", "cómo quedan/se aplican/duran", "es
+        reutilizable";
+    (b) la clienta describe una necesidad y pide una recomendación, sin
+        nombrar un producto puntual -- "qué me recomendás", "algo natural",
+        "para todos los días". Acá no hay un requested_product que clasificar:
+        usá search_available_products/get_stock para verificar 1 a 3 opciones
+        reales y elegí las que mejor encajan.
+    En ambos casos sólo necesitás action, reason, summary y response_mode
+    (requested_product/matched_product son opcionales, y ayudan si pediste
+    precio/stock de un SKU puntual). Después escribís vos mismo la respuesta
+    completa: para (a), 3 a 6 datos realmente útiles tomados de esta
+    Knowledge, del catálogo o de las herramientas live -- nunca inventados; no
+    repitas el nombre completo del producto más de una vez ni cierres con una
+    advertencia de incertidumbre si ya es inequívoco. Para (b), presentá cada
+    opción verificada con una razón breve de por qué encaja, no una lista
+    fría de nombres. Si la apertura es genérica ("tengo dudas", "contame de
+    X") sin precisar qué quiere saber, no le devuelvas la pregunta vacía: dale
+    primero esos 3 a 6 datos concretos y cerrá invitando a profundizar en algo
+    puntual si quiere. Pedí una aclaración en vez de eso sólo cuando de verdad
+    no alcanza con lo que ya sabés para decir algo útil.
+  - product_discovery: sólo cuando la clienta pregunta si un producto puntual
+    existe/está publicado ("¿tienen perfume de Rare Beauty?") y la respuesta
+    puede ser que no, o que hay algo relacionado pero distinto. Requiere
+    match_type, requested_product, matched_product, requested_product_type,
+    matched_product_type y required_checks. Los tipos deben ser el sustantivo
+    comercial específico que se vende, sin marca/color/variante y sin
+    reducirlos a una familia paraguas: perfume no es bruma corporal; pestañas
+    no es adhesivo para pestañas. exact_match exige el mismo tipo comercial de
+    producto; parecido semántico no significa que sea equivalente.
+    close_alternative cubre una alternativa relacionada pero de otro
+    formato/tipo; same_brand_other_category comparte marca pero resuelve otra
+    necesidad; no_match indica que no hay candidata suficientemente segura.
+- Si preguntan precio y hay un único SKU identificable (en cualquiera de los
+  dos response_mode), required_checks debe incluir live_price y tenés que
+  usar get_stock en este mismo turno. No vuelvas a ofrecer confirmar un
+  precio que ya fue pedido. Para stock, exigí live_stock.
+- No trates una pregunta abierta sobre un producto ya nombrado como si
+  tuvieras que "confirmar que existe": si ya sabés cuál es, no hace falta
+  clasificar match_type para poder ayudar -- usá product_advice y respondé.
 """
 
 # El prompt fijo contiene sólo reglas duraderas. Las políticas detalladas,
@@ -1189,17 +1221,26 @@ def answer(
             )
             has_product_decision = bool(
                 proposed_decision
-                and proposed_decision.get("response_mode") == "product_discovery"
-                and proposed_decision.get("match_type")
+                and (
+                    proposed_decision.get("response_mode") == "product_advice"
+                    or (
+                        proposed_decision.get("response_mode") == "product_discovery"
+                        and proposed_decision.get("match_type")
+                    )
+                )
             )
             if product_discovery_turn and not has_product_decision:
                 messages.append({
                     "role": "system",
                     "content": (
-                        "Antes de redactar esta búsqueda de producto, llamá "
-                        "set_turn_decision con response_mode=product_discovery, "
-                        "match_type, requested_product, matched_product, "
-                        "requested_product_type, matched_product_type y "
+                        "Antes de redactar, llamá set_turn_decision. Si el producto ya "
+                        "está identificado sin ambigüedad y la clienta pide info/opinión/"
+                        "comparación/recomendación, usá response_mode=product_advice (sólo "
+                        "action, reason, summary y response_mode son obligatorios) y después "
+                        "escribís vos la respuesta completa. Si en cambio hay que buscar, "
+                        "desambiguar o comparar qué producto es, usá "
+                        "response_mode=product_discovery con match_type, requested_product, "
+                        "matched_product, requested_product_type, matched_product_type y "
                         "required_checks. No respondas texto todavía."
                     ),
                 })

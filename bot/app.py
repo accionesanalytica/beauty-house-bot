@@ -405,21 +405,34 @@ def _catalog_row_from_tuple(row):
     }
 
 
-def _catalog_retrieval_query(message_text: str, prior_history: list) -> str:
-    """Keep a short product/category reference through natural follow-ups."""
+def _catalog_retrieval_query(
+    message_text: str, prior_history: list, active_product_name: str = "",
+) -> str:
+    """Keep a short product/category reference through natural follow-ups.
+
+    Fred Core's own active_product (when known) is the most reliable of these
+    signals -- prepending it never causes a WRONG product to be selected
+    (selection still requires the customer's own message to name the
+    candidate, see _live_product_candidate), it only keeps retrieval from
+    going blind on a bare follow-up like "¿cómo quedan?" that doesn't repeat
+    the product name.
+    """
+    parts = [active_product_name] if active_product_name else []
     normalized = _normalized_text(message_text)
     follow_up_markers = ("chocolate", "color", "esa", "ese", "otra", "otro", "tambien")
-    if not any(marker in normalized for marker in follow_up_markers):
-        return message_text
-    previous_customer = next(
-        (
-            str(item.get("content") or "").strip()
-            for item in reversed(prior_history or [])
-            if item.get("role") == "user" and str(item.get("content") or "").strip()
-        ),
-        "",
-    )
-    return "{} {}".format(previous_customer, message_text).strip() if previous_customer else message_text
+    if any(marker in normalized for marker in follow_up_markers):
+        previous_customer = next(
+            (
+                str(item.get("content") or "").strip()
+                for item in reversed(prior_history or [])
+                if item.get("role") == "user" and str(item.get("content") or "").strip()
+            ),
+            "",
+        )
+        if previous_customer:
+            parts.append(previous_customer)
+    parts.append(message_text)
+    return " ".join(part for part in parts if part).strip()
 
 
 def _live_candidate_context(catalog_context: str, query: str = "", limit: int = 3) -> str:
@@ -4136,7 +4149,9 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # When it is enabled, both retrievers share one embedding rather
             # than paying for two calls. Retrieval is optional: an embedding
             # outage must not stop a normal agent reply.
-            catalog_query = _catalog_retrieval_query(message_text, prior_history)
+            catalog_query = _catalog_retrieval_query(
+                message_text, prior_history, core_state.get("active_product_name") or "",
+            )
             if not KNOWLEDGE_RAG_ENABLED:
                 catalog_context = search_similar_products(catalog_query)
                 knowledge_context = ""
@@ -4197,8 +4212,18 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             live_candidate_context = _live_candidate_context(catalog_context, catalog_query)
             if live_candidate_context:
                 catalog_context = "{}\n\n{}".format(catalog_context, live_candidate_context)
+            active_product_fact = ""
+            if core_state.get("active_product_name"):
+                # A plain fact for the model's own reasoning, on top of the
+                # retrieval-query enrichment above: this is the product this
+                # conversation is already about, so a follow-up that doesn't
+                # repeat its name ("¿cómo quedan?") still has context instead
+                # of restarting discovery from scratch.
+                active_product_fact = "Producto activo de esta conversación: {}.".format(
+                    core_state["active_product_name"]
+                )
             rag_context = "\n\n".join(
-                context for context in (catalog_context, knowledge_context) if context
+                context for context in (active_product_fact, catalog_context, knowledge_context) if context
             )
             # A named product is the ONE active_product Fred Core knows about
             # going forward -- this write (not conversation_product_selections,

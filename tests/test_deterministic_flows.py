@@ -29,6 +29,30 @@ def _state(**overrides):
     return base
 
 
+class CatalogRetrievalQueryTests(unittest.TestCase):
+    """CHAT's retrieval must keep the active_product context for a bare
+    follow-up ("¿cómo quedan?") without it, the customer would have to repeat
+    the product name on every message for Fred to know what they mean."""
+
+    def test_active_product_is_prepended_when_known(self):
+        query = app._catalog_retrieval_query("¿Cómo quedan?", [], "SHOOW TOOLS - ISABEL I")
+        self.assertEqual(query, "SHOOW TOOLS - ISABEL I ¿Cómo quedan?")
+
+    def test_no_active_product_leaves_the_message_untouched(self):
+        query = app._catalog_retrieval_query("¿Cómo quedan?", [], "")
+        self.assertEqual(query, "¿Cómo quedan?")
+
+    def test_follow_up_marker_still_pulls_in_the_previous_customer_message(self):
+        history = [{"role": "user", "content": "Busco pestañas naturales"}]
+        query = app._catalog_retrieval_query("¿Y en chocolate?", history, "")
+        self.assertEqual(query, "Busco pestañas naturales ¿Y en chocolate?")
+
+    def test_active_product_and_follow_up_marker_combine(self):
+        history = [{"role": "user", "content": "Busco pestañas naturales"}]
+        query = app._catalog_retrieval_query("¿Y en chocolate?", history, "SHOOW TOOLS - ISABEL I")
+        self.assertEqual(query, "SHOOW TOOLS - ISABEL I Busco pestañas naturales ¿Y en chocolate?")
+
+
 class RenderFallbackMenuTests(unittest.TestCase):
     def test_generic_buy_label_without_an_active_product(self):
         text = app._render_fallback_menu()
