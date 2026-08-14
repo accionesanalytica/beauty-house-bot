@@ -487,10 +487,14 @@ def _live_candidate_context(catalog_context: str, query: str = "", limit: int = 
         )
         if requires_lashes and "pestana" not in product_text:
             continue
+        lash_type = _lash_type_from_catalog(
+            availability.get("product_name") or "", description, variants,
+        )
         verified.append(
-            "- {} | variantes disponibles: {}{}{}{}".format(
+            "- {} | variantes disponibles: {}{}{}{}{}".format(
                 availability.get("product_name") or "Producto",
                 variants,
+                " | TIPO CONFIRMADO: {}".format(lash_type) if lash_type else "",
                 " | SKU: {}".format(verified_sku) if verified_sku else "",
                 " | Link: {}".format(product_url) if product_url.startswith("https://") else "",
                 " | Descripción: {}".format(description[:420]) if description else "",
@@ -501,8 +505,37 @@ def _live_candidate_context(catalog_context: str, query: str = "", limit: int = 
     return (
         "Disponibilidad Tiendanube verificada para candidatas recuperadas: "
         "estas opciones tienen stock positivo ahora. No digas que no hay stock "
-        "ni las reemplaces por otra categoría.\n{}"
+        "ni las reemplaces por otra categoría. Donde diga TIPO CONFIRMADO, ese "
+        "es el tipo real del producto según su ficha: usalo tal cual para "
+        "aplicar la guía aprobada (reutilización, lifting, aplicación) y no "
+        "deduzcas el tipo por tu cuenta ni por el nombre.\n{}"
     ).format("\n".join(verified))
+
+
+def _lash_type_from_catalog(product_name: str, description: str, variants: str = "") -> str:
+    """Classify a lash product as cluster or banda completa from its own
+    catalog record, so the model never has to guess.
+
+    The approved Knowledge gives very different guidance per type
+    (reutilización, lifting, aplicación), so getting the type wrong turns a
+    correct fact into wrong advice -- exactly what happened in production when
+    the model called a cluster product "de banda" and told the customer it was
+    reusable. Only an unambiguous signal produces a label: when the record says
+    nothing decisive, this returns "" and the model keeps whatever caution it
+    would otherwise apply, instead of being handed a confident wrong answer.
+    """
+    text = _normalized_text(" ".join((product_name, description, variants)))
+    cluster_signals = ("cluster", "clusters", "grupos de fibras", "grupo de fibras")
+    banda_signals = ("banda completa", "banda fina", "banda intermedia", "pestanas de banda")
+    has_cluster = any(signal in text for signal in cluster_signals)
+    has_banda = any(signal in text for signal in banda_signals)
+    # "10 pares"/"20 pares" presentations are banda completa per approved
+    # Knowledge, but that only decides when nothing contradicts it.
+    if not has_cluster and not has_banda and re.search(r"\b\d{1,2}\s*(?:pares|pairs)\b", text):
+        has_banda = True
+    if has_cluster == has_banda:
+        return ""
+    return "cluster (grupos de fibras)" if has_cluster else "banda completa"
 
 
 def _grounded_lash_recommendation(live_context: str, query: str) -> str:
@@ -4455,7 +4488,10 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     ).format(missing_desc)
             rag_context = "\n\n".join(
                 context for context in (
-                    active_product_fact, checkout_pause_fact, catalog_context, knowledge_context,
+                    # Approved Knowledge before the catalog block: it is the
+                    # smaller of the two and the one that must never be the
+                    # part dropped if this ever gets truncated again.
+                    active_product_fact, checkout_pause_fact, knowledge_context, catalog_context,
                 ) if context
             )
             # A named product is the ONE active_product Fred Core knows about

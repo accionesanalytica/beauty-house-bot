@@ -11,7 +11,12 @@ from typing import Any, Dict, List, Optional
 CONTEXT_VERSION = "context-v1"
 MAX_HISTORY_MESSAGES = 12
 MAX_HISTORY_MESSAGE_CHARS = 900
-MAX_RAG_CONTEXT_CHARS = 2400
+# The live-verified catalog block alone can reach ~2.8k chars (several
+# products, each with its description), which at the previous 2400 budget
+# silently truncated the approved Knowledge off the tail -- the model then
+# answered product questions with no approved rule in front of it and
+# contradicted it in good faith. Both blocks have to fit.
+MAX_RAG_CONTEXT_CHARS = 6000
 MAX_USER_MESSAGE_CHARS = 2000
 
 

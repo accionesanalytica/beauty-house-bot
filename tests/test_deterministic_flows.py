@@ -374,6 +374,44 @@ class FredCoreHandleCheckoutTests(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class LashTypeFromCatalogTests(unittest.TestCase):
+    """The approved Knowledge gives opposite guidance for cluster vs banda
+    (reutilización, lifting), so the type is decided from the product's own
+    catalog record and handed to the model as a fact -- never inferred."""
+
+    def test_cluster_is_recognized_from_its_real_description(self):
+        # Wording taken from the live Isabel I record.
+        self.assertEqual(
+            app._lash_type_from_catalog(
+                "SHOOW TOOLS - ISABEL I",
+                "Su diseño está compuesto por delicados grupos de fibras (3 grupos)...",
+            ),
+            "cluster (grupos de fibras)",
+        )
+
+    def test_banda_is_recognized_from_its_real_description(self):
+        self.assertEqual(
+            app._lash_type_from_catalog(
+                "SHOOW TOOLS - SHOOW YOU (10PAIRS)",
+                "Pestañas de banda intermedia con pelos cortos al inicio.",
+            ),
+            "banda completa",
+        )
+
+    def test_pairs_presentation_defaults_to_banda(self):
+        self.assertEqual(
+            app._lash_type_from_catalog("BH - PESTAÑAS 10 PARES", "Producto importado."),
+            "banda completa",
+        )
+
+    def test_ambiguous_or_silent_records_assert_nothing(self):
+        self.assertEqual(app._lash_type_from_catalog("ALGO", "Sin detalles de formato."), "")
+        # Both signals present -> refuse to label rather than guess.
+        self.assertEqual(
+            app._lash_type_from_catalog("MIX", "Trae clusters y también banda completa."), "",
+        )
+
+
 class NaturalAffirmationTests(unittest.TestCase):
     """A person answering "sí"/"dale" to a question Fred just asked must be
     understood as answering THAT question. These are the cheap, obvious cases
