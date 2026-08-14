@@ -147,6 +147,62 @@ class FredCoreSearchProductsTests(unittest.TestCase):
         self.assertIn("Contame", reply)
 
 
+class StrongTrackingTriggerTests(unittest.TestCase):
+    """An explicit request to check an order must enter TRACKING; a mere
+    passing mention of "mi pedido" must not (e.g. "llegó, gracias")."""
+
+    def _matches(self, text):
+        return bool(app._STRONG_TRACKING_TRIGGER_RE.search(app._knowledge_normalise(text)))
+
+    def test_explicit_check_requests_match(self):
+        for text in (
+            "Quiero consultar mi pedido",
+            "Quiero saber el estado de mi pedido",
+            "¿Podés decirme el estado de mi compra?",
+            "Quiero saber sobre mi orden",
+            "¿Cómo rastreo mi pedido?",
+            "¿Tienen tracking de mi pedido?",
+        ):
+            self.assertTrue(self._matches(text), text)
+
+    def test_passing_mentions_do_not_match(self):
+        for text in ("Mi pedido llegó perfecto, gracias", "Me encantó mi pedido anterior"):
+            self.assertFalse(self._matches(text), text)
+
+
+class LiveProductCandidateTests(unittest.TestCase):
+    """A real product can have more than one live variant (e.g. two lash
+    lengths of the same model) -- that must not stop Fred Core from
+    identifying the PRODUCT, even though the exact SKU stays unresolved."""
+
+    MULTI_VARIANT_CONTEXT = (
+        "Disponibilidad Tiendanube verificada para candidatas recuperadas: "
+        "estas opciones tienen stock positivo ahora.\n"
+        "- SHOOW TOOLS - ISABEL I | variantes disponibles: Black MIXED (8/10/12/14mm), "
+        "Black 8mm/10mm | Link: https://example.com/isabel-i"
+    )
+    SINGLE_VARIANT_CONTEXT = (
+        "Disponibilidad Tiendanube verificada para candidatas recuperadas.\n"
+        "- SHOOW TOOLS - TAYLOR | variantes disponibles: 10mm | SKU: TAYLOR-1"
+    )
+
+    def test_multi_variant_product_is_identified_by_name_without_a_sku(self):
+        candidate = app._live_product_candidate(self.MULTI_VARIANT_CONTEXT, "Tengo dudas sobre Isabel I")
+        self.assertEqual(candidate, {
+            "sku": "", "product_name": "SHOOW TOOLS - ISABEL I", "variant": "", "unit_price": None,
+        })
+
+    @patch.object(app, "get_stock", return_value={"found": True, "status": "in_stock", "sku": "TAYLOR-1"})
+    def test_single_variant_product_still_resolves_a_real_sku(self, get_stock):
+        candidate = app._live_product_candidate(self.SINGLE_VARIANT_CONTEXT, "Quiero Taylor")
+        get_stock.assert_called_once_with("TAYLOR-1")
+        self.assertEqual(candidate["sku"], "TAYLOR-1")
+
+    def test_no_match_without_the_products_own_name_in_the_message(self):
+        candidate = app._live_product_candidate(self.MULTI_VARIANT_CONTEXT, "Si me gustaria comprar 4")
+        self.assertEqual(candidate, {})
+
+
 class FredCoreEnterCheckoutTests(unittest.TestCase):
     @patch.object(app, "_start_sales_intake", return_value="¿Qué modelo o variante querés llevar?")
     def test_no_active_product_asks_which_one(self, start_intake):
@@ -155,6 +211,22 @@ class FredCoreEnterCheckoutTests(unittest.TestCase):
         start_intake.assert_called_once_with(7, quantity=0)
         save_state.assert_called_once_with(7, mode="CHECKOUT", quantity=None)
         self.assertIn("modelo o variante", reply)
+
+    @patch.object(app, "_start_sales_intake", return_value="__FULFILLMENT_BUTTONS__")
+    def test_product_known_but_sku_ambiguous_keeps_name_and_quantity(self, start_intake):
+        # The real bug this guards: a product with more than one live variant
+        # (active_sku empty) must not be treated as "no product identified at
+        # all" -- the quantity the customer already gave must not be dropped,
+        # and Fred must not restart the checkout from a blank slate.
+        state = _state(active_product_name="SHOOW TOOLS - ISABEL I")
+        with patch.object(app, "save_fred_core_state") as save_state:
+            reply = app._fred_core_enter_checkout(7, "5491111111111", state, quantity=4)
+        save_state.assert_called_once_with(7, mode="CHECKOUT", quantity=4)
+        start_intake.assert_called_once_with(
+            7, {"product_name": "SHOOW TOOLS - ISABEL I", "sku": "", "variant": "", "unit_price": None},
+            quantity=4,
+        )
+        self.assertEqual(reply, "__FULFILLMENT_BUTTONS__")
 
     @patch.object(app, "get_stock", return_value={"found": True, "status": "out_of_stock"})
     def test_out_of_stock_on_revalidation_never_starts_the_intake(self, get_stock):

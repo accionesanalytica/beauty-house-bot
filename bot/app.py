@@ -559,8 +559,6 @@ def _live_product_candidate(live_context: str, message_text: str) -> dict:
         r"(?:\s*\| SKU:\s*([^|\s]+))?"
     )
     for product_name, variant, sku in re.findall(pattern, live_context or "", flags=re.MULTILINE):
-        if not sku:
-            continue
         short_name = re.sub(r"^SHOOW\s+TOOLS\s*-\s*", "", product_name, flags=re.IGNORECASE)
         distinctive_words = [
             word for word in re.findall(r"[a-z0-9]+", _normalized_text(short_name))
@@ -575,6 +573,13 @@ def _live_product_candidate(live_context: str, message_text: str) -> dict:
         return {}
 
     product_name, variant, sku = candidates[0]
+    if not sku:
+        # More than one live variant for this exact product (e.g. two lash
+        # lengths), so _live_candidate_context couldn't verify a single SKU.
+        # The PRODUCT is still unambiguous -- identify it so Fred Core can
+        # anchor to it and ask specifically for the variant later, instead of
+        # silently guessing one or failing to recognize the product at all.
+        return {"sku": "", "product_name": product_name, "variant": "", "unit_price": None}
     try:
         stock = get_stock(sku)
     except Exception as error:  # noqa: BLE001
@@ -1317,7 +1322,11 @@ def _looks_like_a_hedge(text: str) -> bool:
 # This stricter subset is safe to trigger TRACKING mode with zero LLM rounds.
 _STRONG_TRACKING_TRIGGER_RE = re.compile(
     r"donde\s+esta\s+mi\s+(?:compra|pedido|orden)|no\s+me\s+lleg[oa]\b|"
-    r"\btracking\b|\bseguimiento\b|numero\s+de\s+(?:orden|pedido)"
+    r"\btracking\b|\bseguimiento\b|numero\s+de\s+(?:orden|pedido)|"
+    r"consultar\s+mi\s+(?:compra|pedido|orden)|"
+    r"estado\s+de\s+mi\s+(?:compra|pedido|orden)|"
+    r"saber\s+(?:de|sobre)\s+mi\s+(?:compra|pedido|orden)|"
+    r"rastre\w*\s+mi\s+(?:compra|pedido|orden)"
 )
 
 
@@ -1529,9 +1538,28 @@ def _fred_core_enter_checkout(
     purchase: there is exactly one place that decides which product a
     checkout is about, and it is this field, not a fresh guess."""
     active_sku = core_state.get("active_sku")
+    active_name = core_state.get("active_product_name")
     if not active_sku:
         save_fred_core_state(conversation_id, mode="CHECKOUT", quantity=quantity)
-        return _start_sales_intake(conversation_id, quantity=quantity or 0)
+        if active_name:
+            # The product itself is known (e.g. it has more than one live
+            # variant, so _live_product_candidate couldn't pin one SKU down).
+            # Keep the name and quantity instead of restarting the checkout
+            # from a blank slate -- the exact variant/price gets "a
+            # confirmar" in the summary for Isa to resolve, same as any
+            # other field that isn't verified yet.
+            reply = _start_sales_intake(
+                conversation_id,
+                {"product_name": active_name, "sku": "", "variant": "", "unit_price": None},
+                quantity=quantity or 0,
+            )
+        else:
+            reply = _start_sales_intake(conversation_id, quantity=quantity or 0)
+        if message_text:
+            complete_summary = _apply_sale_details_from_same_message(conversation_id, message_text)
+            if complete_summary:
+                reply = complete_summary
+        return reply
     try:
         fresh = get_stock(active_sku)
     except Exception as error:  # noqa: BLE001
@@ -4190,8 +4218,9 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     print("ERROR guardando producto activo (tipo: {}).".format(type(error).__name__))
                 core_state.update(_fred_core_active_product_fields(selected_product_candidate))
 
+            has_active_product = bool(core_state.get("active_sku") or core_state.get("active_product_name"))
             wants_to_buy = _expresses_purchase(message_text) or (
-                _is_sale_confirmation(message_text) and bool(core_state.get("active_sku"))
+                _is_sale_confirmation(message_text) and has_active_product
             )
             if wants_to_buy:
                 # Purchase intent always outranks a recommendation card, and
@@ -4209,7 +4238,8 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                         conversation_id, **_fred_core_active_product_fields(direct_sale_candidate)
                     )
                     core_state.update(_fred_core_active_product_fields(direct_sale_candidate))
-                if direct_sale_candidate or core_state.get("active_sku"):
+                    has_active_product = True
+                if direct_sale_candidate or has_active_product:
                     quantity = _extract_quantity(message_text) or None
                     checkout_reply = _fred_core_enter_checkout(
                         conversation_id, customer_phone, core_state,
