@@ -24,7 +24,7 @@ class ContextEngineeringTests(unittest.TestCase):
         self.assertIn("Estilo comercial:", agent.SYSTEM_PROMPT)
         self.assertIn("Límites de información vigente:", agent.SYSTEM_PROMPT)
         self.assertIn("Respetá la categoría que pidió la clienta", agent.SYSTEM_PROMPT)
-        self.assertIn("Lifting: nunca asegures compatibilidad", agent.SYSTEM_PROMPT)
+        self.assertIn("Lifting: si el \"Conocimiento aprobado recuperado\"", agent.SYSTEM_PROMPT)
         self.assertNotIn(POLICY_CONTEXT.strip(), agent.SYSTEM_PROMPT)
 
     def test_turn_context_is_ordered_and_bounded(self):

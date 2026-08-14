@@ -355,6 +355,57 @@ class FredCoreHandleCheckoutTests(unittest.TestCase):
         reset_checkout.assert_called_once_with(7)
         self.assertEqual(result, "__HANDLED_NO_REPLY__")
 
+    @patch.object(app, "get_active_sales_intake", return_value={"status": "fulfillment"})
+    @patch.object(app, "_handle_sales_intake", return_value=None)
+    def test_an_interruption_question_is_released_to_chat_without_touching_anything(
+        self, handle_intake, get_intake,
+    ):
+        # The real reported bug: "¿Envío o retiro?" -> "Antes, ¿son
+        # reutilizables?" must not cancel the checkout or clear the active
+        # product -- it must resume exactly where it was on the next message.
+        with patch.object(app, "reset_fred_core_checkout") as reset_checkout, patch.object(
+            app, "save_fred_core_state",
+        ) as save_state:
+            result = app._fred_core_handle_checkout(
+                7, "5491111111111", "Antes, ¿son reutilizables?", [],
+            )
+        reset_checkout.assert_not_called()
+        save_state.assert_not_called()
+        self.assertIsNone(result)
+
+
+class LooksLikeAnInterruptionQuestionTests(unittest.TestCase):
+    def test_questions_are_interruptions(self):
+        for text in ("¿Son reutilizables?", "Antes, ¿esto sirve para lifting?", "Como se aplican?"):
+            self.assertTrue(app._looks_like_an_interruption_question(text), text)
+
+    def test_plain_answers_are_not_interruptions(self):
+        for text in ("Envío", "2", "Juan Pérez, juan@example.com", "confirmo"):
+            self.assertFalse(app._looks_like_an_interruption_question(text), text)
+
+
+class HandleSalesIntakeInterruptionTests(unittest.TestCase):
+    @patch.object(app, "send_whatsapp_text")
+    @patch.object(app, "record_bot_message")
+    def test_unrelated_question_leaves_the_intake_untouched(self, record_message, send_message):
+        intake = {
+            "status": "fulfillment", "product_request": "SHOOW TOOLS - ISABEL I",
+            "selected_sku": "ISABEL-1", "selected_variant": "", "unit_price": "30000",
+            "quantity": 4, "fulfillment": None, "customer_name": None, "customer_email": None,
+        }
+        with patch.object(app, "set_sales_intake_quantity") as set_quantity, patch.object(
+            app, "set_sales_intake_fulfillment",
+        ) as set_fulfillment, patch.object(app, "cancel_sales_intake") as cancel_intake:
+            result = app._handle_sales_intake(
+                7, "5491111111111", "Antes, ¿son reutilizables?", intake, [],
+            )
+        self.assertIsNone(result)
+        set_quantity.assert_not_called()
+        set_fulfillment.assert_not_called()
+        cancel_intake.assert_not_called()
+        send_message.assert_not_called()
+        record_message.assert_not_called()
+
 
 class FredCoreIsaHandoffTests(unittest.TestCase):
     @patch.object(app, "_queue_for_isa")
@@ -399,9 +450,18 @@ class FredCoreMenuDispatchTests(unittest.TestCase):
         self.assertEqual(queue_for_isa.call_args.args[2], "human_handoff")
         self.assertIn("Isa", reply)
 
-    def test_unrecognized_reply_re_shows_the_menu(self):
-        reply = app._fred_core_handle_menu(7, "5491111111111", "no sé", _state(active_product_name="Isabel I"), [])
-        self.assertEqual(reply, app._render_fallback_menu("Isabel I"))
+    def test_unrecognized_reply_releases_back_to_chat_instead_of_re_showing_the_menu(self):
+        # MENU only ever consumes an explicit 1-4 selection -- anything else
+        # is a real question, and holding it hostage in the menu was the
+        # exact reported bug (a lifting question got swallowed by a re-shown
+        # menu instead of ever reaching the model).
+        with patch.object(app, "save_fred_core_state") as save_state:
+            reply = app._fred_core_handle_menu(
+                7, "5491111111111", "Me hice un lifting ayer, ¿estas me sirven?",
+                _state(active_product_name="Isabel I"), [],
+            )
+        self.assertIsNone(reply)
+        save_state.assert_called_once_with(7, mode="CHAT")
 
 
 class FredCoreSwitchModeTests(unittest.TestCase):

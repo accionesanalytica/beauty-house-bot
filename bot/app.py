@@ -1611,9 +1611,11 @@ def _fred_core_handle_checkout(
     already-tested sales_intakes machinery (product/quantity/fulfillment/
     customer/confirmation/Isa approval) unchanged -- Fred Core only
     guarantees the intake was anchored to the right product at entry, and
-    mirrors the resulting step for reporting. Returns None when the intake
-    itself decided this message is about a different product entirely (its
-    own "discovery outranks an unfinished checkout" rule): the caller then
+    mirrors the resulting step for reporting. Returns None either when the
+    intake decided this message is about a different product entirely (its
+    own "discovery outranks an unfinished checkout" rule -- releases the
+    checkout) or when it's a genuine question unrelated to the pending field
+    (preserves the checkout exactly as-is): either way the caller
     re-processes this same message as a normal CHAT turn."""
     intake = get_active_sales_intake(conversation_id)
     if not intake:
@@ -1624,6 +1626,10 @@ def _fred_core_handle_checkout(
     handled = _handle_sales_intake(
         conversation_id, customer_phone, message_text, intake, prior_history,
     )
+    if handled is None:
+        # An interruption, not a different product: nothing about the
+        # checkout changes, so the next message still resumes it.
+        return None
     if not handled:
         reset_fred_core_checkout(conversation_id)
         save_fred_core_state(
@@ -1681,7 +1687,12 @@ def _fred_core_run_isa_handoff(
 
 def _fred_core_handle_menu(
     conversation_id: int, customer_phone: str, message_text: str, core_state: dict, prior_history: list,
-) -> str:
+) -> Optional[str]:
+    """MENU only ever consumes an explicit 1-4 selection. Anything else is a
+    real question, not a broken menu reply -- release back to CHAT instead of
+    re-showing the same menu and silently refusing to call the model. The
+    menu is a suggestion offered once, never a mode that holds the
+    conversation hostage."""
     selection = _extract_menu_selection(message_text)
     if selection == "1":
         reply, resolved = _fred_core_search_products(_most_recent_customer_message(prior_history))
@@ -1700,9 +1711,8 @@ def _fred_core_handle_menu(
             conversation_id, customer_phone, prior_history, core_state,
             "La clienta eligió hablar con Isa desde el menú.",
         )
-    # An unrecognized reply while a menu is open re-shows the same menu
-    # instead of guessing what was meant.
-    return _render_fallback_menu(core_state.get("active_product_name") or "")
+    save_fred_core_state(conversation_id, mode="CHAT")
+    return None
 
 
 def _fred_core_dispatch(
@@ -1712,7 +1722,8 @@ def _fred_core_dispatch(
     """switch(mode): the only place that decides which deterministic action
     runs. Returns the reply text, the "no reply, already delivered
     upstream" sentinel, or None to fall back to CHAT processing for this
-    same message (only the CHECKOUT "different product" case does this)."""
+    same message -- MENU does this for anything that isn't a 1-4 selection,
+    and CHECKOUT does it when the message is about a different product."""
     if mode == "MENU":
         return _fred_core_handle_menu(conversation_id, customer_phone, message_text, core_state, prior_history)
     if mode == "CHECKOUT":
@@ -1952,6 +1963,18 @@ def _message_refers_to_intake_product(text: str, intake: dict) -> bool:
         if len(token) >= 3 and token not in ignored
     }
     return bool(distinctive and any(token in normalized for token in distinctive))
+
+
+def _looks_like_an_interruption_question(text: str) -> bool:
+    """A genuine question unrelated to the checkout step Fred is waiting on
+    -- e.g. "¿estas se pueden reutilizar?" while Fred is waiting for envío o
+    retiro. Narrow on purpose: only a real interrogative, never a bare
+    confirmation, number, or short answer to what was actually asked."""
+    stripped = text.strip()
+    if "?" in stripped or "¿" in stripped:
+        return True
+    normalized = _normalized_text(stripped)
+    return bool(re.match(r"^(que|como|cuando|cuanto|cual|porque|para que|antes)\b", normalized))
 
 
 def _simple_customer_reply(text: str) -> str:
@@ -2284,12 +2307,18 @@ def _handle_sales_intake(
     message_text: str,
     intake: dict,
     prior_history: list,
-) -> bool:
+) -> Optional[bool]:
     """Run the one purchase flow used by every normal checkout.
 
     A sale is a record of known facts, not a chain of fragile screens.  Each
     customer message may add or correct any field; Fred then asks only for the
     next missing fact, or sends the completed record to Isa after confirmation.
+
+    Returns True when handled normally, False when the checkout was released
+    because the message is about a different product, or None when the
+    message is a genuine question unrelated to the pending field -- in that
+    case the intake is left completely untouched so CHAT can answer and the
+    checkout resumes exactly where it was on the next message.
     """
     normalized = _normalized_text(message_text)
     # Numeric aliases (1=confirmar, 2=modificar, 3=cancelar, 4=hablar con Isa)
@@ -2328,6 +2357,16 @@ def _handle_sales_intake(
         updated_intake = _apply_sale_turn_updates(conversation_id, message_text, intake)
         changed = updated_intake != intake
 
+        if (
+            not changed
+            and not _sale_is_complete(updated_intake)
+            and _looks_like_an_interruption_question(message_text)
+        ):
+            # A real question, not an attempt to answer the missing field --
+            # e.g. "¿son reutilizables?" while Fred is waiting for envío o
+            # retiro. Nothing about the checkout changes; CHAT answers this
+            # one message and the flow resumes on the next.
+            return None
         if not _sale_is_complete(updated_intake):
             reply = _sales_missing_step(updated_intake)
         elif _is_sale_confirmation(message_text):
@@ -4222,8 +4261,32 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 active_product_fact = "Producto activo de esta conversación: {}.".format(
                     core_state["active_product_name"]
                 )
+            checkout_pause_fact = ""
+            if core_state.get("mode") == "CHECKOUT":
+                # This message interrupted an in-progress checkout with a
+                # real question (Fred Core left the checkout untouched so it
+                # resumes on the next message) -- answer the question, then
+                # naturally invite continuing instead of leaving it hanging.
+                paused_intake = get_active_sales_intake(conversation_id)
+                if paused_intake:
+                    if not paused_intake.get("quantity"):
+                        missing_desc = "decirte cuántas unidades quiere"
+                    elif not paused_intake.get("fulfillment"):
+                        missing_desc = "confirmar envío o retiro"
+                    elif not paused_intake.get("customer_name") or not paused_intake.get("customer_email"):
+                        missing_desc = "pasarte nombre y email"
+                    else:
+                        missing_desc = "confirmar el resumen de la compra"
+                    checkout_pause_fact = (
+                        "Hay una compra en curso pausada, esperando que la clienta {}. "
+                        "Respondé primero su pregunta y después invitala con naturalidad "
+                        "a seguir con la compra cuando quiera; no le pidas de nuevo un "
+                        "dato que ya te dio."
+                    ).format(missing_desc)
             rag_context = "\n\n".join(
-                context for context in (active_product_fact, catalog_context, knowledge_context) if context
+                context for context in (
+                    active_product_fact, checkout_pause_fact, catalog_context, knowledge_context,
+                ) if context
             )
             # A named product is the ONE active_product Fred Core knows about
             # going forward -- this write (not conversation_product_selections,

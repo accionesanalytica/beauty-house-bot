@@ -180,6 +180,23 @@ Datos y catálogo:
 - Si el contexto dice “Disponibilidad Tiendanube verificada”, esos son hechos
   actuales y prevalecen sobre una búsqueda genérica: presentá esas opciones;
   nunca respondas “no hay stock” mientras ese contexto incluya alternativas.
+- Si el contexto incluye “Conocimiento aprobado recuperado”, ese contenido es
+  la fuente de verdad para esa consulta -- no un dato más entre varios.
+  Prevalece sobre tu conocimiento general de pestañas/materiales/técnicas y
+  sobre cualquier cosa que hayas dicho antes en esta misma conversación. Si lo
+  recuperado contradice algo que dijiste antes, corregite con naturalidad
+  (“te corrijo algo de lo anterior...”) en vez de sostener el dato viejo. Para
+  reutilización, aplicación, cuidados, adhesivos o compatibilidad con lifting:
+  si hay un hecho recuperado específico, usalo tal cual aunque sea distinto de
+  lo que asumirías por defecto; no lo diluyas ni lo generalices.
+- El conocimiento aprobado de pestañas suele distinguir banda completa
+  (una sola pieza, se coloca y retira entera) de cluster (grupos pequeños de
+  fibras, varios por ojo) -- la guía de reutilización, cuidado y aplicación es
+  DISTINTA para cada tipo y no son intercambiables. Antes de aplicar esa guía
+  a un producto puntual, fijate en su descripción del catálogo o de
+  Tiendanube qué tipo es en realidad (por ejemplo "grupos de fibras" o
+  "3 grupos" indica cluster; "banda"/"una pieza" indica banda completa). No
+  asumas el tipo por default ni por el nombre del producto.
 - Respetá la categoría que pidió la clienta. Si consulta por pestañas, no
   recomiendes pegamentos, adhesivos ni accesorios como sustituto. Si no hay
   pestañas verificadas, decilo claro y pedí una precisión u ofrecé consultar
@@ -195,11 +212,13 @@ Datos y catálogo:
   se confirma en el checkout o con Isa; nunca inventes un monto de envío. Esa
   pregunta es sobre el producto, no sobre un pedido ya hecho: no la trates
   como seguimiento ni pidas número de orden por eso.
-- Lifting: nunca asegures compatibilidad. Si todavía no identificaste el
-  producto, pedí el nombre exacto o el link del producto (no pidas foto: hoy
-  no podés analizar imágenes). Si el producto ya está identificado pero no hay
-  una fuente vigente que confirme compatibilidad, usá request_isa_handoff con
-  unable_to_verify.
+- Lifting: si el "Conocimiento aprobado recuperado" trae una recomendación
+  vigente (por ejemplo qué modelo se recomienda y cuál no), respondé con eso
+  directamente -- no es una excepción, es el caso normal. Sólo si no
+  identificaste el producto todavía, pedí el nombre exacto o el link (no
+  pidas foto: hoy no podés analizar imágenes). Usá request_isa_handoff con
+  unable_to_verify únicamente cuando de verdad no haya ninguna fuente vigente
+  que confirme nada sobre ese caso puntual.
 
 Venta normal:
 - Diferenciá elegir de comprar. “Quiero esa” elige; “quiero comprar / te pido
@@ -250,11 +269,17 @@ Decisión estructurada:
         pide información, opinión, comparación o uso -- "tengo dudas sobre X",
         "contame de X", "qué onda X", "cómo quedan/se aplican/duran", "es
         reutilizable";
-    (b) la clienta describe una necesidad y pide una recomendación, sin
-        nombrar un producto puntual -- "qué me recomendás", "algo natural",
-        "para todos los días". Acá no hay un requested_product que clasificar:
-        usá search_available_products/get_stock para verificar 1 a 3 opciones
-        reales y elegí las que mejor encajan.
+    (b) la clienta describe una necesidad, ocasión, nivel de experiencia o
+        preferencia y busca que le recomienden algo, sin nombrar un producto
+        puntual -- "qué me recomendás", "algo natural", "para todos los
+        días", "soy nueva usando esto", "necesito algo fácil de poner", "algo
+        discreto", con o sin decir la palabra "recomendar". Acá no hay un
+        requested_product que clasificar: hacé como máximo una o dos
+        búsquedas con search_available_products (por ejemplo "pestañas" o el
+        tipo que describió) para tener candidatas verificadas, y respondé con
+        esas. No seguís probando variantes de texto buscando la coincidencia
+        perfecta -- con candidatas reales ya alcanza para recomendar y
+        explicar por qué encajan.
     En ambos casos sólo necesitás action, reason, summary y response_mode
     (requested_product/matched_product son opcionales, y ayudan si pediste
     precio/stock de un SKU puntual). Después escribís vos mismo la respuesta
@@ -460,7 +485,19 @@ def _is_product_discovery_turn(
     }
     if any(call.get("name") in product_tools for call in tool_calls):
         return True
-    if "Candidatas del catálogo" in (rag_context or ""):
+    context = rag_context or ""
+    # A confident Knowledge match (a real governing topic, not just an empty
+    # retrieval attempt) already answers the question -- forcing the
+    # product-discovery decision protocol on top of it only adds rounds to a
+    # turn that was never about finding or verifying a product's existence.
+    # Knowledge V1 never carries live stock/price by design (see its own
+    # "Límites de esta fuente" chunk), so a price/availability word here
+    # ("¿tienen precios mayoristas?") doesn't mean this needs match_type
+    # classification -- required_checks auto-fetch below still runs
+    # independently of this flag if a live check is genuinely needed.
+    if "Topic gobernante:" in context:
+        return False
+    if "Candidatas del catálogo" in context:
         return True
     return bool(re.search(
         r"\b(busco|tienen|ten[eé]s|tendr[aá]n|hay|producto|modelo|"
