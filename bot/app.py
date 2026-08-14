@@ -1239,7 +1239,10 @@ def _pending_action_text(action: dict) -> str:
             sale_draft.get("customer_email", "a confirmar"),
             sale_draft["payment_status"],
         )
-    return text[:900]
+    # WhatsApp allows only three buttons, so the help lives in the body: Isa
+    # can ask in words instead of losing an action button to it.
+    hint = "\n\nSi tenés dudas, escribime AYUDA y te explico qué hace cada opción."
+    return text[:900 - len(hint)] + hint
 
 
 def send_isa_pending_buttons(action: dict) -> bool:
@@ -3009,17 +3012,27 @@ ISA_OPTIONS_LEGEND = (
     "En cualquier momento podés escribirme “ver” para ver el próximo pendiente."
 )
 
+# Deliberately precise. This runs before every handler that could act on a
+# case, so a false positive would swallow a real rejection reason or a real
+# answer to the customer -- "no hay opciones disponibles" must NOT read as a
+# request for help. Bare help words only count at the start of the message.
 _ISA_HELP_RE = re.compile(
-    r"\b(que hace cada|que significa cada|para que sirve cada|no entiendo las opciones|"
-    r"que hace cada opcion|explicame las opciones|ayuda|dudas con las opciones|"
-    r"que hago con cada|opciones)\b"
+    r"^(?:ayuda|help|dudas)\b"
+    r"|\bque\s+(?:hace|significa|significan)\s+cada\b"
+    r"|\bpara\s+que\s+sirve\s+cada\b"
+    r"|\bque\s+hago\s+con\s+cada\b"
+    r"|\b(?:explicame|explicarme|no\s+entiendo)\s+(?:bien\s+)?(?:las\s+)?opciones\b"
+    r"|\bque\s+pasa\s+si\s+(?:le\s+doy\s+a\s+|toco\s+|elijo\s+|aprieto\s+)?"
+    r"(?:apruebo|aprueba|aprobar|rechazo|rechaza|rechazar|pido|pedir|"
+    r"cierro|cerrar|respondo|responder|elijo|elegir|toco|sigo|seguir)\b"
 )
 
 
 def _isa_asks_for_legend(message_text: str) -> bool:
     """Isa asking what the options do -- answered with the legend instead of
-    being treated as an answer to whatever case is open."""
-    return bool(_ISA_HELP_RE.search(_normalized_text(message_text)))
+    being treated as an answer to whatever case is open. Explaining never
+    modifies the case: the caller returns right after sending the legend."""
+    return bool(_ISA_HELP_RE.search(_normalized_text(message_text).strip()))
 
 
 def _forward_customer_answer_to_isa(
@@ -3226,6 +3239,13 @@ def handle_isa_message(
             )
         return
 
+    # Explaining the options must never touch a case, so this runs before
+    # every handler that could act on one -- including the paths that deliver
+    # Isa's text straight to a customer.
+    if not button_reply_id and _isa_asks_for_legend(message_text):
+        send_whatsapp_text(ISA_WHATSAPP_NUMBER, ISA_OPTIONS_LEGEND)
+        return
+
     if _handle_isa_reminder_request(message_text):
         return
 
@@ -3301,9 +3321,8 @@ def handle_isa_message(
         None,
     )
     if awaiting_kind_action and not button_reply_id:
-        if _isa_asks_for_legend(message_text):
-            send_whatsapp_text(ISA_WHATSAPP_NUMBER, ISA_OPTIONS_LEGEND)
-            return
+        # A help request was already answered and returned far above, so
+        # anything reaching here is a real answer to the open case.
         kind = awaiting_kind_action["payload"]["awaiting_isa_kind"]
         if kind == "reject_purchase":
             _reject_purchase_with_reason(awaiting_kind_action, message_text)
@@ -3314,10 +3333,6 @@ def handle_isa_message(
         if kind == "reply_keep_open":
             _deliver_isa_response(awaiting_kind_action, message_text, keep_open=True)
             return
-
-    if _isa_asks_for_legend(message_text) and not button_reply_id:
-        send_whatsapp_text(ISA_WHATSAPP_NUMBER, ISA_OPTIONS_LEGEND)
-        return
 
     # Isa's text is intentionally handled before her own internal-sale draft:
     # once she chose “Responder a Fred”, her next message belongs to the

@@ -167,20 +167,63 @@ class CustomerAnswerRoutingTests(unittest.TestCase):
 class IsaLegendTests(unittest.TestCase):
     def test_isa_can_ask_what_each_option_does(self):
         for text in (
-            "¿qué hace cada opción?", "no entiendo las opciones", "ayuda",
-            "explicame las opciones",
+            "AYUDA", "ayuda", "Ayuda!", "¿qué hace cada opción?",
+            "no entiendo las opciones", "explicame las opciones",
+            "¿qué pasa si apruebo?", "que pasa si rechazo",
+            "¿qué pasa si le doy a pedir algo?", "para qué sirve cada botón",
+            "dudas", "¿qué hago con cada opción?",
         ):
             self.assertTrue(app._isa_asks_for_legend(text), text)
 
-    def test_a_normal_answer_is_not_a_legend_request(self):
-        for text in ("No hay stock suficiente", "¿Podés retirar mañana?", "aprobar"):
+    def test_a_real_answer_is_never_mistaken_for_a_help_request(self):
+        # These are things Isa actually types to resolve a case. Reading any
+        # of them as "help" would swallow a rejection reason or send the word
+        # "ayuda" to a customer instead of her real answer.
+        for text in (
+            "No hay stock suficiente",
+            "¿Podés retirar mañana?",
+            "aprobar",
+            "No tenemos opciones disponibles en ese color",
+            "Necesito que me ayuda con el envío",
+            "Preguntale si puede pasar el jueves",
+        ):
             self.assertFalse(app._isa_asks_for_legend(text), text)
 
     def test_legend_explains_both_case_types(self):
-        self.assertIn("Aprobar compra", app.ISA_OPTIONS_LEGEND)
-        self.assertIn("Rechazar", app.ISA_OPTIONS_LEGEND)
-        self.assertIn("Pedir algo", app.ISA_OPTIONS_LEGEND)
-        self.assertIn("Seguir conversando", app.ISA_OPTIONS_LEGEND)
+        for expected in (
+            "Aprobar compra", "Rechazar", "Pedir algo",
+            "Responder a Fred", "Seguir conversando", "Cerrar consulta",
+        ):
+            self.assertIn(expected, app.ISA_OPTIONS_LEGEND)
+
+    def test_the_card_tells_isa_how_to_ask_for_help(self):
+        text = app._pending_action_text(_action())
+        self.assertIn("AYUDA", text)
+        self.assertLessEqual(len(text), 900)
+
+    @patch.object(app, "list_pending_actions")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    def test_asking_for_help_explains_without_touching_the_open_case(
+        self, send_message, list_actions,
+    ):
+        # A rejection is mid-flight: Isa pressed "Rechazar" and Fred is
+        # waiting for the motive. Asking for help must explain and leave the
+        # case exactly as it was.
+        list_actions.return_value = [_action(
+            payload={"customer_phone": "5491111111111", "awaiting_isa_kind": "reject_purchase"},
+        )]
+        with patch.object(app, "_reject_purchase_with_reason") as reject, patch.object(
+            app, "_ask_customer_for_purchase",
+        ) as ask, patch.object(app, "_deliver_isa_response") as deliver, patch.object(
+            app, "resolve_pending_action",
+        ) as resolve, patch.object(app, "clear_isa_awaiting") as clear_awaiting:
+            app.handle_isa_message("¿qué pasa si apruebo?")
+        reject.assert_not_called()
+        ask.assert_not_called()
+        deliver.assert_not_called()
+        resolve.assert_not_called()
+        clear_awaiting.assert_not_called()
+        self.assertEqual(send_message.call_args.args[1], app.ISA_OPTIONS_LEGEND)
 
 
 class ConsultationKeepOpenTests(unittest.TestCase):
