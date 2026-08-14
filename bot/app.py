@@ -615,6 +615,51 @@ def _live_purchase_candidate(live_context: str, message_text: str) -> dict:
     return _live_product_candidate(live_context, message_text)
 
 
+def _other_products_named_in_message(
+    live_context: str, message_text: str, active_product_name: str,
+) -> list:
+    """Live-verified products the customer's own words point at, excluding the
+    one already active.
+
+    This is the guard against the worst possible failure: someone says "quiero
+    4 Taylor" while Isabel I is the active product, Taylor can't be pinned to
+    exactly one SKU (there are several Taylor products), and the checkout
+    silently opens on Isabel I instead. Naming a different product must never
+    resolve to the old one -- if it can't be resolved to exactly one, Fred
+    asks which one.
+    """
+    normalized_message = _normalized_text(message_text)
+    normalized_active = _normalized_text(active_product_name or "")
+    stopwords = {
+        "quiero", "comprar", "llevar", "entonces", "tambien", "mejor", "unidades",
+        "unidad", "pares", "pack", "packs", "porfa", "favor", "gracias", "pestanas",
+        "pestana", "shoow", "tools", "version", "quisiera", "necesito", "please",
+    }
+    # The customer's own distinctive words, minus anything already part of the
+    # active product's name. The RAG catalog is semantic and regularly misses a
+    # plainly-named model, so this asks Tiendanube directly -- the same live
+    # search the products flow already uses.
+    probes = [
+        word for word in re.findall(r"[a-z0-9]{4,}", normalized_message)
+        if word not in stopwords and word not in normalized_active
+    ]
+    named = []
+    for probe in probes[:2]:
+        try:
+            results = search_available_products(probe, limit=5)
+        except Exception as error:  # noqa: BLE001
+            print("ERROR buscando producto nombrado (tipo: {}).".format(type(error).__name__))
+            continue
+        for product in results:
+            product_name = str(product.get("name") or "").strip()
+            normalized_name = _normalized_text(product_name)
+            if not product_name or normalized_name == normalized_active:
+                continue
+            if probe in normalized_name and product_name not in named:
+                named.append(product_name)
+    return named
+
+
 def _revalidate_product_candidate(candidate: dict) -> dict:
     """Never use a remembered product without checking current Tiendanube stock."""
     if not candidate or not candidate.get("sku"):
@@ -1307,6 +1352,51 @@ def _queue_for_isa(
 # deterministically from the persisted fields alone.
 # ============================================================
 
+# --- pending_intent: qué acción quedó esperando una respuesta -------------
+#
+# Cuando Fred hace una pregunta cuya respuesta ejecuta o modifica algo, la
+# intención se persiste ANTES de enviar el mensaje. Sin esto un "sí" no tiene
+# a qué referirse y termina reinterpretado como un mensaje nuevo (el bug real:
+# "¿avanzamos?" -> "sí" -> Fred volvía a buscar productos).
+PENDING_CONFIRM_PURCHASE_DRAFT = "CONFIRM_PURCHASE_DRAFT"
+
+# Afirmación/negación en el sentido humano, no una lista cerrada de frases:
+# esto sólo resuelve los casos baratos y obvios. Cuando el mensaje es más
+# complejo que esto, no se fuerza ninguna interpretación acá -- sigue su curso
+# normal y el modelo lo interpreta en contexto.
+_AFFIRMATION_RE = re.compile(
+    r"^(?:s[ií]+|sip|sii+|dale|ok(?:ey|ay)?|oka|listo|perfecto|genial|barbaro|"
+    r"buenisimo|dale\s+si|si\s+dale|confirmo|confimo|confirmar|dale\s+confirmo|"
+    r"avancemos|avanza|avanzemos|hagamoslo|hagamosla|de\s+una|obvio|claro|"
+    r"si\s+por\s+favor|si\s+porfa|correcto|exacto|asi\s+es|va|vale)"
+    r"(?:\s*[,.!]*\s*(?:dale|gracias|porfa|por\s+favor|listo|ok))?[.!]*$"
+)
+_NEGATION_RE = re.compile(
+    r"^(?:no+|nop|mejor\s+no|no\s+gracias|cancela(?:lo|r)?|cancelo|dejalo|"
+    r"dejemoslo|no\s+sigo|no\s+quiero|olvidalo|despues|mas\s+tarde)[.!]*$"
+)
+
+
+def _reads_as_affirmation(text: str) -> bool:
+    """A plain human "yes" to whatever was just asked."""
+    return bool(_AFFIRMATION_RE.match(_normalized_text(text).strip()))
+
+
+def _reads_as_negation(text: str) -> bool:
+    """A plain human "no"/"cancel" to whatever was just asked."""
+    return bool(_NEGATION_RE.match(_normalized_text(text).strip()))
+
+
+def _remember_pending_intent(conversation_id: int, intent: Optional[str]) -> None:
+    """Persist (or clear) what Fred just asked. Never blocks the reply: if the
+    write fails the customer still gets answered, they just lose the shortcut
+    of a bare "sí" resolving it."""
+    try:
+        save_fred_core_state(conversation_id, pending_intent=intent)
+    except Exception as error:  # noqa: BLE001
+        print("ERROR guardando intención pendiente (tipo: {}).".format(type(error).__name__))
+
+
 FALLBACK_MENU_MARKER = "¿Cómo querés seguir?"
 ORDER_NUMBER_PROMPT_TEXT = "¿Cuál es tu número de orden?"
 _MENU_SELECTION_RE = re.compile(r"^(?:opcion\s*)?([1-4])\.?$")
@@ -1825,6 +1915,10 @@ def _extract_quantity(text: str) -> int:
     normalized = _normalized_text(text).strip()
     patterns = (
         r"^\s*(\d{1,2})\s*$",
+        # A natural correction ("mejor 3", "que sean 3", "cambialo a 2") is
+        # just as explicit as the original number and must win over it.
+        r"\b(?:mejor|mejor\s+que\s+sean|que\s+sean|sean|dejalo\s+en|cambia(?:lo)?\s+a|"
+        r"pone(?:me|le)?|anota(?:me)?)\s+(\d{1,2})\b",
         r"\b(?:quiero|llevo|llevar|pido|pedir|ordenar|comprar|compro|necesito|serian|son|cantidad)\s+(\d{1,2})\b",
         r"\b(\d{1,2})\s*(?:x|unidades?|unidad|u|packs?|pares?)\b",
     )
@@ -2288,17 +2382,34 @@ def _apply_sale_turn_updates(conversation_id: int, message_text: str, intake: di
 
 
 def _sales_missing_step(intake: dict) -> str:
+    """Ask for everything that's actually missing in ONE natural message.
+
+    A checkout is a draft of known facts, not a wizard: making someone answer
+    four separate questions when they could have written one line is friction
+    we impose, not information we need. The customer can still answer them one
+    at a time -- each message fills in whatever it carries.
+    """
+    missing = []
     if not intake.get("quantity"):
-        return "¿Cuántas unidades querés llevar?"
+        missing.append("cuántas unidades querés")
     if not intake.get("fulfillment"):
-        return "__FULFILLMENT_BUTTONS__"
-    if not intake.get("customer_name") and not intake.get("customer_email"):
-        return "Para dejarlo listo, pasame tu nombre y apellido junto con tu email 😊"
+        missing.append("si preferís envío o retiro")
     if not intake.get("customer_name"):
-        return "Perfecto. Me falta tu nombre y apellido para dejarlo listo 😊"
-    return "Perfecto, {}. Me falta tu email para dejarlo listo 😊".format(
-        intake.get("customer_name", "")
-    )
+        missing.append("tu nombre y apellido")
+    if not intake.get("customer_email"):
+        missing.append("tu email")
+
+    if not missing:
+        return ""
+    # Fulfillment alone is better served by the two real WhatsApp buttons.
+    if missing == ["si preferís envío o retiro"]:
+        return "__FULFILLMENT_BUTTONS__"
+    if len(missing) == 1:
+        return "Me falta únicamente {} y lo dejamos listo 😊".format(missing[0])
+    joined = "{} y {}".format(", ".join(missing[:-1]), missing[-1])
+    return (
+        "Para dejar la compra lista me falta {}. Podés mandarme todo junto si querés 😊"
+    ).format(joined)
 
 
 def _handle_sales_intake(
@@ -2369,7 +2480,11 @@ def _handle_sales_intake(
             return None
         if not _sale_is_complete(updated_intake):
             reply = _sales_missing_step(updated_intake)
-        elif _is_sale_confirmation(message_text):
+        elif _reads_as_negation(message_text):
+            # "no", "mejor no", "cancelalo" frente al resumen ya mostrado.
+            cancel_sales_intake(conversation_id)
+            reply = "Dale, lo dejamos acá. Si querés retomarlo más adelante, avisame 😊"
+        elif _is_sale_confirmation(message_text) or _reads_as_affirmation(message_text):
             mark_sales_intake_ready(conversation_id)
             sale_draft = {
                 "status": "ready_for_isa_review",
@@ -2411,6 +2526,11 @@ def _handle_sales_intake(
             reply = _sales_summary(updated_intake)
         else:
             reply = "¿Confirmás el resumen? Respondé “confirmo” o decime si querés corregirlo."
+        if reply is not None and "¿Confirmás" in reply:
+            # Fred está por preguntar algo cuya respuesta ejecuta una acción:
+            # persistir la intención ANTES de enviarla, para que un "sí" o un
+            # "dale" del próximo turno tenga a qué referirse.
+            _remember_pending_intent(conversation_id, PENDING_CONFIRM_PURCHASE_DRAFT)
 
     if reply == "__FULFILLMENT_BUTTONS__":
         if send_customer_fulfillment_buttons(customer_phone):
@@ -4126,6 +4246,28 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # reprocess this same message there.
             core_state = get_fred_core_state(conversation_id)
 
+        # A confirmation answers the question Fred actually asked. This runs
+        # before any CHAT interpretation so a bare "sí"/"dale" can never be
+        # re-read as a brand new message and sent back to product discovery
+        # (the real production bug: "¿avanzamos?" -> "sí" -> "Encontré
+        # SHOOW TOOLS - TAYLOR (CHOCOLATE)...").
+        pending_intent = core_state.get("pending_intent")
+        if pending_intent == PENDING_CONFIRM_PURCHASE_DRAFT and (
+            _reads_as_affirmation(message_text) or _reads_as_negation(message_text)
+        ):
+            pending_draft = get_active_sales_intake(conversation_id)
+            if pending_draft:
+                _remember_pending_intent(conversation_id, None)
+                if _handle_sales_intake(
+                    conversation_id, customer_phone, message_text, pending_draft, prior_history,
+                ):
+                    print("[FredCore] confirmación resuelta contra la intención pendiente.")
+                    return JSONResponse(content={"ok": True})
+            else:
+                # The draft is gone (already confirmed/cancelled elsewhere);
+                # the stale intent must not keep intercepting messages.
+                _remember_pending_intent(conversation_id, None)
+
         if _needs_purchase_clarification(message_text, prior_history):
             customer_reply = (
                 "Para no confundirme: el set sorpresa lo dejamos descartado. "
@@ -4248,7 +4390,35 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     # live Tiendanube verification for commercial answers.
                     catalog_context = search_similar_products(catalog_query)
 
-            live_candidate_context = _live_candidate_context(catalog_context, catalog_query)
+            # Enriching the query with the active product keeps bare
+            # follow-ups ("¿cómo quedan?") on topic, but it must never hide a
+            # DIFFERENT product the customer just named: searching
+            # "ISABEL I ... quiero 4 Taylor" returns Isabel I and Taylor never
+            # becomes a candidate, so the checkout would open on the wrong
+            # product. Search the customer's own words too and merge, then let
+            # _live_product_candidate pick whichever one the message actually
+            # names (it requires the name to be in the message).
+            merged_own_words = False
+            if catalog_query != message_text:
+                try:
+                    own_words_context = search_similar_products(message_text)
+                except Exception as error:  # noqa: BLE001
+                    own_words_context = ""
+                    print("ERROR buscando catálogo por el mensaje propio (tipo: {}).".format(
+                        type(error).__name__
+                    ))
+                if own_words_context:
+                    catalog_context = "\n".join(
+                        part for part in (catalog_context, own_words_context) if part
+                    )
+                    merged_own_words = True
+
+            # With two merged searches the newly-named product can sit past
+            # the usual cutoff, so allow a few more live verifications on that
+            # turn rather than silently dropping it.
+            live_candidate_context = _live_candidate_context(
+                catalog_context, catalog_query, limit=6 if merged_own_words else 3,
+            )
             if live_candidate_context:
                 catalog_context = "{}\n\n{}".format(catalog_context, live_candidate_context)
             active_product_fact = ""
@@ -4327,6 +4497,24 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     )
                     core_state.update(_fred_core_active_product_fields(direct_sale_candidate))
                     has_active_product = True
+                if not direct_sale_candidate and has_active_product:
+                    # The customer named a product that isn't the active one
+                    # and it couldn't be pinned to a single SKU. Opening the
+                    # checkout on the OLD product here is the worst possible
+                    # outcome (buying the wrong thing), so ask one concrete
+                    # question instead of guessing or falling back to a menu.
+                    other_named = _other_products_named_in_message(
+                        live_candidate_context, message_text,
+                        core_state.get("active_product_name") or "",
+                    )
+                    if other_named:
+                        options = "\n".join("• {}".format(name) for name in other_named[:3])
+                        clarification = (
+                            "Para no equivocarme con el pedido, ¿cuál de estas querés?\n{}"
+                        ).format(options)
+                        _deliver_flow_reply(customer_phone, conversation_id, clarification)
+                        print("[FredCore] compra pausada: la clienta nombró otro producto sin resolver.")
+                        return JSONResponse(content={"ok": True})
                 if direct_sale_candidate or has_active_product:
                     quantity = _extract_quantity(message_text) or None
                     checkout_reply = _fred_core_enter_checkout(

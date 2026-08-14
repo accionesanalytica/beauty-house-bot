@@ -374,6 +374,53 @@ class FredCoreHandleCheckoutTests(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class NaturalAffirmationTests(unittest.TestCase):
+    """A person answering "sí"/"dale" to a question Fred just asked must be
+    understood as answering THAT question. These are the cheap, obvious cases
+    resolved without a model round; anything richer falls through to CHAT."""
+
+    def test_common_affirmations(self):
+        for text in (
+            "si", "sí", "Sí", "sii", "dale", "ok", "okey", "listo", "perfecto",
+            "confirmo", "avancemos", "hagamoslo", "de una", "dale si",
+            "sí, dale", "genial", "obvio", "correcto", "va",
+        ):
+            self.assertTrue(app._reads_as_affirmation(text), text)
+
+    def test_common_negations(self):
+        for text in ("no", "no gracias", "mejor no", "cancelalo", "dejalo", "olvidalo"):
+            self.assertTrue(app._reads_as_negation(text), text)
+
+    def test_real_messages_are_neither(self):
+        for text in (
+            "Quiero comprar 4", "¿son reutilizables?", "Luis Vera, luis@example.com",
+            "envío", "1340", "mejor 3",
+        ):
+            self.assertFalse(app._reads_as_affirmation(text), text)
+            self.assertFalse(app._reads_as_negation(text), text)
+
+
+class SalesMissingStepTests(unittest.TestCase):
+    def test_everything_missing_is_asked_in_one_message(self):
+        reply = app._sales_missing_step({})
+        for expected in ("cuántas unidades", "envío o retiro", "nombre y apellido", "tu email"):
+            self.assertIn(expected, reply)
+        self.assertIn("todo junto", reply)
+
+    def test_only_fulfillment_missing_uses_the_real_buttons(self):
+        reply = app._sales_missing_step({
+            "quantity": 4, "customer_name": "Ana", "customer_email": "a@b.com",
+        })
+        self.assertEqual(reply, "__FULFILLMENT_BUTTONS__")
+
+    def test_a_single_remaining_field_is_asked_alone(self):
+        reply = app._sales_missing_step({
+            "quantity": 4, "fulfillment": "shipping", "customer_name": "Ana",
+        })
+        self.assertIn("únicamente", reply)
+        self.assertIn("tu email", reply)
+
+
 class LooksLikeAnInterruptionQuestionTests(unittest.TestCase):
     def test_questions_are_interruptions(self):
         for text in ("¿Son reutilizables?", "Antes, ¿esto sirve para lifting?", "Como se aplican?"):

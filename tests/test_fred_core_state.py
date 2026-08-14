@@ -104,7 +104,7 @@ class ResetFredCoreCheckoutTests(unittest.TestCase):
         save_state.assert_called_once_with(
             7, mode="CHAT", quantity=None, delivery_method=None,
             customer_name=None, customer_email=None, postal_code=None,
-            checkout_step=None,
+            checkout_step=None, pending_intent=None,
         )
         called_fields = save_state.call_args.kwargs
         self.assertNotIn("active_product_id", called_fields)

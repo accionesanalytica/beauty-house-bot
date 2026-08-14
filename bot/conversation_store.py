@@ -712,7 +712,7 @@ _FRED_CORE_FIELDS = (
     "mode", "active_product_id", "active_product_name", "active_sku",
     "active_variant", "unit_price", "quantity", "delivery_method",
     "customer_name", "customer_email", "postal_code", "checkout_step",
-    "order_number",
+    "order_number", "pending_intent",
 )
 
 
@@ -729,7 +729,7 @@ def get_fred_core_state(conversation_id: int) -> Dict[str, Any]:
                 SELECT mode, active_product_id, active_product_name, active_sku,
                        active_variant, unit_price, quantity, delivery_method,
                        customer_name, customer_email, postal_code, checkout_step,
-                       order_number
+                       order_number, pending_intent
                 FROM fred_core_state
                 WHERE conversation_id = %s
                 """,
@@ -792,7 +792,7 @@ def reset_fred_core_checkout(conversation_id: int) -> None:
         conversation_id,
         mode="CHAT", quantity=None, delivery_method=None,
         customer_name=None, customer_email=None, postal_code=None,
-        checkout_step=None,
+        checkout_step=None, pending_intent=None,
     )
 
 

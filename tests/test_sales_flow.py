@@ -316,6 +316,68 @@ class SalesFlowTests(unittest.TestCase):
         queue_for_isa.assert_called_once()
         self.assertIn("ya se lo pasé a Isa", send_message.call_args.args[1])
 
+    @patch.object(app, "send_whatsapp_text")
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "clear_product_selection")
+    @patch.object(app, "cancel_sales_intake")
+    def test_different_product_releases_unfinished_checkout_before_retrieval(
+        self, cancel_intake, clear_selection, record_message, send_message
+    ):
+        intake = _intake(status="quantity")
+        intake.update({
+            "quantity": None,
+            "fulfillment": None,
+            "customer_name": None,
+            "customer_email": None,
+        })
+
+        handled = app._handle_sales_intake(
+            11,
+            "5491111111111",
+            "Me gustaría comprar un perfume de Rare Beauty, ¿tendrán? ¿A qué precio?",
+            intake,
+            [],
+        )
+
+        self.assertFalse(handled)
+        cancel_intake.assert_called_once_with(11)
+        clear_selection.assert_called_once_with(11)
+        send_message.assert_not_called()
+        record_message.assert_not_called()
+
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "clear_product_selection")
+    @patch.object(app, "cancel_sales_intake")
+    def test_same_product_request_keeps_unfinished_checkout(
+        self, cancel_intake, clear_selection, record_message, send_message
+    ):
+        intake = _intake(status="quantity")
+        intake.update({
+            "quantity": None,
+            "fulfillment": None,
+            "customer_name": None,
+            "customer_email": None,
+        })
+
+        handled = app._handle_sales_intake(
+            11,
+            "5491111111111",
+            "Quiero comprar las Isabel I chocolate",
+            intake,
+            [],
+        )
+
+        self.assertTrue(handled)
+        cancel_intake.assert_not_called()
+        clear_selection.assert_not_called()
+        # Every missing field is asked for in one natural message now, instead
+        # of walking the customer through a four-question wizard.
+        asked = send_message.call_args.args[1]
+        for expected in ("cuántas unidades", "envío o retiro", "nombre y apellido", "email"):
+            self.assertIn(expected, asked)
+        record_message.assert_called_once()
+
     @patch.object(app, "send_whatsapp_text", return_value=True)
     @patch.object(app, "record_bot_message")
     @patch.object(app, "get_active_sales_intake", return_value=_intake())
