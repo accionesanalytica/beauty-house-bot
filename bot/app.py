@@ -1588,11 +1588,18 @@ def send_isa_pending_buttons(action: dict) -> bool:
             {"type": "reply", "reply": {"id": "view:{}".format(action_id), "title": "Ver contexto"}},
         ]
     elif action["action_type"] == "human_handoff":
-        buttons = [
-            {"type": "reply", "reply": {"id": "reply_to_fred:{}".format(action_id), "title": "Responder y cerrar"}},
-            {"type": "reply", "reply": {"id": "reply_keep_open:{}".format(action_id), "title": "Seguir conversando"}},
-            {"type": "reply", "reply": {"id": "close_consultation:{}".format(action_id), "title": "Cerrar consulta"}},
-        ]
+        if action.get("payload", {}).get("awaiting_isa_kind") == ISA_OWNS_KIND:
+            # She already has the thread: what she needs now is a way out.
+            buttons = [
+                {"type": "reply", "reply": {"id": "return_to_fred:{}".format(action_id), "title": "Devolver a Fred"}},
+                {"type": "reply", "reply": {"id": "close_consultation:{}".format(action_id), "title": "Cerrar consulta"}},
+            ]
+        else:
+            buttons = [
+                {"type": "reply", "reply": {"id": "reply_to_fred:{}".format(action_id), "title": "Responder y cerrar"}},
+                {"type": "reply", "reply": {"id": "reply_keep_open:{}".format(action_id), "title": "Seguir conversación"}},
+                {"type": "reply", "reply": {"id": "close_consultation:{}".format(action_id), "title": "Cerrar consulta"}},
+            ]
     else:
         buttons = [
             {"type": "reply", "reply": {"id": "approve:{}".format(action_id), "title": "Tomar caso"}},
@@ -3340,10 +3347,14 @@ ISA_OPTIONS_LEGEND = (
     "• Pedir algo: me escribís qué necesitás preguntarle y yo se lo pregunto. La compra "
     "queda abierta esperando su respuesta, y te aviso apenas conteste.\n\n"
     "EN UNA CONSULTA:\n"
-    "• Responder a Fred: me escribís la respuesta y yo se la paso. La consulta queda cerrada.\n"
-    "• Seguir conversando: igual que la anterior, pero la consulta queda abierta para "
-    "ida y vuelta: lo que ella responda te lo reenvío.\n"
-    "• Cerrar consulta: la doy por resuelta y sigo atendiendo normalmente.\n\n"
+    "• Responder y cerrar: me escribís la respuesta, se la paso, y después yo sigo "
+    "atendiendo normalmente.\n"
+    "• Seguir conversación: TOMÁS VOS EL CHAT. Desde ese momento todo lo que escriba "
+    "la clienta te llega a vos y yo no respondo nada, aunque sepa la respuesta. Lo que "
+    "me escribas se lo mando tal cual, con tus palabras.\n"
+    "• Devolver a Fred: termina tu asesoramiento y vuelvo a atender yo. También podés "
+    "escribirme “devolver a Fred”.\n"
+    "• Cerrar consulta: doy el caso por terminado.\n\n"
     "En cualquier momento podés escribirme “ver” para ver el próximo pendiente."
 )
 
@@ -3368,6 +3379,57 @@ def _isa_asks_for_legend(message_text: str) -> bool:
     being treated as an answer to whatever case is open. Explaining never
     modifies the case: the caller returns right after sending the legend."""
     return bool(_ISA_HELP_RE.search(_normalized_text(message_text).strip()))
+
+
+ISA_OWNS_KIND = "isa_owns"
+
+
+def _isa_owned_case() -> Optional[dict]:
+    """The one open case where Isa took the thread, if any."""
+    try:
+        return next(
+            (
+                item for item in list_pending_actions(limit=20)
+                if item.get("payload", {}).get("awaiting_isa_kind") == ISA_OWNS_KIND
+            ),
+            None,
+        )
+    except Exception as error:  # noqa: BLE001
+        print("ERROR buscando conversación tomada por Isa (tipo: {}).".format(type(error).__name__))
+        return None
+
+
+def _relay_customer_message_to_isa(
+    conversation_id: int, customer_phone: str, message_text: str,
+) -> None:
+    """While Isa owns the thread, the customer talks to her through Fred."""
+    if not send_whatsapp_text(
+        ISA_WHATSAPP_NUMBER,
+        "💬 {}:\n\n{}".format(customer_phone, message_text.strip()[:900]),
+    ):
+        print("[Isa] No pude reenviar el mensaje de la clienta.")
+        return
+    print("[Isa] Mensaje de la clienta reenviado (conversación tomada por Isa).")
+
+
+def _hand_thread_back_to_fred(action: dict, notify_customer: bool = True) -> None:
+    """End Isa's human session and let Fred answer normally again."""
+    conversation_id = action.get("conversation_id")
+    try:
+        clear_isa_awaiting(action["id"])
+        resolve_pending_action(action["id"], "approved")
+    except Exception as error:  # noqa: BLE001
+        print("ERROR cerrando la sesión de Isa (tipo: {}).".format(type(error).__name__))
+    if conversation_id:
+        set_conversation_state(conversation_id, "BOT")
+    if notify_customer and action.get("customer_phone"):
+        closing = "Seguimos por acá 😊 Cualquier otra cosa, contame."
+        if send_whatsapp_text(action["customer_phone"], closing) and conversation_id:
+            record_bot_message(conversation_id, closing)
+    send_whatsapp_text(
+        ISA_WHATSAPP_NUMBER,
+        "Listo, le devolví el chat a Fred. Vuelve a atender normalmente 😊",
+    )
 
 
 def _forward_customer_answer_to_isa(
@@ -3486,10 +3548,16 @@ def _deliver_isa_response(action: dict, message_text: str, keep_open: bool = Fal
     if customer_text == "__SEND_SPECIAL_CONDITIONS__":
         _send_special_sale_conditions(action)
         return True
-    # The customer must be able to tell this came from Isa, not from Fred
-    # answering on his own. Isa's instruction wrapper is stripped first so she
-    # can write "decile que..." and the customer still reads a normal message.
-    customer_text = "Isa me respondió:\n\n{}".format(_reason_for_customer(customer_text))
+    if keep_open:
+        # She is taking the chat: one clear transition, then her words exactly
+        # as written. No "Isa me respondió:" on every message once the customer
+        # already knows who they are talking to.
+        customer_text = "Te dejo con Isa por acá 😊\n\n{}".format(customer_text)
+    else:
+        # A one-off answer must be attributable, or it reads as Fred's own.
+        # Her instruction wrapper is stripped so she can write "decile que..."
+        # and the customer still reads a normal message.
+        customer_text = "Isa me respondió:\n\n{}".format(_reason_for_customer(customer_text))
 
     if not send_whatsapp_text(action["customer_phone"], customer_text):
         send_whatsapp_text(
@@ -3499,15 +3567,17 @@ def _deliver_isa_response(action: dict, message_text: str, keep_open: bool = Fal
         return False
 
     if keep_open:
-        # Isa wants the back-and-forth: the case stays open so the customer's
-        # next relevant message comes back to her inside this same thread.
-        clear_isa_awaiting(action["id"])
+        # Isa takes the thread. From here Fred stops answering entirely and
+        # only carries messages in both directions, until she hands it back.
+        set_isa_awaiting(action["id"], ISA_OWNS_KIND)
         record_bot_message(action["conversation_id"], customer_text)
-        set_conversation_state(action["conversation_id"], "BOT")
+        set_conversation_state(action["conversation_id"], "ISA")
         send_whatsapp_text(
             ISA_WHATSAPP_NUMBER,
-            "Listo, se lo mandé. Dejo la consulta abierta: si te responde algo, te lo "
-            "reenvío acá. Cuando quieras cerrarla, escribime “cerrar consulta”.",
+            "Listo, se lo mandé y quedás a cargo de este chat: todo lo que escriba "
+            "te lo reenvío acá y Fred no interviene. Escribime lo que quieras "
+            "decirle y se lo paso tal cual. Cuando termines, mandá "
+            "“devolver a Fred”.",
         )
         return True
 
@@ -3659,6 +3729,28 @@ def handle_isa_message(
         ),
         None,
     )
+    # While Isa owns a thread her plain text IS the customer's message: it is
+    # relayed exactly as written, never rewritten and never passed through the
+    # model. Only an explicit hand-back ends the session.
+    owned = _isa_owned_case()
+    if owned and not button_reply_id:
+        if re.search(
+            r"\b(devolver\s+a\s+fred|devolvele?\s+a\s+fred|que\s+siga\s+fred|"
+            r"termin(?:ar|o|é)\s+(?:la\s+)?asesor|listo\s+fred|fred\s+segu[ií])\b",
+            _normalized_text(message_text),
+        ):
+            _hand_thread_back_to_fred(owned)
+            return
+        if send_whatsapp_text(owned["customer_phone"], message_text):
+            record_bot_message(owned["conversation_id"], message_text)
+            print("[Isa] Mensaje entregado tal cual a la clienta.")
+        else:
+            send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "No pude entregarle ese mensaje. Probá de nuevo, no lo pierdo.",
+            )
+        return
+
     if awaiting_kind_action and not button_reply_id:
         # A help request was already answered and returned far above, so
         # anything reaching here is a real answer to the open case.
@@ -3749,7 +3841,7 @@ def handle_isa_message(
     match = re.match(
         r"^(approve|approve_demo|approve_checkout|send_special_conditions|reject|view|"
         r"take_handoff|pause_bot|resume_bot|reject_purchase|ask_customer|reply_keep_open|"
-        r"close_consultation):(\d+)$",
+        r"close_consultation|return_to_fred):(\d+)$",
         button_reply_id or "",
     )
     if not match:
@@ -3786,6 +3878,14 @@ def handle_isa_message(
             send_whatsapp_text(ISA_WHATSAPP_NUMBER, prompts[action][0])
         else:
             send_whatsapp_text(ISA_WHATSAPP_NUMBER, "No pude preparar ese pendiente ahora.")
+        return
+
+    if action == "return_to_fred":
+        pending_action = _pending_action_by_id(action_id)
+        if not pending_action:
+            send_whatsapp_text(ISA_WHATSAPP_NUMBER, "Ese pendiente ya no está disponible.")
+            return
+        _hand_thread_back_to_fred(pending_action)
         return
 
     if action == "close_consultation":
@@ -4867,6 +4967,11 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             return JSONResponse(content={"ok": True})
 
         if state != "BOT":
+            # Isa owns this thread. The cutoff is here, BEFORE any retrieval or
+            # model call: Fred does not answer, does not think, and does not
+            # compete with her -- he is only transport in this state.
+            if state == "ISA":
+                _relay_customer_message_to_isa(conversation_id, customer_phone, message_text)
             print(f"[Conversacion] El bot no responde en estado {state}.")
             return JSONResponse(content={"ok": True})
 

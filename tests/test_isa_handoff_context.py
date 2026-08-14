@@ -180,14 +180,21 @@ class PendingConsultationNotFullTakeoverTests(unittest.TestCase):
     @patch.object(app, "record_inbound_message", return_value=(7, "ISA", False))
     @patch.object(app, "load_history", return_value=[])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    def test_isa_state_silently_ignores_a_new_customer_message(self, history, inbound, send_message):
-        with patch.object(app, "answer") as ask_model, patch.object(app, "search_similar_products") as retrieve:
+    def test_isa_state_relays_to_isa_without_fred_answering(self, history, inbound, send_message):
+        # While Isa owns the thread the cutoff happens before any retrieval or
+        # model call: Fred never answers, he only carries the message to her.
+        with patch.object(app, "answer") as ask_model, patch.object(
+            app, "search_similar_products",
+        ) as retrieve:
             response = self._post("¿Cuánto sale?", "wamid-isa-state")
 
         self.assertEqual(response.status_code, 200)
         ask_model.assert_not_called()
         retrieve.assert_not_called()
-        send_message.assert_not_called()
+        recipients = [call.args[0] for call in send_message.call_args_list]
+        self.assertNotIn(self.PHONE, recipients)
+        self.assertIn(app.ISA_WHATSAPP_NUMBER, recipients)
+        self.assertIn("¿Cuánto sale?", send_message.call_args.args[1])
 
 
 if __name__ == "__main__":

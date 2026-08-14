@@ -261,6 +261,82 @@ class CheckoutFailureClassificationTests(unittest.TestCase):
         self.assertIn("no es falta de", message.lower())
 
 
+class IsaOwnsConversationTests(unittest.TestCase):
+    """Seguir conversación hands the thread to Isa: Fred goes silent and only
+    carries messages until she hands it back."""
+
+    @patch.object(app, "set_conversation_state")
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "set_isa_awaiting")
+    @patch.object(app, "resolve_pending_action")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    def test_keep_open_takes_ownership_and_announces_the_handover(
+        self, send_message, resolve, set_awaiting, record, set_state,
+    ):
+        with patch.object(app, "_isa_customer_instruction", return_value=""):
+            app._deliver_isa_response(
+                _action(action_type="human_handoff"),
+                "Contame qué buscás y te ayudo.",
+                keep_open=True,
+            )
+        # The case stays open, marked as owned, and the conversation is muted.
+        resolve.assert_not_called()
+        set_awaiting.assert_called_once_with(42, app.ISA_OWNS_KIND)
+        set_state.assert_called_once_with(7, "ISA")
+        to_customer = send_message.call_args_list[0].args[1]
+        self.assertIn("Te dejo con Isa", to_customer)
+        self.assertIn("Contame qué buscás", to_customer)
+
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "list_pending_actions")
+    def test_isa_text_reaches_the_customer_verbatim(
+        self, list_actions, send_message, record,
+    ):
+        list_actions.return_value = [_action(
+            action_type="human_handoff",
+            payload={"customer_phone": "5491111111111", "awaiting_isa_kind": app.ISA_OWNS_KIND},
+        )]
+        written = "Para lo que buscás yo te recomendaría las Foxy."
+        app.handle_isa_message(written)
+        sent = send_message.call_args.args
+        self.assertEqual(sent[0], "5491111111111")
+        # Exactly what she wrote: no prefix, no rewriting.
+        self.assertEqual(sent[1], written)
+
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "set_conversation_state")
+    @patch.object(app, "resolve_pending_action", return_value={"conversation_id": 7})
+    @patch.object(app, "clear_isa_awaiting")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "list_pending_actions")
+    def test_devolver_a_fred_gives_the_thread_back(
+        self, list_actions, send_message, clear_awaiting, resolve, set_state, record,
+    ):
+        list_actions.return_value = [_action(
+            action_type="human_handoff",
+            payload={"customer_phone": "5491111111111", "awaiting_isa_kind": app.ISA_OWNS_KIND},
+        )]
+        app.handle_isa_message("devolver a Fred")
+        set_state.assert_called_once_with(7, "BOT")
+        clear_awaiting.assert_called_once_with(42)
+        resolve.assert_called_once_with(42, "approved")
+
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "list_pending_actions")
+    def test_asking_for_help_while_owning_does_not_reach_the_customer(
+        self, list_actions, send_message,
+    ):
+        list_actions.return_value = [_action(
+            action_type="human_handoff",
+            payload={"customer_phone": "5491111111111", "awaiting_isa_kind": app.ISA_OWNS_KIND},
+        )]
+        app.handle_isa_message("AYUDA")
+        recipients = [call.args[0] for call in send_message.call_args_list]
+        self.assertNotIn("5491111111111", recipients)
+        self.assertEqual(send_message.call_args.args[1], app.ISA_OPTIONS_LEGEND)
+
+
 class IsaLegendTests(unittest.TestCase):
     def test_isa_can_ask_what_each_option_does(self):
         for text in (
@@ -289,9 +365,12 @@ class IsaLegendTests(unittest.TestCase):
     def test_legend_explains_both_case_types(self):
         for expected in (
             "Aprobar compra", "Rechazar", "Pedir algo",
-            "Responder a Fred", "Seguir conversando", "Cerrar consulta",
+            "Responder y cerrar", "Seguir conversación", "Devolver a Fred",
+            "Cerrar consulta",
         ):
             self.assertIn(expected, app.ISA_OPTIONS_LEGEND)
+        # The legend must be explicit that taking the chat silences Fred.
+        self.assertIn("yo no respondo nada", app.ISA_OPTIONS_LEGEND)
 
     def test_the_card_tells_isa_how_to_ask_for_help(self):
         text = app._pending_action_text(_action())
