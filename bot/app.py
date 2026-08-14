@@ -784,11 +784,15 @@ def send_customer_action_buttons(phone_number: str, text: str, buttons: list) ->
 
 def _offer_customer_actions(
     conversation_id: int, customer_phone: str, reply_text: str, core_state: dict,
+    offer_isa: bool = False,
 ) -> bool:
-    """Attach the action buttons to a normal CHAT answer.
+    """Attach action buttons to a CHAT answer, only when they earn their place.
 
-    Offering is not executing: the buttons only appear, and nothing changes
-    until the customer actually taps one.
+    Offering is not executing: nothing changes until the customer taps. The
+    Isa button is deliberately NOT on every reply -- a bot that ends each
+    answer with "¿querés hablar con una persona?" reads as a bot that cannot
+    help. It appears only when Fred could not ground an answer, or when the
+    turn is personalised advice Isa prefers to take.
     """
     buttons = []
     sku = (core_state or {}).get("active_sku")
@@ -798,11 +802,28 @@ def _offer_customer_actions(
             "id": "{}{}".format(BUY_BUTTON_PREFIX, sku),
             "title": "Comprar",
         })
-    buttons.append({"id": ISA_BUTTON_ID, "title": "Hablar con Isa"})
+    if offer_isa:
+        buttons.append({"id": ISA_BUTTON_ID, "title": "Hablar con Isa"})
+    if not buttons:
+        return False
     if not send_customer_action_buttons(customer_phone, reply_text, buttons):
         return False
     record_bot_message(conversation_id, reply_text)
     return True
+
+
+# Personalised advice: the customer is asking what suits THEM, which Isa
+# prefers to take herself. Fred still gives grounded orientation first; the
+# button is only offered alongside it.
+_ADVICE_REQUEST_RE = re.compile(
+    r"\b(me\s+recomend\w+|que\s+me\s+recomend\w+|cual\s+me\s+conviene|"
+    r"cual\s+me\s+queda|que\s+me\s+queda|me\s+recomendaron|asesor\w+|"
+    r"cual\s+eleg\w+|no\s+se\s+cual\s+eleg\w+|que\s+me\s+sugeris)\b"
+)
+
+
+def _is_personalised_advice(message_text: str) -> bool:
+    return bool(_ADVICE_REQUEST_RE.search(_normalized_text(message_text)))
 
 
 def _start_purchase_from_button(
@@ -4976,7 +4997,9 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 "Claro. Si querés, le paso a Isa esta consulta junto con el contexto "
                 "de lo que venimos hablando 😊"
             )
-            if _offer_customer_actions(conversation_id, customer_phone, offer, core_state):
+            if _offer_customer_actions(
+                conversation_id, customer_phone, offer, core_state, offer_isa=True,
+            ):
                 print("[FredCore] botón de Isa ofrecido (sin crear consulta).")
             else:
                 _deliver_flow_reply(customer_phone, conversation_id, offer)
@@ -5041,9 +5064,21 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                             ),
                         )
 
-                    knowledge_bundle, _, _ = retrieve_with_recent_context(
+                    knowledge_bundle, knowledge_query, _ = retrieve_with_recent_context(
                         message_text, prior_history, retrieve_knowledge
                     )
+                    # Grounding observability: enough to tell from the logs
+                    # whether retrieval found the approved answer, without
+                    # dumping chunk contents.
+                    knowledge_sections = [
+                        line.split(" / ", 1)[1].split("]", 1)[0]
+                        for line in (knowledge_bundle.context or "").splitlines()
+                        if line.startswith("- [") and " / " in line
+                    ]
+                    print("[Knowledge] query={!r} topic={} hits={} sources={}".format(
+                        knowledge_query[:60], knowledge_bundle.governing_topic,
+                        len(knowledge_sections), knowledge_sections[:4],
+                    ))
                     dynamic_check_outcomes = execute_dynamic_requirements(
                         knowledge_bundle.dynamic_requirements,
                         {
@@ -5235,11 +5270,18 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 ):
                     print("[Conversacion] Respuesta obsoleta omitida por mensaje posterior.")
                     return JSONResponse(content={"ok": True})
-                save_fred_core_state(conversation_id, mode="MENU")
-                menu_reply = _render_fallback_menu(core_state.get("active_product_name") or "")
-                if send_whatsapp_text(customer_phone, menu_reply):
-                    record_bot_message(conversation_id, menu_reply)
-                print("[Flow] Fallback universal ofrecido tras respuesta insegura del modelo.")
+                # No menu. When Fred genuinely cannot ground an answer he says
+                # so briefly and offers the one action that helps: Isa.
+                honest = (
+                    "No quiero darte un dato que no tenga confirmado. Si querés, "
+                    "le paso tu consulta a Isa con todo el contexto 😊"
+                )
+                print("[Fred] grounded_by=none -> respuesta honesta + botón de Isa.")
+                if not _offer_customer_actions(
+                    conversation_id, customer_phone, honest, core_state, offer_isa=True,
+                ):
+                    if send_whatsapp_text(customer_phone, honest):
+                        record_bot_message(conversation_id, honest)
                 return JSONResponse(content={"ok": True})
 
             sale_candidate = result.get("sale_candidate")
@@ -5370,9 +5412,11 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # already turn into a handoff or a grounded discovery answer:
             # offer the same universal menu instead of a bare hedge, so
             # "Fred no sabe" always ends in the same four concrete options.
-            if not handoff and not sale_candidate and _looks_like_a_hedge(reply):
-                save_fred_core_state(conversation_id, mode="MENU")
-                reply = _render_fallback_menu(core_state.get("active_product_name") or "")
+            # A hedge is not a menu trigger any more: the reply stands, and
+            # the Isa button is offered alongside it further below.
+            reply_is_ungrounded = bool(
+                not handoff and not sale_candidate and _looks_like_a_hedge(reply)
+            )
 
             # A slower model/tool turn must never answer an earlier version of
             # the customer's thought. The newer inbound webhook will own the
@@ -5387,6 +5431,15 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     print("[Conversacion] Respuesta obsoleta omitida por mensaje posterior.")
                     return JSONResponse(content={"ok": True})
 
+            grounded_by = "none" if reply_is_ungrounded else "|".join(
+                source for source, present in (
+                    ("knowledge", bool(knowledge_context)),
+                    ("catalog", bool(catalog_context)),
+                    ("live", bool(dynamic_check_outcomes)),
+                ) if present
+            ) or "model"
+            print("[Fred] grounded_by={}".format(grounded_by))
+
             delivered = False
             if reply == "__FULFILLMENT_BUTTONS__":
                 delivered = send_customer_fulfillment_buttons(customer_phone)
@@ -5397,6 +5450,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     print("[Conversacion] Respuesta del agente guardada.")
             elif core_state.get("mode") == "CHAT" and _offer_customer_actions(
                 conversation_id, customer_phone, reply, core_state,
+                offer_isa=reply_is_ungrounded or _is_personalised_advice(message_text),
             ):
                 # A normal CHAT answer carries the two explicit doors out of
                 # the conversation. Offering them changes nothing by itself.

@@ -155,7 +155,7 @@ class WebhookHarnessTests(unittest.TestCase):
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
     @patch.object(app, "load_history", return_value=[])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    def test_escalate_tier_shows_the_universal_menu_instead_of_the_raw_hedge(
+    def test_ungrounded_answer_offers_isa_and_never_a_menu(
         self, history, inbound, get_selection, send_message, record_message, record_turn
     ):
         agent_result = {
@@ -165,13 +165,15 @@ class WebhookHarnessTests(unittest.TestCase):
         }
         with patch.object(app, "search_similar_products", return_value=""), patch.object(
             app, "answer", return_value=agent_result
-        ):
+        ), patch.object(app, "send_customer_action_buttons", return_value=True) as action_buttons:
             response = self._post("no sé qué elegir", "wamid-escalate")
 
         self.assertEqual(response.status_code, 200)
-        delivered = send_message.call_args.args[1]
-        self.assertEqual(delivered, app._render_fallback_menu())
-        record_message.assert_called_once_with(7, delivered)
+        offered = action_buttons.call_args.args[1]
+        self.assertNotIn("¿Cómo querés seguir?", offered)
+        self.assertIn("Isa", offered)
+        button_ids = [b["id"] for b in action_buttons.call_args.args[2]]
+        self.assertIn(app.ISA_BUTTON_ID, button_ids)
 
     @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_bot_message")
@@ -179,7 +181,7 @@ class WebhookHarnessTests(unittest.TestCase):
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
     @patch.object(app, "load_history", return_value=[])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    def test_generic_hedge_reply_also_becomes_the_menu_with_the_active_product(
+    def test_generic_hedge_reply_is_not_turned_into_a_menu(
         self, history, inbound, send_message, record_message, record_turn
     ):
         agent_result = {
@@ -200,8 +202,10 @@ class WebhookHarnessTests(unittest.TestCase):
             response = self._post("¿Puedo pagar en efectivo al recibir el envío?", "wamid-hedge")
 
         self.assertEqual(response.status_code, 200)
+        # A hedge no longer becomes a menu: the answer stands as written.
         delivered = send_message.call_args.args[1]
-        self.assertEqual(delivered, app._render_fallback_menu("SHOOW TOOLS - ISABEL I"))
+        self.assertEqual(delivered, agent_result["reply"])
+        self.assertNotIn("¿Cómo querés seguir?", delivered)
 
     @patch.object(app, "record_agent_turn", side_effect=RuntimeError("database unavailable"))
     def test_observability_failure_is_non_blocking(self, record_turn):
