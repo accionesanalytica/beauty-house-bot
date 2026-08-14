@@ -52,7 +52,28 @@ class IncomingRequest:
         return self._body
 
 
+def _default_fred_core_state(conversation_id):
+    """A conversation Fred Core hasn't touched yet: CHAT, nothing else set.
+    Individual tests override this per-test when a specific mode/active
+    product matters to what's being asserted."""
+    return {
+        "mode": "CHAT", "active_product_id": None, "active_product_name": None,
+        "active_sku": None, "active_variant": None, "unit_price": None,
+        "quantity": None, "delivery_method": None, "customer_name": None,
+        "customer_email": None, "postal_code": None, "checkout_step": None,
+        "order_number": None,
+    }
+
+
 @patch.object(app, "CONVERSATION_DEBOUNCE_SECONDS", 0)
+@patch.object(app, "get_fred_core_state", _default_fred_core_state)
+@patch.object(app, "save_fred_core_state", lambda *args, **kwargs: None)
+@patch.object(app, "reset_fred_core_checkout", lambda conversation_id: None)
+# Fred Core's CHAT-mode migration safety net (an active legacy sales_intake
+# forces mode=CHECKOUT) reads get_active_sales_intake on every turn; default
+# it to "no legacy intake" here so tests stay offline unless a test
+# explicitly overrides it.
+@patch.object(app, "get_active_sales_intake", lambda conversation_id: None)
 class WebhookHarnessTests(unittest.TestCase):
     PHONE = "5491111111111"
 
@@ -140,21 +161,27 @@ class WebhookHarnessTests(unittest.TestCase):
     @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_bot_message")
     @patch.object(app, "send_whatsapp_text", return_value=True)
-    @patch.object(app, "get_product_selection", return_value={"product_name": "SHOOW TOOLS - ISABEL I"})
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
     @patch.object(app, "load_history", return_value=[])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
     def test_generic_hedge_reply_also_becomes_the_menu_with_the_active_product(
-        self, history, inbound, get_selection, send_message, record_message, record_turn
+        self, history, inbound, send_message, record_message, record_turn
     ):
         agent_result = {
             "reply": "Mirá, eso no lo tengo confirmado de forma segura ahora mismo.",
             "tool_calls": [], "usage": {},
             "decision": {"action": "reply", "reason": "normal_response"},
         }
+        # A `with`-block context manager (not a decorator) so this override
+        # actually wins over the class-level default: mock.patch's class
+        # decorator support takes precedence over a same-target *method*
+        # decorator, but not over a context manager entered from inside the
+        # test body.
         with patch.object(app, "search_similar_products", return_value=""), patch.object(
             app, "answer", return_value=agent_result
-        ):
+        ), patch.object(app, "get_fred_core_state", return_value={
+            **_default_fred_core_state(7), "active_product_name": "SHOOW TOOLS - ISABEL I",
+        }):
             response = self._post("¿Puedo pagar en efectivo al recibir el envío?", "wamid-hedge")
 
         self.assertEqual(response.status_code, 200)
@@ -194,7 +221,11 @@ class WebhookHarnessTests(unittest.TestCase):
         retrieve.assert_not_called()
         queue_for_isa.assert_called_once()
         self.assertEqual(queue_for_isa.call_args.args[2], "human_handoff")
-        self.assertIn("consulto a Isa", send_message.call_args.args[1])
+        # One consistent Isa-handoff confirmation regardless of entry point
+        # (direct request, menu option 4, or checkout) -- Fred Core owns
+        # this text in exactly one place now.
+        self.assertIn("Isa", send_message.call_args.args[1])
+        self.assertIn("contexto de la conversación", send_message.call_args.args[1])
         record_message.assert_called_once()
 
     @patch.object(app, "_send_service_fallback")
@@ -407,7 +438,7 @@ class WebhookHarnessTests(unittest.TestCase):
             "| SKU: ISABEL-CHOCO"
         )
         stock = {
-            "status": "in_stock", "sku": "ISABEL-CHOCO",
+            "found": True, "status": "in_stock", "sku": "ISABEL-CHOCO",
             "product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
             "variant": "8/8/10/12 mm", "price": "30000",
         }
@@ -439,17 +470,27 @@ class WebhookHarnessTests(unittest.TestCase):
     @patch.object(app, "KNOWLEDGE_RAG_ENABLED", False)
     @patch.object(app, "SALES_INTAKE_ENABLED", True)
     @patch.object(app, "get_active_sales_intake", return_value=None)
-    def test_purchase_details_use_previous_verified_selection_without_model(
+    def test_purchase_details_use_fred_core_active_product_without_model(
         self, active_intake, history, inbound, send_message, record_message, record_turn
     ):
-        selected = {
-            "sku": "ISABEL-CHOCO", "product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
-            "variant": "8/8/10/12 mm", "unit_price": "30000",
+        # Fred Core's active_product -- not conversation_product_selections
+        # -- is what a purchase-intent message resolves against now.
+        fred_core_state = {
+            "mode": "CHAT", "active_product_id": "ISABEL-CHOCO",
+            "active_product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
+            "active_sku": "ISABEL-CHOCO", "active_variant": "8/8/10/12 mm",
+            "unit_price": "30000", "quantity": None, "delivery_method": None,
+            "customer_name": None, "customer_email": None, "postal_code": None,
+            "checkout_step": None, "order_number": None,
         }
-        live_stock = {"status": "in_stock", **selected, "price": "30000"}
+        live_stock = {
+            "found": True, "status": "in_stock", "sku": "ISABEL-CHOCO",
+            "product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
+            "variant": "8/8/10/12 mm", "price": "30000",
+        }
         with patch.object(app, "search_similar_products", return_value=""), patch.object(
             app, "_live_candidate_context", return_value=""
-        ), patch.object(app, "get_product_selection", return_value=selected), patch.object(
+        ), patch.object(app, "get_fred_core_state", return_value=fred_core_state), patch.object(
             app, "get_stock", return_value=live_stock
         ), patch.object(app, "_start_sales_intake", return_value="pedir datos") as start_intake, patch.object(
             app, "_apply_sale_details_from_same_message", return_value="Resumen listo"
@@ -492,6 +533,110 @@ class WebhookHarnessTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         start_intake.assert_not_called()
         self.assertIn("cuál producto", send_message.call_args.args[1])
+
+    @patch.object(app, "record_agent_turn")
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
+    @patch.object(app, "load_history", return_value=[])
+    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
+    @patch.object(app, "KNOWLEDGE_RAG_ENABLED", False)
+    @patch.object(app, "SALES_INTAKE_ENABLED", True)
+    def test_clean_unverified_product_query_searches_before_any_sales_form(
+        self, history, inbound, send_message, record_message, record_turn
+    ):
+        agent_result = {
+            "reply": (
+                "No encuentro un perfume de Rare Beauty publicado ahora. "
+                "¿Tenés el nombre exacto para que pueda verificarlo?"
+            ),
+            "tool_calls": [],
+            "usage": {},
+            "decision": {"action": "reply", "reason": "normal_response"},
+        }
+        with patch.object(app, "get_active_sales_intake", return_value=None), patch.object(
+            app, "search_similar_products", return_value=""
+        ) as retrieve, patch.object(
+            app, "_live_candidate_context", return_value=""
+        ), patch.object(
+            app, "get_product_selection", return_value=None
+        ), patch.object(
+            app, "_start_sales_intake"
+        ) as start_intake, patch.object(
+            app, "answer", return_value=agent_result
+        ) as ask_model:
+            response = self._post(
+                "Me gustaría comprar un perfume de Rare Beauty, ¿tendrán? ¿a qué precio?",
+                "wamid-clean-unverified-product",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        retrieve.assert_called_once()
+        ask_model.assert_called_once()
+        start_intake.assert_not_called()
+        delivered = send_message.call_args.args[1]
+        self.assertEqual(delivered, agent_result["reply"])
+        for forbidden in (
+            "cuántas unidades", "nombre y apellido", "email:",
+            "checkout", "link de pago", "para dejarlo listo",
+        ):
+            self.assertNotIn(forbidden, delivered.lower())
+
+    @patch.object(app, "record_agent_turn")
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
+    @patch.object(app, "load_history", return_value=[])
+    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
+    @patch.object(app, "KNOWLEDGE_RAG_ENABLED", False)
+    @patch.object(app, "SALES_INTAKE_ENABLED", True)
+    def test_new_product_query_escapes_old_intake_and_reaches_retrieval(
+        self, history, inbound, send_message, record_message, record_turn
+    ):
+        old_intake = {
+            "status": "quantity",
+            "product_request": "Isabel I chocolate",
+            "selected_sku": "ISABEL-CHOCO",
+            "selected_variant": "8/8/10/12 mm",
+            "unit_price": "30000",
+            "quantity": None,
+            "fulfillment": None,
+            "customer_name": None,
+            "customer_email": None,
+        }
+        agent_result = {
+            "reply": (
+                "No encuentro un perfume de Rare Beauty publicado. "
+                "Pasame el nombre, una foto o un link y reviso si puede pedirse por encargo."
+            ),
+            "tool_calls": [],
+            "usage": {},
+            "decision": {"action": "reply", "reason": "normal_response"},
+        }
+        with patch.object(app, "get_active_sales_intake", return_value=old_intake), patch.object(
+            app, "cancel_sales_intake"
+        ) as cancel_intake, patch.object(
+            app, "clear_product_selection"
+        ) as clear_selection, patch.object(
+            app, "search_similar_products", return_value=""
+        ) as retrieve, patch.object(
+            app, "_live_candidate_context", return_value=""
+        ), patch.object(
+            app, "get_product_selection", return_value=None
+        ), patch.object(
+            app, "answer", return_value=agent_result
+        ) as ask_model:
+            response = self._post(
+                "Me gustaría comprar un perfume de Rare Beauty, ¿tendrán? ¿A qué precio?",
+                "wamid-new-product-after-old-intake",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        cancel_intake.assert_called_once_with(7)
+        clear_selection.assert_called_once_with(7)
+        retrieve.assert_called_once()
+        ask_model.assert_called_once()
+        send_message.assert_called_once_with(self.PHONE, agent_result["reply"])
 
     @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_bot_message")

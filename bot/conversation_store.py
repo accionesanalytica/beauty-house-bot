@@ -691,6 +691,111 @@ def get_product_selection(conversation_id: int) -> Optional[Dict[str, Any]]:
     }
 
 
+def clear_product_selection(conversation_id: int) -> None:
+    """Forget a prior product when the customer starts a different request."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM conversation_product_selections WHERE conversation_id = %s",
+                (conversation_id,),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+_FRED_CORE_FIELDS = (
+    "mode", "active_product_id", "active_product_name", "active_sku",
+    "active_variant", "unit_price", "quantity", "delivery_method",
+    "customer_name", "customer_email", "postal_code", "checkout_step",
+    "order_number",
+)
+
+
+def get_fred_core_state(conversation_id: int) -> Dict[str, Any]:
+    """The single source of truth for where this conversation is: an
+    explicit mode plus structured fields, never reconstructed by reading
+    Fred's own prior message text. A conversation Fred Core hasn't touched
+    yet defaults to CHAT with everything else empty."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT mode, active_product_id, active_product_name, active_sku,
+                       active_variant, unit_price, quantity, delivery_method,
+                       customer_name, customer_email, postal_code, checkout_step,
+                       order_number
+                FROM fred_core_state
+                WHERE conversation_id = %s
+                """,
+                (conversation_id,),
+            )
+            row = cursor.fetchone()
+    finally:
+        connection.close()
+    if not row:
+        state = {field: None for field in _FRED_CORE_FIELDS}
+        state["mode"] = "CHAT"
+        return state
+    return dict(zip(_FRED_CORE_FIELDS, row))
+
+
+def save_fred_core_state(conversation_id: int, **fields: Any) -> None:
+    """Upsert only the given fields; every other field keeps its current
+    value. This is the only function that persists Fred Core's mode/active
+    product/checkout data -- no other code path should write a second,
+    competing notion of conversation state."""
+    unknown = set(fields) - set(_FRED_CORE_FIELDS)
+    if unknown:
+        raise ValueError("Campos desconocidos para fred_core_state: {}".format(sorted(unknown)))
+    if not fields:
+        return
+    columns = list(fields.keys())
+    values = [fields[column] for column in columns]
+    insert_columns = ["conversation_id"] + columns
+    update_assignments = ", ".join("{0} = EXCLUDED.{0}".format(column) for column in columns)
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO fred_core_state ({columns})
+                VALUES ({placeholders})
+                ON CONFLICT (conversation_id) DO UPDATE SET
+                    {updates},
+                    updated_at = now()
+                """.format(
+                    columns=", ".join(insert_columns),
+                    placeholders=", ".join(["%s"] * len(insert_columns)),
+                    updates=update_assignments,
+                ),
+                [conversation_id] + values,
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def reset_fred_core_checkout(conversation_id: int) -> None:
+    """Return to CHAT and clear checkout-only fields. The active product and
+    any known order_number are left untouched -- still relevant context for
+    the next chat turn."""
+    save_fred_core_state(
+        conversation_id,
+        mode="CHAT", quantity=None, delivery_method=None,
+        customer_name=None, customer_email=None, postal_code=None,
+        checkout_step=None,
+    )
+
+
 def start_sales_intake(
     conversation_id: int,
     product_request: str = "",

@@ -115,9 +115,11 @@ from conversation_store import (
     claim_daily_isa_reminder,
     claim_requested_isa_reminder,
     claim_next_conversation,
+    clear_product_selection,
     clear_isa_reminder_snooze,
     clear_isa_sale_session,
     create_pending_action,
+    get_fred_core_state,
     get_isa_sale_session,
     get_active_sales_intake,
     get_product_selection,
@@ -139,6 +141,8 @@ from conversation_store import (
     renew_processing_claim,
     resolve_pending_action,
     release_daily_isa_reminder,
+    reset_fred_core_checkout,
+    save_fred_core_state,
     save_pending_action_checkout,
     save_product_selection,
     set_sales_intake_customer,
@@ -246,6 +250,14 @@ PAYMENT_CONFIRMED_TEMPLATE_LANGUAGE = os.getenv(
 DAILY_SUMMARY_ENABLED = os.getenv("DAILY_SUMMARY_ENABLED", "false").lower() == "true"
 DAILY_SUMMARY_TEMPLATE_NAME = os.getenv("DAILY_SUMMARY_TEMPLATE_NAME", "").strip()
 DAILY_SUMMARY_TEMPLATE_LANGUAGE = os.getenv("DAILY_SUMMARY_TEMPLATE_LANGUAGE", "es_AR").strip()
+# Separate issue from Fred Core: production logs showed Meta rejecting this
+# exact template/language pair ("template name (escalacion_isa) does not
+# exist in es_AR"), meaning the template was approved under a different
+# language code in Meta Business Manager than the one hardcoded here. Fixed
+# as a config value, not a guess at the real code -- set
+# ESCALACION_ISA_TEMPLATE_LANGUAGE in Railway to whatever Meta actually shows
+# as approved for this template (commonly "es" for generic Spanish).
+ESCALACION_ISA_TEMPLATE_LANGUAGE = os.getenv("ESCALACION_ISA_TEMPLATE_LANGUAGE", "es_AR").strip()
 # Client-facing policy document. The Railway public domain is a safe fallback
 # for the current deployment; a custom domain can replace it later without a
 # code change.
@@ -760,7 +772,7 @@ def send_escalacion_isa_template(
         "template": {
             "name": "escalacion_isa",
             "language": {
-                "code": "es_AR"
+                "code": ESCALACION_ISA_TEMPLATE_LANGUAGE
             },
             "components": [
                 {
@@ -1266,22 +1278,19 @@ def _queue_for_isa(
 
 
 # ============================================================
-# DETERMINISTIC ACTION LAYER
+# FRED CORE — one explicit state machine, one source of truth.
 #
-# "LLM responde, flows ejecutan": the model handles open conversation
-# (knowledge, catalog explanation, natural follow-ups using recent
-# history) but never decides or executes a commercial action itself. This
-# small router runs before the model is ever called and owns exactly four
-# actions -- ver productos, comprar, consultar pedido, hablar con Isa --
-# plus the one universal fallback that offers them. It reuses the existing
-# building blocks (graceful-fallback candidate search, sales_intakes,
-# get_order_status, _queue_for_isa) rather than re-implementing them.
+# Every conversation has a persisted `mode` (CHAT/MENU/CHECKOUT/TRACKING/
+# ISA) plus structured fields (active_product_id, quantity, checkout_step,
+# ...) in fred_core_state. This is the ONLY place conversational state is
+# read or written for routing purposes -- never by re-reading Fred's own
+# last message ("Fred preguntó X, entonces probablemente..."). CHAT is the
+# only mode the model participates in; MENU/CHECKOUT/TRACKING/ISA execute
+# deterministically from the persisted fields alone.
 # ============================================================
 
 FALLBACK_MENU_MARKER = "¿Cómo querés seguir?"
 ORDER_NUMBER_PROMPT_TEXT = "¿Cuál es tu número de orden?"
-PRODUCTS_FLOW_MARKER = "Estas son las opciones que encontré"
-_PRODUCTS_FLOW_LINE_RE = re.compile(r"^(\d+)\.\s*(.+?)(?:\s+—\s+.+)?$")
 _MENU_SELECTION_RE = re.compile(r"^(?:opcion\s*)?([1-4])\.?$")
 _BARE_ORDER_NUMBER_RE = re.compile(r"^\D*(\d{3,})\D*$")
 # A generic, non-product-discovery hedge (a Knowledge question Fred can't
@@ -1299,11 +1308,13 @@ _HEDGE_PHRASES = (
 def _looks_like_a_hedge(text: str) -> bool:
     normalized = _normalized_text(text)
     return any(phrase in normalized for phrase in _HEDGE_PHRASES)
+
+
 # The bare presence of "mi pedido"/"mi orden" is real evidence for the
 # knowledge_rag order_tracking gate (a required check inside an LLM turn),
 # but it is too weak on its own to bypass the model entirely -- "mi pedido
 # llegó perfecto, gracias" would wrongly get treated as a status request.
-# This stricter subset is safe to trigger the flow with zero LLM rounds.
+# This stricter subset is safe to trigger TRACKING mode with zero LLM rounds.
 _STRONG_TRACKING_TRIGGER_RE = re.compile(
     r"donde\s+esta\s+mi\s+(?:compra|pedido|orden)|no\s+me\s+lleg[oa]\b|"
     r"\btracking\b|\bseguimiento\b|numero\s+de\s+(?:orden|pedido)"
@@ -1320,13 +1331,6 @@ def _render_fallback_menu(active_product_name: str = "") -> str:
         "3. Consultar un pedido\n"
         "4. Hablar con Isa"
     ).format(FALLBACK_MENU_MARKER, buy_label)
-
-
-def _last_assistant_message(history: list) -> str:
-    return next(
-        (str(item.get("content") or "") for item in reversed(history or []) if item.get("role") == "assistant"),
-        "",
-    )
 
 
 def _most_recent_customer_message(history: list) -> str:
@@ -1364,7 +1368,19 @@ def _deliver_flow_reply(customer_phone: str, conversation_id: int, reply: str) -
         record_bot_message(conversation_id, reply_to_store)
 
 
-# --- Opción 3: consultar pedido -----------------------------------------
+def _fred_core_active_product_fields(candidate: dict) -> dict:
+    """Map a verified {sku, product_name, variant, unit_price} candidate to
+    fred_core_state's column names, the one shape every mode writes through."""
+    return {
+        "active_product_id": candidate.get("sku") or None,
+        "active_product_name": candidate.get("product_name") or None,
+        "active_sku": candidate.get("sku") or None,
+        "active_variant": candidate.get("variant") or None,
+        "unit_price": candidate.get("unit_price"),
+    }
+
+
+# --- mode=TRACKING ----------------------------------------------------
 
 def _render_order_status_reply(result: dict) -> str:
     """Honest, deterministic status text from only what Tiendanube returned.
@@ -1392,12 +1408,14 @@ def _render_order_status_reply(result: dict) -> str:
     )
 
 
-def _run_tracking_lookup(
+def _fred_core_lookup_order(
     conversation_id: int, customer_phone: str, order_number: str, prior_history: list,
 ) -> str:
     """Zero LLM rounds: real Tiendanube lookup, deterministic reply, and a
     deterministic handoff (never left to model judgment) when the order
-    doesn't exist or its own data is inconsistent."""
+    doesn't exist or its own data is inconsistent. Always returns mode to
+    CHAT: a pending Isa case (if any) is tracked by pending_actions, not by
+    holding this conversation in TRACKING."""
     try:
         result = get_order_status(order_number)
     except Exception as error:  # noqa: BLE001
@@ -1408,6 +1426,7 @@ def _run_tracking_lookup(
             "Consulta de pedido #{}".format(order_number),
             conversation_context=prior_history,
         )
+        save_fred_core_state(conversation_id, mode="CHAT", order_number=order_number)
         return (
             "No pude consultar tu pedido en este momento. Se lo paso a Isa junto "
             "con el número de orden y seguimos por acá."
@@ -1431,6 +1450,7 @@ def _run_tracking_lookup(
             "Consulta de pedido #{}".format(order_number),
             conversation_context=prior_history,
         )
+        save_fred_core_state(conversation_id, mode="CHAT", order_number=order_number)
         if escalation_reason == "order_not_found":
             return (
                 "Busqué el pedido {} y no me aparece en el sistema. Se lo paso a "
@@ -1441,17 +1461,30 @@ def _run_tracking_lookup(
             "revise Isa directamente; ya le pasé el contexto."
         ).format(order_number)
 
+    save_fred_core_state(conversation_id, mode="CHAT", order_number=order_number)
     return _render_order_status_reply(result)
 
 
-# --- Opción 1: ver productos ---------------------------------------------
+def _fred_core_handle_tracking(
+    conversation_id: int, customer_phone: str, message_text: str, prior_history: list,
+) -> str:
+    order_number = extract_order_number(message_text) or _extract_bare_order_number(message_text)
+    if not order_number:
+        return "No pasa nada, decime sólo el número de orden y lo reviso. 😊"
+    return _fred_core_lookup_order(conversation_id, customer_phone, order_number, prior_history)
 
-def _run_products_flow(query: str) -> str:
+
+# --- mode=MENU, opción 1: ver productos ---------------------------------
+
+def _fred_core_search_products(query: str) -> tuple:
+    """Real catalog search, up to 3 relevant verified candidates. Returns
+    (reply_text, single_candidate_or_None) -- the caller adopts the
+    candidate as active_product only when exactly one came back."""
     if not query:
         return (
             "Contame qué tipo de producto buscás (por ejemplo pestañas, algún "
             "look en particular) y te muestro opciones reales. 😊"
-        )
+        ), None
     try:
         results = search_available_products(query)
     except Exception as error:  # noqa: BLE001
@@ -1462,8 +1495,8 @@ def _run_products_flow(query: str) -> str:
         return (
             "No tengo opciones verificadas para mostrarte todavía. ¿Me contás "
             "un poco más de lo que buscás? También puedo pasarte con Isa. 😊"
-        )
-    lines = ["{}:".format(PRODUCTS_FLOW_MARKER)]
+        ), None
+    lines = ["Estas son las opciones que encontré:"]
     for index, candidate in enumerate(candidates[:3], start=1):
         details = []
         price = _format_price(candidate.get("price"))
@@ -1476,142 +1509,181 @@ def _run_products_flow(query: str) -> str:
         name = candidate.get("product_name") or "Opción"
         suffix = " — {}".format(", ".join(details)) if details else ""
         lines.append("{}. {}{}".format(index, name, suffix))
-    lines.append("{}. Hablar con Isa".format(len(candidates[:3]) + 1))
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    if len(candidates) == 1:
+        text += "\n\n¿Querés que avancemos con esta? 😊"
+        return text, candidates[0]
+    text += "\n\nContame cuál te interesa y seguimos. 😊"
+    return text, None
 
 
-def _parse_products_flow_options(last_assistant_text: str) -> list:
-    if PRODUCTS_FLOW_MARKER not in last_assistant_text:
-        return []
-    names = []
-    for line in last_assistant_text.splitlines():
-        match = _PRODUCTS_FLOW_LINE_RE.match(line.strip())
-        if match and "hablar con isa" not in match.group(2).strip().lower():
-            names.append(match.group(2).strip())
-    return names
+# --- mode=CHECKOUT, opción 2: comprar -----------------------------------
 
-
-def _resolve_products_flow_selection(name: str) -> Optional[dict]:
-    """Re-verify the chosen option live before adopting it as the active
-    product -- the list shown may be a turn or more old by the time the
-    customer replies with a number."""
+def _fred_core_enter_checkout(
+    conversation_id: int, customer_phone: str, core_state: dict,
+    quantity: Optional[int] = None, message_text: str = "",
+) -> str:
+    """CHECKOUT is anchored to Fred Core's OWN active_product -- re-verified
+    live here, never re-derived from whatever tool call happens to run this
+    turn. This is the concrete fix for a stale/wrong product leaking into a
+    purchase: there is exactly one place that decides which product a
+    checkout is about, and it is this field, not a fresh guess."""
+    active_sku = core_state.get("active_sku")
+    if not active_sku:
+        save_fred_core_state(conversation_id, mode="CHECKOUT", quantity=quantity)
+        return _start_sales_intake(conversation_id, quantity=quantity or 0)
     try:
-        results = search_available_products(name)
+        fresh = get_stock(active_sku)
     except Exception as error:  # noqa: BLE001
-        print("ERROR re-verificando selección de producto (tipo: {})".format(type(error).__name__))
-        return None
-    normalized_name = _normalized_text(name)
-    for product in results:
-        product_name = str(product.get("name") or "")
-        if normalized_name not in _normalized_text(product_name) and _normalized_text(product_name) not in normalized_name:
-            continue
-        variants = product.get("variants") or []
-        sku = str(variants[0].get("sku") or "").strip() if variants else ""
-        if not sku:
-            continue
-        stock = get_stock(sku)
-        if not stock.get("found"):
-            continue
-        return {
-            "product_name": stock.get("product_name") or product_name,
-            "sku": sku,
-            "variant": stock.get("variant"),
-            "unit_price": stock.get("price"),
-        }
-    return None
-
-
-# --- Opción 2: comprar -----------------------------------------------------
-
-def _run_purchase_menu_entry(conversation_id: int) -> str:
-    selection = get_product_selection(conversation_id)
-    if not selection or not selection.get("sku"):
-        return "Decime qué producto querés comprar (nombre o link) y arranco con el pedido. 😊"
-    fresh = get_stock(selection["sku"])
+        print("ERROR revalidando producto activo para checkout (tipo: {}).".format(type(error).__name__))
+        fresh = {}
     if not fresh.get("found") or fresh.get("status") != "in_stock":
         return (
-            "Recién revisé de nuevo y esa opción ya no tiene stock confirmado. "
-            "¿Buscamos otra? Puedo mostrarte opciones."
-        )
+            "Recién revisé de nuevo y {} ya no tiene stock confirmado. "
+            "¿Buscamos otra opción?"
+        ).format(core_state.get("active_product_name") or "esa opción")
     candidate = {
-        "product_name": fresh.get("product_name") or selection.get("product_name"),
-        "sku": selection["sku"],
-        "variant": fresh.get("variant") or selection.get("variant"),
-        "unit_price": fresh.get("price") or selection.get("unit_price"),
+        "product_name": fresh.get("product_name") or core_state.get("active_product_name"),
+        "sku": active_sku,
+        "variant": fresh.get("variant") or core_state.get("active_variant") or "",
+        "unit_price": fresh.get("price"),
     }
-    return _start_sales_intake(conversation_id, candidate)
+    save_fred_core_state(
+        conversation_id, mode="CHECKOUT", quantity=quantity,
+        **_fred_core_active_product_fields(candidate),
+    )
+    reply = _start_sales_intake(conversation_id, candidate, quantity=quantity or 0)
+    if message_text:
+        # The same message may already carry delivery + contact details
+        # ("quiero 2, envío, nombre, email") -- go straight to the summary
+        # instead of asking for a field the customer already gave.
+        complete_summary = _apply_sale_details_from_same_message(conversation_id, message_text)
+        if complete_summary:
+            reply = complete_summary
+    return reply
 
 
-# --- Opción 4: hablar con Isa ----------------------------------------------
+def _fred_core_handle_checkout(
+    conversation_id: int, customer_phone: str, message_text: str, prior_history: list,
+) -> Optional[str]:
+    """Delegates the turn-by-turn missing-field logic to the existing,
+    already-tested sales_intakes machinery (product/quantity/fulfillment/
+    customer/confirmation/Isa approval) unchanged -- Fred Core only
+    guarantees the intake was anchored to the right product at entry, and
+    mirrors the resulting step for reporting. Returns None when the intake
+    itself decided this message is about a different product entirely (its
+    own "discovery outranks an unfinished checkout" rule): the caller then
+    re-processes this same message as a normal CHAT turn."""
+    intake = get_active_sales_intake(conversation_id)
+    if not intake:
+        # The intake was already resolved/cancelled by another path (e.g. a
+        # duplicate webhook); nothing left to do here.
+        reset_fred_core_checkout(conversation_id)
+        return None
+    handled = _handle_sales_intake(
+        conversation_id, customer_phone, message_text, intake, prior_history,
+    )
+    if not handled:
+        reset_fred_core_checkout(conversation_id)
+        save_fred_core_state(
+            conversation_id, active_product_id=None, active_product_name=None,
+            active_sku=None, active_variant=None, unit_price=None,
+        )
+        return None
+    refreshed = get_active_sales_intake(conversation_id)
+    if refreshed:
+        save_fred_core_state(
+            conversation_id,
+            quantity=refreshed.get("quantity"),
+            delivery_method=refreshed.get("fulfillment"),
+            customer_name=refreshed.get("customer_name"),
+            customer_email=refreshed.get("customer_email"),
+            checkout_step=refreshed.get("status"),
+        )
+    else:
+        # Confirmed (moved to ready_for_isa) or cancelled: no longer active.
+        reset_fred_core_checkout(conversation_id)
+    return "__HANDLED_NO_REPLY__"
 
-def _run_isa_menu_flow(conversation_id: int, customer_phone: str, prior_history: list) -> str:
-    active_product = get_product_selection(conversation_id)
-    summary = "La clienta eligió hablar con Isa desde el menú."
-    if active_product and active_product.get("product_name"):
-        summary += " Producto actual: {}.".format(active_product["product_name"])
+
+# --- mode=ISA, opción 4: hablar con Isa ----------------------------------
+
+def _fred_core_run_isa_handoff(
+    conversation_id: int, customer_phone: str, prior_history: list, core_state: dict,
+    summary: str = "La clienta eligió hablar con Isa.",
+) -> str:
+    """Snapshot: recent context (real history, not text re-parsing) +
+    active_product + whatever is already known -- then a real pending
+    consultation, never inferred context. ISA is momentary: the pending
+    case itself is tracked by pending_actions/awaiting_isa_response, so
+    Fred Core returns to CHAT immediately and keeps answering other
+    questions (pending consultation, not a full takeover)."""
+    active_product_name = core_state.get("active_product_name")
+    if active_product_name:
+        summary = "{} Producto actual: {}.".format(summary, active_product_name)
+    order_number = core_state.get("order_number")
+    if order_number:
+        summary = "{} Pedido en cuestión: #{}.".format(summary, order_number)
     _queue_for_isa(
         conversation_id, customer_phone, "human_handoff", summary,
-        "Opción 4 del menú: hablar con Isa.",
+        "Solicitud de hablar con Isa.",
         conversation_context=prior_history,
     )
+    save_fred_core_state(conversation_id, mode="CHAT")
     return (
         "Listo, se lo pasé a Isa junto con el contexto de la conversación para "
         "que no tengas que repetir todo. 😊"
     )
 
 
-def _try_deterministic_flow(
-    conversation_id: int, customer_phone: str, message_text: str, prior_history: list,
-) -> Optional[str]:
-    """The action layer. Returns a reply if this message was handled by a
-    deterministic flow (menu, tracking, products, purchase, Isa); None means
-    "let the model answer this normally" -- knowledge/catalog conversation
-    stays entirely with the LLM."""
-    last_assistant_text = _last_assistant_message(prior_history)
-    normalised = _knowledge_normalise(message_text)
+# --- mode=MENU ------------------------------------------------------------
 
-    # Tracking: continuing an already-open ask, or an unambiguous request in
-    # a single message. Zero LLM rounds either way.
-    if ORDER_NUMBER_PROMPT_TEXT in last_assistant_text:
-        order_number = extract_order_number(message_text) or _extract_bare_order_number(message_text)
-        if order_number:
-            return _run_tracking_lookup(conversation_id, customer_phone, order_number, prior_history)
-        return "No pasa nada, decime sólo el número de orden y lo reviso. 😊"
-
-    order_number = extract_order_number(message_text)
-    strong_tracking_evidence = bool(_STRONG_TRACKING_TRIGGER_RE.search(normalised))
-    if order_number and (strong_tracking_evidence or FALLBACK_MENU_MARKER in last_assistant_text):
-        return _run_tracking_lookup(conversation_id, customer_phone, order_number, prior_history)
-    if strong_tracking_evidence and not order_number:
+def _fred_core_handle_menu(
+    conversation_id: int, customer_phone: str, message_text: str, core_state: dict, prior_history: list,
+) -> str:
+    selection = _extract_menu_selection(message_text)
+    if selection == "1":
+        reply, resolved = _fred_core_search_products(_most_recent_customer_message(prior_history))
+        fields = {"mode": "CHAT"}
+        if resolved:
+            fields.update(_fred_core_active_product_fields(resolved))
+        save_fred_core_state(conversation_id, **fields)
+        return reply
+    if selection == "2":
+        return _fred_core_enter_checkout(conversation_id, customer_phone, core_state)
+    if selection == "3":
+        save_fred_core_state(conversation_id, mode="TRACKING")
         return ORDER_NUMBER_PROMPT_TEXT
+    if selection == "4":
+        return _fred_core_run_isa_handoff(
+            conversation_id, customer_phone, prior_history, core_state,
+            "La clienta eligió hablar con Isa desde el menú.",
+        )
+    # An unrecognized reply while a menu is open re-shows the same menu
+    # instead of guessing what was meant.
+    return _render_fallback_menu(core_state.get("active_product_name") or "")
 
-    # Universal fallback menu selection.
-    if FALLBACK_MENU_MARKER in last_assistant_text:
-        selection = _extract_menu_selection(message_text)
-        if selection == "1":
-            return _run_products_flow(_most_recent_customer_message(prior_history))
-        if selection == "2":
-            return _run_purchase_menu_entry(conversation_id)
-        if selection == "3":
-            return ORDER_NUMBER_PROMPT_TEXT
-        if selection == "4":
-            return _run_isa_menu_flow(conversation_id, customer_phone, prior_history)
 
-    # Products-flow continuation: picking one of the just-shown options.
-    options = _parse_products_flow_options(last_assistant_text)
-    if options:
-        selection = _extract_menu_selection(message_text)
-        if selection:
-            index = int(selection)
-            if 1 <= index <= len(options):
-                candidate = _resolve_products_flow_selection(options[index - 1])
-                if not candidate:
-                    return "Justo esa opción ya no está disponible. ¿Buscamos otra? 😊"
-                save_product_selection(conversation_id, candidate)
-                return "Dale, seguimos con {} 😊 ¿Qué querés saber?".format(candidate["product_name"])
-            if index == len(options) + 1:
-                return _run_isa_menu_flow(conversation_id, customer_phone, prior_history)
-
+def _fred_core_dispatch(
+    mode: str, conversation_id: int, customer_phone: str, message_text: str,
+    core_state: dict, prior_history: list,
+) -> Optional[str]:
+    """switch(mode): the only place that decides which deterministic action
+    runs. Returns the reply text, the "no reply, already delivered
+    upstream" sentinel, or None to fall back to CHAT processing for this
+    same message (only the CHECKOUT "different product" case does this)."""
+    if mode == "MENU":
+        return _fred_core_handle_menu(conversation_id, customer_phone, message_text, core_state, prior_history)
+    if mode == "CHECKOUT":
+        return _fred_core_handle_checkout(conversation_id, customer_phone, message_text, prior_history)
+    if mode == "TRACKING":
+        return _fred_core_handle_tracking(conversation_id, customer_phone, message_text, prior_history)
+    if mode == "ISA":
+        # Transient by design (see _fred_core_run_isa_handoff): if a
+        # conversation is ever found here, it is stale state left over from
+        # before this executed -- correct it and treat this message as CHAT.
+        save_fred_core_state(conversation_id, mode="CHAT")
+        return None
     return None
 
 
@@ -1701,7 +1773,7 @@ def _extract_quantity(text: str) -> int:
     normalized = _normalized_text(text).strip()
     patterns = (
         r"^\s*(\d{1,2})\s*$",
-        r"\b(?:quiero|llevo|pido|pedir|ordenar|serian|son|cantidad)\s+(\d{1,2})\b",
+        r"\b(?:quiero|llevo|llevar|pido|pedir|ordenar|comprar|compro|necesito|serian|son|cantidad)\s+(\d{1,2})\b",
         r"\b(\d{1,2})\s*(?:x|unidades?|unidad|u|packs?|pares?)\b",
     )
     for pattern in patterns:
@@ -1816,8 +1888,29 @@ def _looks_like_new_customer_request(text: str) -> bool:
     normalized = _normalized_text(text).strip()
     return bool(
         re.match(r"^(hola|buenas|buen dia|buenas tardes)\b", normalized)
-        or re.search(r"\b(busco|quisiera saber|tienen|tenes|me recomendas)\b", normalized)
+        or re.search(
+            r"\b(busco|quisiera saber|tienen|tenes|tendran|hay|me recomendas|"
+            r"me gustaria comprar|quisiera comprar|quiero comprar|a que precio|cuanto sale|"
+            r"mejor quiero|mejor prefiero|prefiero|mejor me quedo con|cambio de idea|"
+            r"en vez de eso quiero)\b",
+            normalized,
+        )
     )
+
+
+def _message_refers_to_intake_product(text: str, intake: dict) -> bool:
+    """Return true when a new-looking message still names the active product."""
+    normalized = _normalized_text(text)
+    product = _normalized_text(str((intake or {}).get("product_request") or ""))
+    ignored = {
+        "shoow", "tools", "producto", "pestana", "pestanas", "pack", "color",
+        "black", "chocolate", "unidades", "unidad",
+    }
+    distinctive = {
+        token for token in re.findall(r"[a-z0-9]+", product)
+        if len(token) >= 3 and token not in ignored
+    }
+    return bool(distinctive and any(token in normalized for token in distinctive))
 
 
 def _simple_customer_reply(text: str) -> str:
@@ -2175,6 +2268,16 @@ def _handle_sales_intake(
             conversation_context=prior_history,
         )
         reply = "Listo, se lo pasé a Isa junto con el contexto de la conversación. 😊"
+    elif (
+        _looks_like_new_customer_request(message_text)
+        and not _message_refers_to_intake_product(message_text, intake)
+    ):
+        # Discovery of a different product outranks an unfinished checkout.
+        # Release both pieces of old state, then let the normal catalog/RAG
+        # path handle this same message instead of asking checkout fields.
+        cancel_sales_intake(conversation_id)
+        clear_product_selection(conversation_id)
+        return False
     elif intake["status"] == "product" and not intake.get("selected_sku"):
         # This fallback only applies when Fred truly has no verified product
         # yet. Normal checkout always starts with a verified SKU above.
@@ -2217,11 +2320,6 @@ def _handle_sales_intake(
                 sale_draft=sale_draft,
             )
             reply = "Perfecto, ya se lo pasé a Isa para que revise los detalles antes de generar cualquier link 😊"
-        elif _looks_like_new_customer_request(message_text):
-            # A new question releases the draft instead of trapping the
-            # customer inside an old confirmation screen.
-            cancel_sales_intake(conversation_id)
-            return False
         elif re.match(r"^(?:quiero\s+)?(?:cambiar|corregir)(?:lo)?\b", normalized):
             reply = "Claro 😊 Decime qué querés cambiar y actualizo el resumen."
         elif (
@@ -3900,24 +3998,53 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             print(f"[Conversacion] El bot no responde en estado {state}.")
             return JSONResponse(content={"ok": True})
 
-        if SALES_INTAKE_ENABLED:
+        # Fred Core: the persisted mode is the ONLY thing consulted to
+        # decide whether this turn executes a deterministic action or goes
+        # to CHAT. Nothing below this block may re-derive a competing
+        # notion of "what flow are we in" from message text.
+        core_state = get_fred_core_state(conversation_id)
+        core_mode = core_state.get("mode") or "CHAT"
+        if core_mode == "CHAT" and SALES_INTAKE_ENABLED:
+            # Migration safety net (item 9): a conversation may carry a
+            # real, active sales_intake from before Fred Core existed, or
+            # from a residual path that doesn't set mode itself. Integrate
+            # it as CHECKOUT rather than leave it untracked by mode or let
+            # a second, competing flow start alongside it.
             try:
-                active_sales_intake = get_active_sales_intake(conversation_id)
-                if active_sales_intake and _handle_sales_intake(
-                    conversation_id,
-                    customer_phone,
-                    message_text,
-                    active_sales_intake,
-                    prior_history,
-                ):
-                    return JSONResponse(content={"ok": True})
+                legacy_intake = get_active_sales_intake(conversation_id)
             except Exception as error:  # noqa: BLE001
-                print(f"ERROR en ficha de venta (tipo: {type(error).__name__})")
+                legacy_intake = None
+                print("ERROR leyendo ficha de venta heredada (tipo: {}).".format(type(error).__name__))
+            if legacy_intake:
+                core_mode = "CHECKOUT"
+                save_fred_core_state(conversation_id, mode="CHECKOUT")
+        print("[FredCore] mode={} active_product={} quantity={} checkout_step={}".format(
+            core_mode, core_state.get("active_product_name"),
+            core_state.get("quantity"), core_state.get("checkout_step"),
+        ))
+        if core_mode in ("MENU", "CHECKOUT", "TRACKING", "ISA"):
+            try:
+                flow_reply = _fred_core_dispatch(
+                    core_mode, conversation_id, customer_phone, message_text, core_state, prior_history,
+                )
+            except Exception as error:  # noqa: BLE001
+                print("ERROR en Fred Core (modo {}, tipo: {})".format(core_mode, type(error).__name__))
                 _send_service_fallback(
                     customer_phone, conversation_id, message_text, prior_history,
-                    "Fred no pudo guardar la ficha de venta.",
+                    "Fred no pudo continuar el flujo en curso.",
                 )
                 return JSONResponse(content={"ok": True})
+            if flow_reply == "__HANDLED_NO_REPLY__":
+                # _handle_sales_intake already sent and recorded the reply.
+                return JSONResponse(content={"ok": True})
+            if flow_reply is not None:
+                _deliver_flow_reply(customer_phone, conversation_id, flow_reply)
+                print("[FredCore] modo {} resuelto sin modelo.".format(core_mode))
+                return JSONResponse(content={"ok": True})
+            # None: CHECKOUT decided this message is about a different
+            # product and released itself back to CHAT -- fall through and
+            # reprocess this same message there.
+            core_state = get_fred_core_state(conversation_id)
 
         if _needs_purchase_clarification(message_text, prior_history):
             customer_reply = (
@@ -3936,18 +4063,9 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             print("[IA] Mensaje social resuelto sin modelo.")
             return JSONResponse(content={"ok": True})
 
-        try:
-            flow_reply = _try_deterministic_flow(
-                conversation_id, customer_phone, message_text, prior_history,
-            )
-        except Exception as error:  # noqa: BLE001
-            flow_reply = None
-            print("ERROR en flujo determinístico (tipo: {})".format(type(error).__name__))
-        if flow_reply is not None:
-            _deliver_flow_reply(customer_phone, conversation_id, flow_reply)
-            print("[Flow] Resuelto sin modelo.")
-            return JSONResponse(content={"ok": True})
-
+        # CHAT: cheap, zero-LLM-round deterministic pre-checks on THIS
+        # message only (never on Fred's own prior text) before spending a
+        # model call -- direct requests for Isa, and unambiguous tracking.
         escalation_type = _customer_escalation_type(
             message_text,
             has_bot_history=any(
@@ -3955,27 +4073,25 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 for message in prior_history
             ),
         )
-        if escalation_type:
-            if escalation_type == "human_handoff":
-                customer_reply = (
-                    "Dale, ya se lo consulto a Isa 😊 Mientras tanto seguimos por acá; "
-                    "si me deja una respuesta te la comparto apenas llegue."
-                )
-                summary = "La clienta pidió hablar directamente con Isa."
-            else:
-                customer_reply = "Perfecto, se lo paso a Isa para que confirme los detalles de tu compra. 😊"
-                summary = "La clienta indicó que quiere avanzar con una compra."
-
-            _queue_for_isa(
-                conversation_id,
-                customer_phone,
-                escalation_type,
-                summary,
-                message_text,
-                conversation_context=prior_history,
+        if escalation_type == "human_handoff":
+            reply = _fred_core_run_isa_handoff(
+                conversation_id, customer_phone, prior_history, core_state,
+                "La clienta pidió hablar directamente con Isa.",
             )
-            if send_whatsapp_text(customer_phone, customer_reply):
-                record_bot_message(conversation_id, customer_reply)
+            _deliver_flow_reply(customer_phone, conversation_id, reply)
+            return JSONResponse(content={"ok": True})
+
+        order_number = extract_order_number(message_text)
+        strong_tracking_evidence = bool(
+            _STRONG_TRACKING_TRIGGER_RE.search(_knowledge_normalise(message_text))
+        )
+        if order_number and strong_tracking_evidence:
+            reply = _fred_core_lookup_order(conversation_id, customer_phone, order_number, prior_history)
+            _deliver_flow_reply(customer_phone, conversation_id, reply)
+            return JSONResponse(content={"ok": True})
+        if strong_tracking_evidence and not order_number:
+            save_fred_core_state(conversation_id, mode="TRACKING")
+            _deliver_flow_reply(customer_phone, conversation_id, ORDER_NUMBER_PROMPT_TEXT)
             return JSONResponse(content={"ok": True})
 
         # Observability starts here, after deterministic shortcuts and before
@@ -4056,47 +4172,54 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             rag_context = "\n\n".join(
                 context for context in (catalog_context, knowledge_context) if context
             )
-            # A named product is useful context even before the client decides
-            # to buy. Persist it separately from a sale so the next natural
-            # message (“quiero dos, envío”) does not lose the chosen SKU.
+            # A named product is the ONE active_product Fred Core knows about
+            # going forward -- this write (not conversation_product_selections,
+            # which older code paths may still touch but this orchestration no
+            # longer reads) is what CHECKOUT/MENU anchor to later.
             selected_product_candidate = _live_product_candidate(
                 live_candidate_context, message_text
             )
             if selected_product_candidate:
                 try:
-                    save_product_selection(conversation_id, selected_product_candidate)
-                except Exception as error:  # noqa: BLE001
-                    # Selection memory improves the journey but must never
-                    # block a normal customer answer if storage is temporary.
-                    print("ERROR guardando selección (tipo: {}).".format(type(error).__name__))
-            direct_sale_candidate = _live_purchase_candidate(
-                live_candidate_context, message_text
-            )
-            if not direct_sale_candidate and (
-                _expresses_purchase(message_text) or _is_sale_confirmation(message_text)
-            ):
-                # The customer may have named the model in the prior turn.
-                # Re-check stock now; a remembered selection is never a
-                # substitute for Tiendanube's current availability.
-                try:
-                    direct_sale_candidate = _revalidate_product_candidate(
-                        get_product_selection(conversation_id)
+                    save_fred_core_state(
+                        conversation_id, **_fred_core_active_product_fields(selected_product_candidate)
                     )
                 except Exception as error:  # noqa: BLE001
-                    print("ERROR leyendo selección (tipo: {}).".format(type(error).__name__))
+                    # Active-product memory improves the journey but must never
+                    # block a normal customer answer if storage is temporary.
+                    print("ERROR guardando producto activo (tipo: {}).".format(type(error).__name__))
+                core_state.update(_fred_core_active_product_fields(selected_product_candidate))
+
+            wants_to_buy = _expresses_purchase(message_text) or (
+                _is_sale_confirmation(message_text) and bool(core_state.get("active_sku"))
+            )
+            if wants_to_buy:
+                # Purchase intent always outranks a recommendation card, and
+                # always resolves through Fred Core's OWN active_product
+                # (re-verified live), never through whatever this turn's
+                # search happened to surface -- the concrete fix for a
+                # stale/wrong product leaking into checkout. But a bare
+                # "comprar" mention with no product identified at all (e.g.
+                # "¿tendrán un perfume?, me gustaría comprar") is still a
+                # discovery question, not a checkout: never open a blank
+                # sales form just because that word appeared.
+                direct_sale_candidate = _live_purchase_candidate(live_candidate_context, message_text)
+                if direct_sale_candidate:
+                    save_fred_core_state(
+                        conversation_id, **_fred_core_active_product_fields(direct_sale_candidate)
+                    )
+                    core_state.update(_fred_core_active_product_fields(direct_sale_candidate))
+                if direct_sale_candidate or core_state.get("active_sku"):
+                    quantity = _extract_quantity(message_text) or None
+                    checkout_reply = _fred_core_enter_checkout(
+                        conversation_id, customer_phone, core_state,
+                        quantity=quantity, message_text=message_text,
+                    )
+                    _deliver_flow_reply(customer_phone, conversation_id, checkout_reply)
+                    return JSONResponse(content={"ok": True})
+
             grounded_reply = _grounded_lash_recommendation(live_candidate_context, catalog_query)
-            if direct_sale_candidate:
-                # Purchase intent always outranks a recommendation card. The
-                # later common sales block persists this candidate, preserves
-                # same-message details and asks only for the remaining step.
-                result = {
-                    "reply": "Preparando tu compra.",
-                    "sale_candidate": direct_sale_candidate,
-                    "tool_calls": [],
-                    "usage": {},
-                    "model_calls": 0,
-                }
-            elif grounded_reply:
+            if grounded_reply:
                 # The live store already supplied exactly the facts this
                 # recommendation needs. Avoid spending a model call and avoid
                 # letting a generic search contradict those facts.
@@ -4133,10 +4256,9 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             if result.get("graceful_fallback_tier") == "escalate":
                 # The model could not close a confident answer. Present the
                 # one universal fallback (menú de 4 opciones) instead of its
-                # raw hedge text, and skip the presentation-layer routing
-                # machinery entirely -- this is a deterministic action, same
-                # as _try_deterministic_flow above, not a model reply to be
-                # polished.
+                # raw hedge text, and transition Fred Core into MENU so the
+                # next reply (a bare "1"-"4") is resolved deterministically,
+                # never by re-reading this message's text.
                 if (
                     not persisted_claim
                     and CONVERSATION_DEBOUNCE_SECONDS
@@ -4146,10 +4268,8 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 ):
                     print("[Conversacion] Respuesta obsoleta omitida por mensaje posterior.")
                     return JSONResponse(content={"ok": True})
-                active_product = get_product_selection(conversation_id)
-                menu_reply = _render_fallback_menu(
-                    active_product.get("product_name") if active_product else ""
-                )
+                save_fred_core_state(conversation_id, mode="MENU")
+                menu_reply = _render_fallback_menu(core_state.get("active_product_name") or "")
                 if send_whatsapp_text(customer_phone, menu_reply):
                     record_bot_message(conversation_id, menu_reply)
                 print("[Flow] Fallback universal ofrecido tras respuesta insegura del modelo.")
@@ -4219,6 +4339,14 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     candidate_quantity = (
                         _extract_quantity(message_text)
                         or _recent_candidate_quantity(prior_history, sale_candidate)
+                    )
+                    # A rare residual path: the model called select_sale_candidate
+                    # on its own initiative rather than through the
+                    # _expresses_purchase pre-check above. Fred Core must still
+                    # become the single source of truth for this checkout.
+                    save_fred_core_state(
+                        conversation_id, mode="CHECKOUT", quantity=candidate_quantity or None,
+                        **_fred_core_active_product_fields(sale_candidate),
                     )
                     reply = _start_sales_intake(
                         conversation_id,
@@ -4292,10 +4420,8 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # offer the same universal menu instead of a bare hedge, so
             # "Fred no sabe" always ends in the same four concrete options.
             if not handoff and not sale_candidate and _looks_like_a_hedge(reply):
-                active_product = get_product_selection(conversation_id)
-                reply = _render_fallback_menu(
-                    active_product.get("product_name") if active_product else ""
-                )
+                save_fred_core_state(conversation_id, mode="MENU")
+                reply = _render_fallback_menu(core_state.get("active_product_name") or "")
 
             # A slower model/tool turn must never answer an earlier version of
             # the customer's thought. The newer inbound webhook will own the
