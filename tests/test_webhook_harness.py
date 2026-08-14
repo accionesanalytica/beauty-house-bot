@@ -80,6 +80,21 @@ class WebhookHarnessTests(unittest.TestCase):
     def _post(self, text, message_id="wamid-test"):
         return asyncio.run(app.webhook_post(IncomingRequest(self.PHONE, text, message_id)))
 
+    def _post_button(self, button_id, title, message_id="wamid-button"):
+        """A real interactive button reply, the only way a sensitive action
+        can start now."""
+        class _ButtonRequest:
+            def __init__(self, phone):
+                self._body = {"entry": [{"changes": [{"value": {"messages": [{
+                    "from": phone, "id": message_id,
+                    "interactive": {"button_reply": {"id": button_id, "title": title}},
+                }]}}]}]}
+
+            async def json(self):
+                return self._body
+
+        return asyncio.run(app.webhook_post(_ButtonRequest(self.PHONE)))
+
     @patch.object(app, "record_bot_message")
     @patch.object(app, "send_whatsapp_text", return_value=True)
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
@@ -210,23 +225,70 @@ class WebhookHarnessTests(unittest.TestCase):
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
     @patch.object(app, "load_history", return_value=[])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    def test_direct_human_request_escalates_without_model_or_retrieval(
+    def test_direct_human_request_only_offers_the_button(
         self, history, inbound, queue_for_isa, send_message, record_message
     ):
-        with patch.object(app, "answer") as ask_model, patch.object(app, "search_similar_products") as retrieve:
+        # Asking for Isa is a conversation, not an action: nothing is created
+        # until the customer actually taps "Hablar con Isa".
+        with patch.object(app, "answer") as ask_model, patch.object(
+            app, "search_similar_products",
+        ) as retrieve, patch.object(app, "send_customer_action_buttons") as action_buttons:
             response = self._post("Pasame con Isa", "wamid-handoff")
 
         self.assertEqual(response.status_code, 200)
         ask_model.assert_not_called()
         retrieve.assert_not_called()
+        queue_for_isa.assert_not_called()
+        offered = action_buttons.call_args.args[1]
+        self.assertIn("Isa", offered)
+        button_ids = [b["id"] for b in action_buttons.call_args.args[2]]
+        self.assertIn(app.ISA_BUTTON_ID, button_ids)
+
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "_queue_for_isa", return_value=True)
+    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
+    @patch.object(app, "load_history", return_value=[])
+    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
+    def test_tapping_the_isa_button_creates_the_consultation(
+        self, history, inbound, queue_for_isa, send_message, record_message
+    ):
+        response = self._post_button(app.ISA_BUTTON_ID, "Hablar con Isa", "wamid-isa-click")
+        self.assertEqual(response.status_code, 200)
         queue_for_isa.assert_called_once()
         self.assertEqual(queue_for_isa.call_args.args[2], "human_handoff")
-        # One consistent Isa-handoff confirmation regardless of entry point
-        # (direct request, menu option 4, or checkout) -- Fred Core owns
-        # this text in exactly one place now.
-        self.assertIn("Isa", send_message.call_args.args[1])
-        self.assertIn("contexto de la conversación", send_message.call_args.args[1])
-        record_message.assert_called_once()
+
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
+    @patch.object(app, "load_history", return_value=[])
+    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
+    @patch.object(app, "SALES_INTAKE_ENABLED", True)
+    def test_the_buy_button_opens_the_checkout_on_exactly_that_sku(
+        self, history, inbound, send_message, record_message
+    ):
+        # The click fixed the product. The checkout must use that SKU and
+        # never re-discover what the customer "meant".
+        live_stock = {
+            "found": True, "status": "in_stock", "sku": "3D24A",
+            "product_name": "AOA STUDIO - PEGA DE PESTAÑAS COREANA",
+            "variant": "", "price": "18000.00",
+        }
+        with patch.object(app, "get_stock", return_value=live_stock) as get_stock, patch.object(
+            app, "_start_sales_intake", return_value="pedir datos",
+        ) as start_intake, patch.object(app, "answer") as ask_model:
+            response = self._post_button(
+                "{}3D24A".format(app.BUY_BUTTON_PREFIX), "Comprar", "wamid-buy-click",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        ask_model.assert_not_called()
+        get_stock.assert_called_once_with("3D24A")
+        self.assertEqual(start_intake.call_args.args[1]["sku"], "3D24A")
+        self.assertEqual(
+            start_intake.call_args.args[1]["product_name"],
+            "AOA STUDIO - PEGA DE PESTAÑAS COREANA",
+        )
 
     @patch.object(app, "_send_service_fallback")
     @patch.object(app, "record_agent_turn")
@@ -442,13 +504,18 @@ class WebhookHarnessTests(unittest.TestCase):
             "product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
             "variant": "8/8/10/12 mm", "price": "30000",
         }
+        agent_result = {
+            "reply": "Dale, te confirmo Isabel I chocolate 😊",
+            "tool_calls": [], "usage": {},
+            "decision": {"action": "reply", "reason": "normal_response"},
+        }
         with patch.object(app, "search_similar_products", return_value="Productos encontrados"), patch.object(
             app, "_live_candidate_context", return_value=live_context
         ), patch.object(app, "get_stock", return_value=stock), patch.object(
-            app, "_start_sales_intake", return_value="pedir datos"
+            app, "_start_sales_intake"
         ) as start_intake, patch.object(
-            app, "_apply_sale_details_from_same_message", return_value="Resumen listo"
-        ), patch.object(app, "answer") as ask_model:
+            app, "answer", return_value=agent_result
+        ), patch.object(app, "send_customer_action_buttons", return_value=True) as action_buttons:
             response = self._post(
                 "Me quedo con Isabel I chocolate. Quiero 2 unidades, envío. "
                 "Nombre: Luis Vera. Email: luis@example.com",
@@ -456,10 +523,14 @@ class WebhookHarnessTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        ask_model.assert_not_called()
-        self.assertEqual(start_intake.call_args.kwargs["quantity"], 2)
-        self.assertEqual(start_intake.call_args.args[1]["sku"], "ISABEL-CHOCO")
-        send_message.assert_called_once_with(self.PHONE, "Resumen listo")
+        # Writing a purchase no longer opens a checkout. It stays a
+        # conversation, and Fred offers a Comprar button carrying the real SKU.
+        start_intake.assert_not_called()
+        buy_ids = [
+            b["id"] for b in action_buttons.call_args.args[2]
+            if b["id"].startswith(app.BUY_BUTTON_PREFIX)
+        ]
+        self.assertEqual(buy_ids, ["{}ISABEL-CHOCO".format(app.BUY_BUTTON_PREFIX)])
 
     @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_bot_message")
@@ -492,19 +563,26 @@ class WebhookHarnessTests(unittest.TestCase):
             app, "_live_candidate_context", return_value=""
         ), patch.object(app, "get_fred_core_state", return_value=fred_core_state), patch.object(
             app, "get_stock", return_value=live_stock
-        ), patch.object(app, "_start_sales_intake", return_value="pedir datos") as start_intake, patch.object(
-            app, "_apply_sale_details_from_same_message", return_value="Resumen listo"
-        ), patch.object(app, "answer") as ask_model:
+        ), patch.object(app, "_start_sales_intake") as start_intake, patch.object(
+            app, "send_customer_action_buttons", return_value=True,
+        ) as action_buttons, patch.object(app, "answer", return_value={
+            "reply": "Dale, tomo nota 😊", "tool_calls": [], "usage": {},
+            "decision": {"action": "reply", "reason": "normal_response"},
+        }):
             response = self._post(
                 "Quiero 2 unidades, envío. Nombre: Luis Vera. Email: luis@example.com",
                 "wamid-previous-selection",
             )
 
         self.assertEqual(response.status_code, 200)
-        ask_model.assert_not_called()
-        self.assertEqual(start_intake.call_args.args[1]["sku"], "ISABEL-CHOCO")
-        self.assertEqual(start_intake.call_args.kwargs["quantity"], 2)
-        send_message.assert_called_once_with(self.PHONE, "Resumen listo")
+        # The active product is still remembered and still what the Comprar
+        # button would buy -- but it no longer opens a checkout by itself.
+        start_intake.assert_not_called()
+        buy_ids = [
+            b["id"] for b in action_buttons.call_args.args[2]
+            if b["id"].startswith(app.BUY_BUTTON_PREFIX)
+        ]
+        self.assertEqual(buy_ids, ["{}ISABEL-CHOCO".format(app.BUY_BUTTON_PREFIX)])
 
     @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_bot_message")

@@ -721,6 +721,121 @@ def _reason_for_customer(text: str) -> str:
     return stripped[0].upper() + stripped[1:] if stripped else cleaned
 
 
+BUY_BUTTON_PREFIX = "buy:"
+ISA_BUTTON_ID = "start_isa_consultation"
+
+
+def send_customer_action_buttons(phone_number: str, text: str, buttons: list) -> bool:
+    """Offer the customer the explicit actions they can take.
+
+    These buttons are the ONLY way into checkout or an Isa consultation: no
+    phrase Fred reads can start either one. Each buy button carries the real
+    SKU, so the click itself fixes the product identity and the checkout never
+    has to guess what was meant.
+    """
+    if _real_outbound_is_blocked("botones de acción"):
+        return False
+    delivery_context = current_delivery_context.get()
+    if delivery_context and (
+        normalize_whatsapp_recipient(phone_number)
+        == normalize_whatsapp_recipient(delivery_context.customer_phone)
+    ):
+        delivery_context.attempted = True
+        if not processing_claim_is_current(
+            delivery_context.conversation_id,
+            delivery_context.generation,
+            delivery_context.worker_id,
+        ):
+            delivery_context.stale_discarded = True
+            print("[Conversacion] Botones obsoletos descartados por generation/lease.")
+            return False
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": normalize_whatsapp_recipient(phone_number),
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": text[:1024]},
+            "action": {"buttons": [
+                {"type": "reply", "reply": {"id": button["id"], "title": button["title"][:20]}}
+                for button in buttons[:3]
+            ]},
+        },
+    }
+    try:
+        response = requests.post(
+            f"https://graph.facebook.com/v26.0/{WHATSAPP_PHONE_ID}/messages",
+            json=payload,
+            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        if delivery_context and (
+            normalize_whatsapp_recipient(phone_number)
+            == normalize_whatsapp_recipient(delivery_context.customer_phone)
+        ):
+            delivery_context.delivered = True
+        return True
+    except Exception as error:  # noqa: BLE001
+        print("ERROR enviando botones de acción: {}".format(type(error).__name__))
+        return False
+
+
+def _offer_customer_actions(
+    conversation_id: int, customer_phone: str, reply_text: str, core_state: dict,
+) -> bool:
+    """Attach the action buttons to a normal CHAT answer.
+
+    Offering is not executing: the buttons only appear, and nothing changes
+    until the customer actually taps one.
+    """
+    buttons = []
+    sku = (core_state or {}).get("active_sku")
+    name = (core_state or {}).get("active_product_name")
+    if sku and name:
+        buttons.append({
+            "id": "{}{}".format(BUY_BUTTON_PREFIX, sku),
+            "title": "Comprar",
+        })
+    buttons.append({"id": ISA_BUTTON_ID, "title": "Hablar con Isa"})
+    if not send_customer_action_buttons(customer_phone, reply_text, buttons):
+        return False
+    record_bot_message(conversation_id, reply_text)
+    return True
+
+
+def _start_purchase_from_button(
+    conversation_id: int, customer_phone: str, sku: str, core_state: dict,
+) -> str:
+    """The click already decided the product. Verify that exact SKU live and
+    open the draft on it -- never re-discover what the customer meant."""
+    try:
+        stock = get_stock(sku)
+    except Exception as error:  # noqa: BLE001
+        print("ERROR verificando SKU del botón (tipo: {}).".format(type(error).__name__))
+        return "No pude confirmar ese producto en este momento. ¿Probamos de nuevo en un minuto?"
+    if not stock.get("found"):
+        return "Ese producto ya no está disponible. ¿Querés que busquemos otra opción?"
+    if stock.get("status") != "in_stock":
+        return "Justo {} se quedó sin stock. ¿Buscamos otra opción?".format(
+            stock.get("product_name") or "ese producto",
+        )
+    candidate = {
+        "sku": stock.get("sku") or sku,
+        "product_name": stock.get("product_name"),
+        "variant": stock.get("variant") or "",
+        "unit_price": stock.get("price"),
+    }
+    save_fred_core_state(
+        conversation_id, mode="CHECKOUT", quantity=core_state.get("quantity"),
+        **_fred_core_active_product_fields(candidate),
+    )
+    return _start_sales_intake(
+        conversation_id, candidate, quantity=core_state.get("quantity") or 0,
+    )
+
+
 def _resolve_named_product(product_name: str) -> dict:
     """Turn a product NAME into real, live-verified purchase identity.
 
@@ -994,6 +1109,8 @@ def send_escalacion_isa_template(
     pending_inquiries: int = 1,
 ) -> bool:
     """Envía la plantilla Meta escalacion_isa con la cantidad de consultas."""
+    if _real_outbound_is_blocked("plantilla escalacion_isa"):
+        return False
 
     url = (
         f"https://graph.facebook.com/v26.0/"
@@ -1059,6 +1176,27 @@ def send_escalacion_isa_template(
         return False
 
 
+def _real_outbound_is_blocked(channel: str) -> bool:
+    """Refuse to touch the real WhatsApp API from a test run.
+
+    A unit test once messaged Isa for real because a new code path called an
+    unmocked sender. Mocking is still the right practice, but forgetting to
+    mock must not be able to reach a customer: the block is on by default
+    under any test runner and can only be lifted deliberately with
+    FRED_ALLOW_REAL_OUTBOUND=true for an explicit live/integration run.
+    """
+    if os.getenv("FRED_ALLOW_REAL_OUTBOUND", "").strip().lower() == "true":
+        return False
+    under_test = (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or "pytest" in sys.modules
+        or "unittest" in sys.modules
+    )
+    if under_test:
+        print("[Test] Envío real bloqueado ({}). Mockealo o usá FRED_ALLOW_REAL_OUTBOUND=true.".format(channel))
+    return under_test
+
+
 def send_whatsapp_text(phone_number: str, text: str) -> bool:
     """Send a text reply inside the customer-initiated 24-hour window."""
     delivery_context = current_delivery_context.get()
@@ -1075,6 +1213,10 @@ def send_whatsapp_text(phone_number: str, text: str) -> bool:
             delivery_context.stale_discarded = True
             print("[Conversacion] Envío obsoleto descartado por generation/lease.")
             return False
+    # Checked after the lease bookkeeping so a blocked test run still exercises
+    # the same staleness decisions the real path makes.
+    if _real_outbound_is_blocked("texto"):
+        return False
     url = f"https://graph.facebook.com/v26.0/{WHATSAPP_PHONE_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -1106,6 +1248,8 @@ def send_whatsapp_text(phone_number: str, text: str) -> bool:
 
 def send_customer_fulfillment_buttons(phone_number: str) -> bool:
     """Ask the one closed checkout question with native WhatsApp buttons."""
+    if _real_outbound_is_blocked("botones de entrega"):
+        return False
     delivery_context = current_delivery_context.get()
     if delivery_context and (
         normalize_whatsapp_recipient(phone_number)
@@ -1156,6 +1300,8 @@ def send_customer_fulfillment_buttons(phone_number: str) -> bool:
 
 def send_whatsapp_template(phone_number: str, template_name: str, language: str, body_values=None) -> bool:
     """Send an approved Meta template, including outside the 24-hour window."""
+    if _real_outbound_is_blocked("plantilla"):
+        return False
     if not template_name:
         return False
     template = {"name": template_name, "language": {"code": language}}
@@ -1387,6 +1533,8 @@ def _pending_action_text(action: dict) -> str:
 
 def send_isa_pending_buttons(action: dict) -> bool:
     """Show one queued draft to Isa after she messages the bot."""
+    if _real_outbound_is_blocked("tarjeta a Isa"):
+        return False
     url = f"https://graph.facebook.com/v26.0/{WHATSAPP_PHONE_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -3317,6 +3465,10 @@ def _deliver_isa_response(action: dict, message_text: str, keep_open: bool = Fal
     if customer_text == "__SEND_SPECIAL_CONDITIONS__":
         _send_special_sale_conditions(action)
         return True
+    # The customer must be able to tell this came from Isa, not from Fred
+    # answering on his own. Isa's instruction wrapper is stripped first so she
+    # can write "decile que..." and the customer still reads a normal message.
+    customer_text = "Isa me respondió:\n\n{}".format(_reason_for_customer(customer_text))
 
     if not send_whatsapp_text(action["customer_phone"], customer_text):
         send_whatsapp_text(
@@ -4745,6 +4897,23 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # reprocess this same message there.
             core_state = get_fred_core_state(conversation_id)
 
+        # THE ONLY TWO DOORS OUT OF CHAT. A sensitive action starts because
+        # the customer tapped a button, never because Fred read a phrase.
+        if button_reply_id.startswith(BUY_BUTTON_PREFIX):
+            sku = button_reply_id[len(BUY_BUTTON_PREFIX):].strip()
+            reply = _start_purchase_from_button(conversation_id, customer_phone, sku, core_state)
+            _deliver_flow_reply(customer_phone, conversation_id, reply)
+            print("[FredCore] compra iniciada por botón, SKU {}.".format(sku))
+            return JSONResponse(content={"ok": True})
+        if button_reply_id == ISA_BUTTON_ID:
+            reply = _fred_core_run_isa_handoff(
+                conversation_id, customer_phone, prior_history, core_state,
+                "La clienta tocó “Hablar con Isa”.",
+            )
+            _deliver_flow_reply(customer_phone, conversation_id, reply)
+            print("[FredCore] consulta a Isa creada por botón.")
+            return JSONResponse(content={"ok": True})
+
         # Isa asked this customer something through Fred and the case is still
         # open: her answer belongs to that case, so it goes back to Isa instead
         # of being handled as an ordinary message. Fred still replies normally
@@ -4801,11 +4970,16 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             ),
         )
         if escalation_type == "human_handoff":
-            reply = _fred_core_run_isa_handoff(
-                conversation_id, customer_phone, prior_history, core_state,
-                "La clienta pidió hablar directamente con Isa.",
+            # Asking for Isa is a conversation, not an action. Fred offers the
+            # button and nothing is created until she actually taps it.
+            offer = (
+                "Claro. Si querés, le paso a Isa esta consulta junto con el contexto "
+                "de lo que venimos hablando 😊"
             )
-            _deliver_flow_reply(customer_phone, conversation_id, reply)
+            if _offer_customer_actions(conversation_id, customer_phone, offer, core_state):
+                print("[FredCore] botón de Isa ofrecido (sin crear consulta).")
+            else:
+                _deliver_flow_reply(customer_phone, conversation_id, offer)
             return JSONResponse(content={"ok": True})
 
         order_number = extract_order_number(message_text)
@@ -4984,75 +5158,32 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     print("ERROR guardando producto activo (tipo: {}).".format(type(error).__name__))
                 core_state.update(_fred_core_active_product_fields(selected_product_candidate))
 
-            has_active_product = bool(core_state.get("active_sku") or core_state.get("active_product_name"))
-            wants_to_buy = _expresses_purchase(message_text) or (
-                _is_sale_confirmation(message_text) and has_active_product
-            )
-            if wants_to_buy:
-                # Purchase intent always outranks a recommendation card, and
-                # always resolves through Fred Core's OWN active_product
-                # (re-verified live), never through whatever this turn's
-                # search happened to surface -- the concrete fix for a
-                # stale/wrong product leaking into checkout. But a bare
-                # "comprar" mention with no product identified at all (e.g.
-                # "¿tendrán un perfume?, me gustaría comprar") is still a
-                # discovery question, not a checkout: never open a blank
-                # sales form just because that word appeared.
-                direct_sale_candidate = _live_purchase_candidate(live_candidate_context, message_text)
-                if direct_sale_candidate:
-                    save_fred_core_state(
-                        conversation_id, **_fred_core_active_product_fields(direct_sale_candidate)
-                    )
-                    core_state.update(_fred_core_active_product_fields(direct_sale_candidate))
-                    has_active_product = True
-                if not direct_sale_candidate and has_active_product:
-                    # PRODUCT INTEGRITY. What the customer just named always
-                    # outranks whatever product this conversation happened to
-                    # be about before. Falling back to a stale active_product
-                    # here is how a "quiero comprar una pega" became a
-                    # checkout for Taylor -- the worst possible outcome. Only
-                    # runs when there IS a previous product to be contaminated
-                    # by, so a first-time purchase costs no extra lookups.
-                    other_named = _other_products_named_in_message(
-                        live_candidate_context, message_text,
-                        core_state.get("active_product_name") or "",
-                    )
-                    if len(other_named) == 1:
-                        # Unambiguous: resolve it to real live IDs first, then
-                        # let the checkout proceed on THAT product.
-                        resolved = _resolve_named_product(other_named[0])
-                        if resolved:
+            # PURCHASE INTENT NO LONGER STARTS A CHECKOUT. Whatever the
+            # customer wrote, this stays a conversation: the only way into
+            # CHECKOUT is the [Comprar] button, whose id carries the real SKU.
+            # What this block still does is RESOLVE identity, so that if the
+            # customer does tap the button the product is already pinned to
+            # something the live store confirmed.
+            if _expresses_purchase(message_text) and not core_state.get("active_sku"):
+                named = _other_products_named_in_message(
+                    live_candidate_context, message_text,
+                    core_state.get("active_product_name") or "",
+                )
+                if len(named) == 1:
+                    resolved = _resolve_named_product(named[0])
+                    if resolved:
+                        try:
                             save_fred_core_state(
                                 conversation_id, **_fred_core_active_product_fields(resolved)
                             )
-                            core_state.update(_fred_core_active_product_fields(resolved))
-                            direct_sale_candidate = resolved
-                            has_active_product = True
-                            print("[FredCore] producto de la compra resuelto en vivo: {}.".format(
-                                resolved.get("product_name"),
+                        except Exception as error:  # noqa: BLE001
+                            print("ERROR guardando producto resuelto (tipo: {}).".format(
+                                type(error).__name__,
                             ))
-                        else:
-                            _deliver_flow_reply(customer_phone, conversation_id, (
-                                "Encontré {} pero no pude confirmar una variante vendible ahora "
-                                "mismo. ¿Querés que lo revise con Isa?"
-                            ).format(other_named[0]))
-                            return JSONResponse(content={"ok": True})
-                    elif len(other_named) > 1:
-                        options = "\n".join("• {}".format(name) for name in other_named[:3])
-                        clarification = (
-                            "Para no equivocarme con el pedido, ¿cuál de estas querés?\n{}"
-                        ).format(options)
-                        _deliver_flow_reply(customer_phone, conversation_id, clarification)
-                        print("[FredCore] compra pausada: la clienta nombró otro producto sin resolver.")
-                        return JSONResponse(content={"ok": True})
-                if direct_sale_candidate or has_active_product:
-                    quantity = _extract_quantity(message_text) or None
-                    checkout_reply = _fred_core_enter_checkout(
-                        conversation_id, customer_phone, core_state,
-                        quantity=quantity, message_text=message_text,
-                    )
-                    _deliver_flow_reply(customer_phone, conversation_id, checkout_reply)
-                    return JSONResponse(content={"ok": True})
+                        core_state.update(_fred_core_active_product_fields(resolved))
+                        print("[FredCore] producto identificado para ofrecer compra: {}.".format(
+                            resolved.get("product_name"),
+                        ))
 
             grounded_reply = _grounded_lash_recommendation(live_candidate_context, catalog_query)
             if grounded_reply:
@@ -5171,39 +5302,23 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     result,
                 )
             if sale_candidate and SALES_INTAKE_ENABLED:
+                # The model may still identify the exact variant, and that is
+                # useful -- but it may NOT open a checkout. Its selection only
+                # pins the active product so the [Comprar] button carries a
+                # real SKU; the customer still has to tap it.
                 try:
-                    candidate_quantity = (
-                        _extract_quantity(message_text)
-                        or _recent_candidate_quantity(prior_history, sale_candidate)
-                    )
-                    # A rare residual path: the model called select_sale_candidate
-                    # on its own initiative rather than through the
-                    # _expresses_purchase pre-check above. Fred Core must still
-                    # become the single source of truth for this checkout.
                     save_fred_core_state(
-                        conversation_id, mode="CHECKOUT", quantity=candidate_quantity or None,
-                        **_fred_core_active_product_fields(sale_candidate),
+                        conversation_id, **_fred_core_active_product_fields(sale_candidate)
                     )
-                    reply = _start_sales_intake(
-                        conversation_id,
-                        sale_candidate,
-                        quantity=candidate_quantity,
-                    )
-                    # If the client already sent delivery + contact details in
-                    # the same message as their purchase request, preserve them
-                    # and move directly to the confirmation summary.
-                    complete_summary = _apply_sale_details_from_same_message(
-                        conversation_id, message_text
-                    )
-                    if complete_summary:
-                        reply = complete_summary
-                    handoff = None
+                    core_state.update(_fred_core_active_product_fields(sale_candidate))
+                    print("[FredCore] variante identificada por el modelo: {}.".format(
+                        sale_candidate.get("product_name"),
+                    ))
                 except Exception as error:  # noqa: BLE001
-                    print(f"ERROR iniciando ficha preseleccionada (tipo: {type(error).__name__})")
-                    handoff = {
-                        "reason": "unable_to_verify",
-                        "summary": "Fred no pudo guardar la selección de compra.",
-                    }
+                    print("ERROR guardando selección del modelo (tipo: {}).".format(
+                        type(error).__name__,
+                    ))
+                handoff = None
 
             if handoff:
                 if (
@@ -5272,14 +5387,24 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     print("[Conversacion] Respuesta obsoleta omitida por mensaje posterior.")
                     return JSONResponse(content={"ok": True})
 
+            delivered = False
             if reply == "__FULFILLMENT_BUTTONS__":
                 delivered = send_customer_fulfillment_buttons(customer_phone)
-                reply_to_store = "¿Cómo preferís recibir tu compra? [Envío / Retiro]"
-            else:
-                delivered = send_whatsapp_text(customer_phone, reply)
-                reply_to_store = reply
-            if delivered:
-                record_bot_message(conversation_id, reply_to_store)
+                if delivered:
+                    record_bot_message(
+                        conversation_id, "¿Cómo preferís recibir tu compra? [Envío / Retiro]",
+                    )
+                    print("[Conversacion] Respuesta del agente guardada.")
+            elif core_state.get("mode") == "CHAT" and _offer_customer_actions(
+                conversation_id, customer_phone, reply, core_state,
+            ):
+                # A normal CHAT answer carries the two explicit doors out of
+                # the conversation. Offering them changes nothing by itself.
+                delivered = True
+                print("[Conversacion] Respuesta del agente con botones de acción.")
+            elif send_whatsapp_text(customer_phone, reply):
+                delivered = True
+                record_bot_message(conversation_id, reply)
                 print("[Conversacion] Respuesta del agente guardada.")
 
             effective_action = (
