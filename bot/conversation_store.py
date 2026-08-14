@@ -666,7 +666,12 @@ def save_product_selection(conversation_id: int, candidate: Dict[str, Any]) -> N
 
 
 def get_product_selection(conversation_id: int) -> Optional[Dict[str, Any]]:
-    """Return the last product selection; stock is revalidated by the caller."""
+    """Return a recent product selection; stock is revalidated by the caller.
+
+    Product memory exists for short elliptical follow-ups such as ``quiero 2``.
+    It must not survive indefinitely and silently contaminate a later shopping
+    session.
+    """
     connection = _connect()
     try:
         with connection.cursor() as cursor:
@@ -675,6 +680,7 @@ def get_product_selection(conversation_id: int) -> Optional[Dict[str, Any]]:
                 SELECT selected_sku, product_name, selected_variant, unit_price
                 FROM conversation_product_selections
                 WHERE conversation_id = %s
+                  AND updated_at >= now() - interval '2 hours'
                 """,
                 (conversation_id,),
             )
@@ -1442,6 +1448,32 @@ def _update_isa_sale_session(isa_phone: str, status: str, **values: Any) -> None
                     updated_at = now()
                 """,
                 (isa_phone, status, values.get("sale_type"), values.get("details")),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def save_pending_action_resolution(action_id: int, resolution: str) -> None:
+    """Record HOW a case ended when the status alone is not precise enough.
+
+    "Hablar con cliente" is not a rejection -- Isa simply chose to talk before
+    the purchase completes -- but pending_actions only has approved/rejected.
+    Keeping the nuance in the payload avoids inventing another state machine.
+    """
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE pending_actions
+                SET payload = jsonb_set(payload, '{resolution}', to_jsonb(%s::text), true)
+                WHERE id = %s
+                """,
+                (resolution, action_id),
             )
         connection.commit()
     except Exception:

@@ -62,61 +62,59 @@ class ApproveCheckoutTypeGuardTests(unittest.TestCase):
 
 
 class ApproveCheckoutHappyPathTests(unittest.TestCase):
-    @patch.object(app, "pending_action_count", return_value=0)
-    @patch.object(app, "record_bot_message")
-    @patch.object(app, "set_conversation_state")
-    @patch.object(app, "resolve_pending_action", return_value={"conversation_id": 7})
-    @patch.object(app, "save_pending_action_checkout")
-    @patch.object(app, "create_approved_checkout", return_value=CHECKOUT)
-    @patch.object(app, "send_whatsapp_text", return_value=True)
-    @patch.object(app, "_pending_action_by_id", return_value=PURCHASE_REVIEW_ACTION)
-    def test_creates_checkout_sends_link_and_resolves_the_pending_case(
-        self, get_pending, send_message, create_checkout, save_checkout,
-        resolve_action, set_state, record_message, pending_count,
-    ):
-        app.handle_isa_message("", button_reply_id="approve_checkout:11")
+    """Approval revalidates the SAME identity and sends the real Tiendanube
+    product link. Fred no longer builds a checkout of his own -- cart, data,
+    shipping and payment all happen in the store."""
 
-        create_checkout.assert_called_once_with(
-            sku="ISABEL-1", quantity=2,
-            customer_name="Ana Pérez", customer_email="ana@example.com",
-            customer_phone="5491111111111",
-        )
-        save_checkout.assert_called_once_with(11, CHECKOUT)
-        customer_messages = [c.args for c in send_message.call_args_list if c.args[0] == "5491111111111"]
-        self.assertEqual(len(customer_messages), 1)
-        self.assertIn(CHECKOUT["checkout_url"], customer_messages[0][1])
-        resolve_action.assert_called_once_with(11, "approved")
-        set_state.assert_called_once_with(7, "BOT")
-        record_message.assert_called_once_with(7, customer_messages[0][1])
+    PENDING = {
+        "id": 7, "conversation_id": 11, "action_type": "purchase_review",
+        "customer_phone": "5491111111111",
+        "payload": {"customer_phone": "5491111111111", "sale_draft": {
+            "items_status": "2 × AOA STUDIO - PEGA DE PESTAÑAS COREANA",
+            "selected_sku": "3D24A",
+        }},
+    }
 
     @patch.object(app, "pending_action_count", return_value=0)
-    @patch.object(app, "record_bot_message")
     @patch.object(app, "set_conversation_state")
-    @patch.object(app, "resolve_pending_action", return_value={"conversation_id": 7})
-    @patch.object(app, "save_pending_action_checkout")
-    @patch.object(app, "create_approved_checkout")
-    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "record_bot_message")
+    @patch.object(app, "resolve_pending_action", return_value={"conversation_id": 11})
+    @patch.object(app, "_product_url_for_sku", return_value="https://beautyhousemakeup.com/productos/aoa/")
+    @patch.object(app, "get_stock", return_value={
+        "found": True, "status": "in_stock", "quantity": 19, "sku": "3D24A",
+    })
     @patch.object(app, "_pending_action_by_id")
-    def test_retry_with_an_existing_checkout_never_creates_a_second_order(
-        self, get_pending, send_message, create_checkout, save_checkout,
-        resolve_action, set_state, record_message, pending_count,
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    def test_approval_revalidates_and_sends_the_real_product_link(
+        self, send_message, by_id, get_stock, product_url, resolve, record, set_state, count,
     ):
-        # A retried "Aprobar compra" tap (e.g. after a delivery failure) must
-        # reuse the already-created checkout, never place a second real
-        # Tiendanube order for the same approval.
-        action_with_checkout = {
-            **PURCHASE_REVIEW_ACTION,
-            "payload": {**PURCHASE_REVIEW_ACTION["payload"], "checkout": CHECKOUT},
-        }
-        get_pending.return_value = action_with_checkout
+        by_id.return_value = self.PENDING
+        with patch.object(app, "create_approved_checkout") as create_checkout:
+            app.handle_isa_message("", button_reply_id="approve_checkout:7")
 
-        app.handle_isa_message("", button_reply_id="approve_checkout:11")
-
+        # The same SKU the card showed is revalidated, and no custom checkout
+        # is created any more.
+        get_stock.assert_called_with("3D24A")
         create_checkout.assert_not_called()
-        save_checkout.assert_not_called()
-        customer_messages = [c.args for c in send_message.call_args_list if c.args[0] == "5491111111111"]
-        self.assertIn(CHECKOUT["checkout_url"], customer_messages[0][1])
-        resolve_action.assert_called_once_with(11, "approved")
+        to_customer = [c.args[1] for c in send_message.call_args_list if c.args[0] == "5491111111111"]
+        self.assertTrue(any("https://beautyhousemakeup.com/productos/aoa/" in m for m in to_customer))
+        resolve.assert_called_once_with(7, "approved")
+
+    @patch.object(app, "_product_url_for_sku", return_value="")
+    @patch.object(app, "get_stock", return_value={
+        "found": True, "status": "in_stock", "quantity": 19, "sku": "3D24A",
+    })
+    @patch.object(app, "_pending_action_by_id")
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    def test_without_a_public_link_nothing_is_sent_and_the_case_stays_open(
+        self, send_message, by_id, get_stock, product_url,
+    ):
+        by_id.return_value = self.PENDING
+        with patch.object(app, "resolve_pending_action") as resolve:
+            app.handle_isa_message("", button_reply_id="approve_checkout:7")
+        resolve.assert_not_called()
+        to_customer = [c.args[1] for c in send_message.call_args_list if c.args[0] == "5491111111111"]
+        self.assertEqual(to_customer, [])
 
 
 class ApproveCheckoutFailureTests(unittest.TestCase):
@@ -139,29 +137,19 @@ class ApproveCheckoutFailureTests(unittest.TestCase):
         isa_messages = [c.args[1] for c in send_message.call_args_list if c.args[0] == app.ISA_WHATSAPP_NUMBER]
         self.assertTrue(any("el pendiente sigue abierto" in message.lower() for message in isa_messages))
 
-    @patch.object(app, "pending_action_count", return_value=0)
-    @patch.object(app, "record_bot_message")
-    @patch.object(app, "set_conversation_state")
+    @patch.object(app, "_product_url_for_sku", return_value="https://beautyhousemakeup.com/p/isabel/")
+    @patch.object(app, "get_stock", return_value={
+        "found": True, "status": "in_stock", "quantity": 40, "sku": "ISABEL-1",
+    })
     @patch.object(app, "resolve_pending_action")
-    @patch.object(app, "save_pending_action_checkout")
-    @patch.object(app, "create_approved_checkout", return_value=CHECKOUT)
     @patch.object(app, "_pending_action_by_id", return_value=PURCHASE_REVIEW_ACTION)
-    def test_checkout_created_but_customer_delivery_fails_never_resolves_the_case(
-        self, get_pending, create_checkout, save_checkout, resolve_action,
-        set_state, record_message, pending_count,
+    def test_delivery_failure_never_resolves_the_case(
+        self, get_pending, resolve_action, get_stock, product_url,
     ):
-        # send_whatsapp_text: False to the customer (delivery failure), True
-        # to Isa (the follow-up warning).
-        with patch.object(app, "send_whatsapp_text", side_effect=[False, True]) as send_message:
+        # False to the customer (delivery failed), True to Isa (the warning).
+        with patch.object(app, "send_whatsapp_text", side_effect=[False, True]):
             app.handle_isa_message("", button_reply_id="approve_checkout:11")
-
-        # The checkout itself was already created and persisted -- retrying
-        # "Aprobar compra" must reuse it, never place a second order.
-        create_checkout.assert_called_once()
-        save_checkout.assert_called_once_with(11, CHECKOUT)
         resolve_action.assert_not_called()
-        set_state.assert_not_called()
-        self.assertIn("Aprobar compra", send_message.call_args_list[-1].args[1])
 
 
 if __name__ == "__main__":

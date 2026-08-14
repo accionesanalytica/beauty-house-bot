@@ -155,7 +155,7 @@ class WebhookHarnessTests(unittest.TestCase):
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
     @patch.object(app, "load_history", return_value=[])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    def test_ungrounded_answer_offers_isa_and_never_a_menu(
+    def test_ungrounded_answer_hands_over_isa_contact_and_never_a_menu(
         self, history, inbound, get_selection, send_message, record_message, record_turn
     ):
         agent_result = {
@@ -165,15 +165,13 @@ class WebhookHarnessTests(unittest.TestCase):
         }
         with patch.object(app, "search_similar_products", return_value=""), patch.object(
             app, "answer", return_value=agent_result
-        ), patch.object(app, "send_customer_action_buttons", return_value=True) as action_buttons:
+        ):
             response = self._post("no sé qué elegir", "wamid-escalate")
 
         self.assertEqual(response.status_code, 200)
-        offered = action_buttons.call_args.args[1]
-        self.assertNotIn("¿Cómo querés seguir?", offered)
-        self.assertIn("Isa", offered)
-        button_ids = [b["id"] for b in action_buttons.call_args.args[2]]
-        self.assertIn(app.ISA_BUTTON_ID, button_ids)
+        delivered = send_message.call_args.args[1]
+        self.assertNotIn("¿Cómo querés seguir?", delivered)
+        self.assertIn(app.isa_contact_number(), delivered)
 
     @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_bot_message")
@@ -229,38 +227,22 @@ class WebhookHarnessTests(unittest.TestCase):
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
     @patch.object(app, "load_history", return_value=[])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    def test_direct_human_request_only_offers_the_button(
+    def test_direct_human_request_hands_over_isa_contact(
         self, history, inbound, queue_for_isa, send_message, record_message
     ):
-        # Asking for Isa is a conversation, not an action: nothing is created
-        # until the customer actually taps "Hablar con Isa".
+        # No case, no consultation, no notification: just her number.
         with patch.object(app, "answer") as ask_model, patch.object(
             app, "search_similar_products",
-        ) as retrieve, patch.object(app, "send_customer_action_buttons") as action_buttons:
+        ) as retrieve:
             response = self._post("Pasame con Isa", "wamid-handoff")
 
         self.assertEqual(response.status_code, 200)
         ask_model.assert_not_called()
         retrieve.assert_not_called()
         queue_for_isa.assert_not_called()
-        offered = action_buttons.call_args.args[1]
-        self.assertIn("Isa", offered)
-        button_ids = [b["id"] for b in action_buttons.call_args.args[2]]
-        self.assertIn(app.ISA_BUTTON_ID, button_ids)
-
-    @patch.object(app, "record_bot_message")
-    @patch.object(app, "send_whatsapp_text", return_value=True)
-    @patch.object(app, "_queue_for_isa", return_value=True)
-    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
-    @patch.object(app, "load_history", return_value=[])
-    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    def test_tapping_the_isa_button_creates_the_consultation(
-        self, history, inbound, queue_for_isa, send_message, record_message
-    ):
-        response = self._post_button(app.ISA_BUTTON_ID, "Hablar con Isa", "wamid-isa-click")
-        self.assertEqual(response.status_code, 200)
-        queue_for_isa.assert_called_once()
-        self.assertEqual(queue_for_isa.call_args.args[2], "human_handoff")
+        delivered = send_message.call_args.args[1]
+        self.assertIn("Isa", delivered)
+        self.assertIn(app.isa_contact_number(), delivered)
 
     @patch.object(app, "record_bot_message")
     @patch.object(app, "send_whatsapp_text", return_value=True)

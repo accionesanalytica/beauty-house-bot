@@ -224,15 +224,19 @@ class SalesFlowTests(unittest.TestCase):
     @patch.object(app, "send_whatsapp_text", return_value=True)
     @patch.object(app, "record_bot_message")
     @patch.object(app, "_queue_for_isa")
-    def test_service_fallback_is_honest_and_queues_when_storage_works(
+    def test_service_fallback_is_honest_and_creates_no_case(
         self, queue_for_isa, record_message, send_message
     ):
-        app._send_service_fallback(
-            "5491111111111", 7, "consulta", [], "Servicio no disponible"
-        )
-        self.assertIn("prefiero no darte un dato incorrecto", send_message.call_args.args[1])
-        queue_for_isa.assert_called_once()
-        record_message.assert_called_once()
+        # A technical outage tells the truth and leaves Isa's contact; it no
+        # longer parks a bot_fallback nobody is watching.
+        with patch.object(app, "_queue_for_isa") as queue_for_isa:
+            app._send_service_fallback(
+                "5491111111111", 11, "¿tienen stock?", [], "Fred no pudo consultar.",
+            )
+        queue_for_isa.assert_not_called()
+        delivered = send_message.call_args.args[1]
+        self.assertIn("prefiero no darte un dato incorrecto", delivered)
+        self.assertIn(app.isa_contact_number(), delivered)
 
     @patch.object(app, "send_whatsapp_text", return_value=True)
     @patch.object(app, "record_bot_message")
@@ -288,14 +292,16 @@ class SalesFlowTests(unittest.TestCase):
     @patch.object(app, "send_whatsapp_text", return_value=True)
     @patch.object(app, "record_bot_message")
     @patch.object(app, "_queue_for_isa")
-    def test_numeric_alias_4_escalates_to_isa_without_touching_the_draft(
+    def test_numeric_alias_4_hands_over_isa_contact_without_touching_the_draft(
         self, queue_for_isa, record_message, send_message
     ):
-        handled = app._handle_sales_intake(11, "5491111111111", "4", _intake(), [])
+        # Isa's contact, not a case: no pending is created any more.
+        intake = _intake()
+        with patch.object(app, "_queue_for_isa") as queue_for_isa:
+            handled = app._handle_sales_intake(11, "5491111111111", "4", intake, [])
         self.assertTrue(handled)
-        queue_for_isa.assert_called_once()
-        self.assertEqual(queue_for_isa.call_args.args[2], "human_handoff")
-        self.assertIn("Isa", send_message.call_args.args[1])
+        queue_for_isa.assert_not_called()
+        self.assertIn(app.isa_contact_number(), send_message.call_args.args[1])
 
     @patch.object(app, "send_customer_fulfillment_buttons", return_value=True)
     @patch.object(app, "record_bot_message")

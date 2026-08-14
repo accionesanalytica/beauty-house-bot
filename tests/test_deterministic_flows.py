@@ -110,11 +110,10 @@ class FredCoreTrackingTests(unittest.TestCase):
     @patch.object(app, "get_order_status", return_value={"found": False, "message": "No encontré esa orden."})
     def test_order_not_found_escalates_and_returns_to_chat(self, get_status, queue_for_isa):
         with patch.object(app, "save_fred_core_state") as save_state:
-            reply = app._fred_core_lookup_order(7, "5491111111111", "999999", [{"role": "user", "content": "hola"}])
-        queue_for_isa.assert_called_once()
-        self.assertEqual(queue_for_isa.call_args.args[2], "bot_fallback")
-        self.assertEqual(queue_for_isa.call_args.kwargs["conversation_context"], [{"role": "user", "content": "hola"}])
+            reply = app._fred_core_lookup_order(7, "5491111111111", "999999", [])
+        queue_for_isa.assert_not_called()
         self.assertIn("no me aparece en el sistema", reply)
+        self.assertIn(app.isa_contact_number(), reply)
         save_state.assert_called_once_with(7, mode="CHAT", order_number="999999")
 
     @patch.object(app, "_queue_for_isa")
@@ -125,7 +124,7 @@ class FredCoreTrackingTests(unittest.TestCase):
     def test_shipped_without_tracking_escalates_as_a_contradiction(self, get_status, queue_for_isa):
         with patch.object(app, "save_fred_core_state"):
             reply = app._fred_core_lookup_order(7, "5491111111111", "55", [])
-        queue_for_isa.assert_called_once()
+        queue_for_isa.assert_not_called()
         self.assertIn("inconsistencia", reply)
 
     @patch.object(app, "get_order_status", return_value={
@@ -496,16 +495,17 @@ class HandleSalesIntakeInterruptionTests(unittest.TestCase):
 
 
 class FredCoreIsaHandoffTests(unittest.TestCase):
-    @patch.object(app, "_queue_for_isa")
-    def test_snapshot_includes_active_product_and_order_number(self, queue_for_isa):
+    def test_handoff_hands_over_isa_contact_without_creating_a_case(self):
+        # No consultation, no pending, no relay: the customer writes to Isa.
         state = _state(active_product_name="SHOOW TOOLS - ISABEL I", order_number="1234")
-        with patch.object(app, "save_fred_core_state") as save_state:
-            reply = app._fred_core_run_isa_handoff(7, "5491111111111", [{"role": "user", "content": "hola"}], state)
-        summary = queue_for_isa.call_args.args[3]
-        self.assertIn("SHOOW TOOLS - ISABEL I", summary)
-        self.assertIn("1234", summary)
+        with patch.object(app, "save_fred_core_state") as save_state, patch.object(
+            app, "_queue_for_isa",
+        ) as queue_for_isa:
+            reply = app._fred_core_run_isa_handoff(7, "5491111111111", [], state)
+        queue_for_isa.assert_not_called()
         save_state.assert_called_once_with(7, mode="CHAT")
         self.assertIn("Isa", reply)
+        self.assertIn(app.isa_contact_number(), reply)
 
 
 class FredCoreMenuDispatchTests(unittest.TestCase):
@@ -530,14 +530,6 @@ class FredCoreMenuDispatchTests(unittest.TestCase):
         save_state.assert_called_once_with(7, mode="TRACKING")
         self.assertEqual(reply, app.ORDER_NUMBER_PROMPT_TEXT)
 
-    @patch.object(app, "_queue_for_isa")
-    def test_selection_4_escalates_to_isa(self, queue_for_isa):
-        with patch.object(app, "save_fred_core_state"):
-            reply = app._fred_core_handle_menu(7, "5491111111111", "4", _state(), [])
-        queue_for_isa.assert_called_once()
-        self.assertEqual(queue_for_isa.call_args.args[2], "human_handoff")
-        self.assertIn("Isa", reply)
-
     def test_unrecognized_reply_releases_back_to_chat_instead_of_re_showing_the_menu(self):
         # MENU only ever consumes an explicit 1-4 selection -- anything else
         # is a real question, and holding it hostage in the menu was the
@@ -555,11 +547,13 @@ class FredCoreMenuDispatchTests(unittest.TestCase):
 class FredCoreSwitchModeTests(unittest.TestCase):
     """switch(mode) itself: the only place a mode is dispatched."""
 
-    def test_menu_mode_dispatches_to_handle_menu(self):
-        with patch.object(app, "_fred_core_handle_menu", return_value="menu-reply") as handle_menu:
+    def test_menu_mode_is_legacy_and_self_heals_to_chat(self):
+        # MENU no longer exists in the runtime; an old conversation stuck
+        # there is corrected and continues as a normal CHAT turn.
+        with patch.object(app, "save_fred_core_state") as save_state:
             result = app._fred_core_dispatch("MENU", 7, "5491111111111", "1", _state(), [])
-        handle_menu.assert_called_once()
-        self.assertEqual(result, "menu-reply")
+        save_state.assert_called_once_with(7, mode="CHAT")
+        self.assertIsNone(result)
 
     def test_checkout_mode_dispatches_to_handle_checkout(self):
         with patch.object(app, "_fred_core_handle_checkout", return_value="__HANDLED_NO_REPLY__") as handle_checkout:
