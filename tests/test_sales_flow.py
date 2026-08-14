@@ -40,6 +40,19 @@ def _intake(status="confirmation"):
     }
 
 
+def _in_stock(sku):
+    """Default live answer for the fixture SKU: real, sellable, plenty of
+    stock. The purchase-integrity invariant verifies every complete draft
+    against Tiendanube, so tests must state what the store would say instead
+    of reaching the network."""
+    return {
+        "found": True, "sku": sku, "product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
+        "variant": "8/8/10/12 mm", "status": "in_stock", "quantity": 40,
+        "price": "30000.00",
+    }
+
+
+@patch.object(app, "get_stock", _in_stock)
 class SalesFlowTests(unittest.TestCase):
     def test_lash_measurements_are_not_mistaken_for_purchase_quantity(self):
         self.assertEqual(app._extract_quantity("Isabel I 8/8/10/12 mm"), 0)
@@ -428,34 +441,38 @@ class SalesFlowTests(unittest.TestCase):
         self.assertIn("Cantidad: 4", summary)
         self.assertIn("Nombre: Luis Vera", summary)
 
-    @patch.object(app, "get_stock")
-    def test_1000_purchase_guard_variations(self, get_stock):
+    def test_1000_purchase_guard_variations(self):
         """500 purchase variations + 500 non-purchase variations.
 
         This is deliberately a deterministic stress test of the guard, not a
         claim that a generative model can be certified by 1,000 fake chats.
+
+        Uses a context manager rather than a method decorator on purpose: the
+        class-level get_stock default would otherwise win over a same-target
+        method decorator and the call count would never be exercised.
         """
-        get_stock.side_effect = lambda sku: {
-            "status": "in_stock",
-            "sku": sku,
-            "product_name": "Modelo de prueba",
-            "variant": "Única",
-            "price": "1000.00",
-        }
+        with patch.object(app, "get_stock") as get_stock:
+            get_stock.side_effect = lambda sku: {
+                "status": "in_stock",
+                "sku": sku,
+                "product_name": "Modelo de prueba",
+                "variant": "Única",
+                "price": "1000.00",
+            }
 
-        for index in range(500):
-            result = {"tool_calls": [{"name": "get_stock", "arguments": {"sku": "SKU-{}".format(index)}}]}
-            candidate = app._verified_purchase_candidate_from_tool_calls(
-                "quiero comprar el modelo {}".format(index), result
-            )
-            self.assertEqual(candidate["sku"], "SKU-{}".format(index))
+            for index in range(500):
+                result = {"tool_calls": [{"name": "get_stock", "arguments": {"sku": "SKU-{}".format(index)}}]}
+                candidate = app._verified_purchase_candidate_from_tool_calls(
+                    "quiero comprar el modelo {}".format(index), result
+                )
+                self.assertEqual(candidate["sku"], "SKU-{}".format(index))
 
-            no_purchase = app._verified_purchase_candidate_from_tool_calls(
-                "quiero ver el modelo {}".format(index), result
-            )
-            self.assertEqual(no_purchase, {})
+                no_purchase = app._verified_purchase_candidate_from_tool_calls(
+                    "quiero ver el modelo {}".format(index), result
+                )
+                self.assertEqual(no_purchase, {})
 
-        self.assertEqual(get_stock.call_count, 500)
+            self.assertEqual(get_stock.call_count, 500)
 
     @patch.object(app, "get_stock")
     def test_ambiguous_multiple_skus_never_starts_a_sale(self, get_stock):

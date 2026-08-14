@@ -655,6 +655,137 @@ def _live_purchase_candidate(live_context: str, message_text: str) -> dict:
     return _live_product_candidate(live_context, message_text)
 
 
+_ISA_INSTRUCTION_PREFIX_RE = re.compile(
+    r"^\s*(?:ok(?:ey|ay)?|dale|listo|perfecto|bueno)?[\s,.:;-]*"
+    r"(?:por\s+favor\s+)?"
+    # Accents are written naturally ("envíale", "decile", "avisá"), so every
+    # vowel that can carry one is matched with or without it.
+    r"(?:env[ií]\w*|mand[aá]\w*|dec[ií]\w*|pregunt[aá]\w*|coment[aá]\w*|"
+    r"avis[aá]\w*|explic[aá]\w*|contest[aá]\w*|respond[eé]\w*)"
+    r"(?:\s*(?:le|les|selo|se\s+lo|a\s+la\s+clienta|al\s+cliente|a\s+ella|"
+    r"a\s+la\s+chica|a\s+la\s+se[ñn]ora))*"
+    r"\s*(?:que|:)?\s*",
+    flags=re.IGNORECASE,
+)
+
+
+def _classify_checkout_failure(sale_draft: dict, error: Exception) -> str:
+    """Tell Isa what actually went wrong, checked against the live store.
+
+    "No hay stock" and "este borrador apunta a un producto que no existe" need
+    completely different actions from her, and conflating them (as production
+    did) sends her to fix a commercial problem that isn't there.
+    """
+    sku = str((sale_draft or {}).get("selected_sku") or "").strip()
+    detail = str(error).strip()
+    if not sku or sku.lower() in ("a confirmar", "none"):
+        return (
+            "⚠️ Error de integridad: este pedido no tiene un SKU real guardado, "
+            "así que no puedo identificar qué variante vender. No es un problema "
+            "de stock. Conviene rehacer la compra con la clienta."
+        )
+    try:
+        stock = get_stock(sku)
+    except Exception:  # noqa: BLE001
+        return "No pude verificar el producto en vivo ahora mismo. Detalle: {}".format(detail)
+    if not stock.get("found"):
+        return (
+            "⚠️ Error de integridad: el SKU {} no existe en la tienda. No es falta "
+            "de stock: el pedido quedó apuntando a un producto equivocado."
+        ).format(sku)
+    if stock.get("status") != "in_stock":
+        return "El producto {} no está disponible para la venta ahora.".format(
+            stock.get("product_name") or sku,
+        )
+    available = stock.get("quantity")
+    if isinstance(available, int):
+        return (
+            "El producto existe y figura con {} unidades, así que no es falta de "
+            "stock. Tiendanube rechazó la creación del link. Detalle: {}"
+        ).format(available, detail)
+    return "No se pudo crear el link. Detalle: {}".format(detail)
+
+
+def _reason_for_customer(text: str) -> str:
+    """Strip Isa's instruction-to-Fred wrapper so the customer reads the fact,
+    not the order that produced it.
+
+    Isa writes "ok envíale al cliente que no hay stock"; the customer must
+    read "no hay stock", never the instruction itself. Only the leading
+    wrapper is removed -- the substance is always preserved verbatim.
+    """
+    cleaned = " ".join((text or "").split())
+    stripped = _ISA_INSTRUCTION_PREFIX_RE.sub("", cleaned, count=1).strip()
+    if not stripped:
+        return cleaned
+    return stripped[0].upper() + stripped[1:] if stripped else cleaned
+
+
+def _resolve_named_product(product_name: str) -> dict:
+    """Turn a product NAME into real, live-verified purchase identity.
+
+    A purchase may only ever be anchored to something Tiendanube confirms is
+    sellable right now, so this returns the real SKU/variant/price or nothing
+    at all. A name alone is never enough to open a checkout.
+    """
+    try:
+        results = search_available_products(product_name, limit=5)
+    except Exception as error:  # noqa: BLE001
+        print("ERROR resolviendo producto nombrado (tipo: {}).".format(type(error).__name__))
+        return {}
+    normalized_target = _normalized_text(product_name)
+    for product in results:
+        if _normalized_text(str(product.get("name") or "")) != normalized_target:
+            continue
+        variants = [v for v in (product.get("variants") or []) if v.get("sku")]
+        if len(variants) != 1:
+            # More than one sellable variant: the variant itself still has to
+            # be chosen, so this is not yet an unambiguous purchase identity.
+            return {}
+        sku = str(variants[0]["sku"]).strip()
+        try:
+            stock = get_stock(sku)
+        except Exception as error:  # noqa: BLE001
+            print("ERROR verificando SKU resuelto (tipo: {}).".format(type(error).__name__))
+            return {}
+        if not stock.get("found") or stock.get("status") != "in_stock":
+            return {}
+        return {
+            "sku": stock.get("sku") or sku,
+            "product_name": stock.get("product_name") or product.get("name"),
+            "variant": stock.get("variant") or "",
+            "unit_price": stock.get("price"),
+        }
+    return {}
+
+
+def _purchase_draft_integrity_error(intake: dict) -> str:
+    """Why this draft must NOT become a summary or an Isa review, or "".
+
+    The invariant: a purchase may only be presented or escalated when its
+    product identity is real and still sellable. Checking it here means a
+    contaminated draft can never reach the customer as a confident summary,
+    nor reach Isa as a card she could approve.
+    """
+    sku = str((intake or {}).get("selected_sku") or "").strip()
+    if not sku or sku.lower() in ("a confirmar", "none"):
+        return "sin SKU real"
+    try:
+        stock = get_stock(sku)
+    except Exception as error:  # noqa: BLE001
+        print("ERROR verificando integridad del borrador (tipo: {}).".format(type(error).__name__))
+        return "no pude verificar el producto en vivo"
+    if not stock.get("found"):
+        return "el SKU {} no existe en la tienda".format(sku)
+    if stock.get("status") != "in_stock":
+        return "el producto no está disponible para la venta"
+    quantity = intake.get("quantity") or 0
+    available = stock.get("quantity")
+    if isinstance(available, int) and quantity and available < quantity:
+        return "stock insuficiente: quedan {} y pediste {}".format(available, quantity)
+    return ""
+
+
 def _other_products_named_in_message(
     live_context: str, message_text: str, active_product_name: str,
 ) -> list:
@@ -671,9 +802,18 @@ def _other_products_named_in_message(
     normalized_message = _normalized_text(message_text)
     normalized_active = _normalized_text(active_product_name or "")
     stopwords = {
-        "quiero", "comprar", "llevar", "entonces", "tambien", "mejor", "unidades",
-        "unidad", "pares", "pack", "packs", "porfa", "favor", "gracias", "pestanas",
-        "pestana", "shoow", "tools", "version", "quisiera", "necesito", "please",
+        # Purchase verbs and quantities.
+        "quiero", "comprar", "compro", "llevar", "llevo", "quisiera", "necesito",
+        "unidades", "unidad", "pares", "pack", "packs", "cantidad",
+        # Greetings and filler. These used to consume the probe budget and hide
+        # the actual product noun -- the concrete cause of a real production
+        # bug where "hola fred, quiero comprar una pega de pestañas" opened a
+        # checkout on a stale product because only "hola" and "fred" were ever
+        # looked up.
+        "hola", "buenas", "fred", "porfa", "favor", "gracias", "please", "entonces",
+        "tambien", "mejor", "entonce", "bueno", "genial", "entoces",
+        # Category words too generic to identify a product on their own.
+        "pestanas", "pestana", "shoow", "tools", "version", "producto", "productos",
     }
     # The customer's own distinctive words, minus anything already part of the
     # active product's name. The RAG catalog is semantic and regularly misses a
@@ -684,7 +824,7 @@ def _other_products_named_in_message(
         if word not in stopwords and word not in normalized_active
     ]
     named = []
-    for probe in probes[:2]:
+    for probe in probes[:4]:
         try:
             results = search_available_products(probe, limit=5)
         except Exception as error:  # noqa: BLE001
@@ -1389,6 +1529,17 @@ def _queue_for_isa(
         # The interactive card only lands inside Meta's 24h window, i.e. when
         # Isa is already active -- always worth trying, never spam.
         notified = bool(send_isa_pending_buttons(action))
+        if not notified:
+            # A transient failure (ConnectionError, a Meta hiccup) must not
+            # leave Isa unaware of a case she could act on right now: inside
+            # an open window a plain-text summary always gets through, and it
+            # never depends on the approved template.
+            notified = bool(send_whatsapp_text(
+                ISA_WHATSAPP_NUMBER,
+                "{}\n\nEscribime “ver” para abrirlo con los botones.".format(
+                    _pending_action_text(action),
+                ),
+            ))
         if not notified and pending_before == 0:
             # Outside that window only the approved template can reach her, and
             # it is reserved for opening a queue that was empty so a busy hour
@@ -2559,7 +2710,22 @@ def _handle_sales_intake(
             # retiro. Nothing about the checkout changes; CHAT answers this
             # one message and the flow resumes on the next.
             return None
-        if not _sale_is_complete(updated_intake):
+        integrity_error = (
+            _purchase_draft_integrity_error(updated_intake)
+            if _sale_is_complete(updated_intake) else ""
+        )
+        if integrity_error:
+            # Never present or escalate a purchase whose identity we cannot
+            # stand behind. Better to reopen the product question than to show
+            # a confident summary for the wrong thing.
+            print("[Checkout] Borrador bloqueado por integridad: {}.".format(integrity_error))
+            cancel_sales_intake(conversation_id)
+            reset_fred_core_checkout(conversation_id)
+            reply = (
+                "Antes de pasarlo necesito confirmar bien el producto: {}. "
+                "¿Me decís de nuevo cuál querés llevar y lo verifico en el momento? 😊"
+            ).format(integrity_error)
+        elif not _sale_is_complete(updated_intake):
             reply = _sales_missing_step(updated_intake)
         elif _reads_as_negation(message_text):
             # "no", "mejor no", "cancelalo" frente al resumen ya mostrado.
@@ -3079,7 +3245,7 @@ def _reject_purchase_with_reason(action: dict, reason: str) -> None:
     """Isa declined a purchase and said why. The customer gets that reason in
     plain language plus a real way forward -- never a bare "no se pudo" -- and
     no checkout is ever created."""
-    reason = " ".join((reason or "").split())
+    reason = _reason_for_customer(reason)
     customer_text = (
         "Isa revisó tu compra y por ahora no podemos avanzar.\n\n{}\n\n"
         "¿Querés que busquemos otra cantidad u otra opción, o preferís que le "
@@ -3571,9 +3737,15 @@ def handle_isa_message(
                 )
                 save_pending_action_checkout(action_id, checkout)
         except (CheckoutError, ValueError, IndexError) as error:
+            # A draft whose SKU cannot become a sellable variant is an
+            # INTEGRITY problem, not a commercial one. Saying "no hay stock"
+            # for it would be plainly wrong and would send Isa to fix the
+            # wrong thing, so the two are reported differently.
             send_whatsapp_text(
                 ISA_WHATSAPP_NUMBER,
-                "No se creó ningún link. {} El pendiente sigue abierto para revisarlo.".format(error),
+                "{}\n\nNo se creó ningún link y el pendiente sigue abierto.".format(
+                    _classify_checkout_failure(sale_draft, error),
+                ),
             )
             return
 
@@ -4834,16 +5006,38 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     core_state.update(_fred_core_active_product_fields(direct_sale_candidate))
                     has_active_product = True
                 if not direct_sale_candidate and has_active_product:
-                    # The customer named a product that isn't the active one
-                    # and it couldn't be pinned to a single SKU. Opening the
-                    # checkout on the OLD product here is the worst possible
-                    # outcome (buying the wrong thing), so ask one concrete
-                    # question instead of guessing or falling back to a menu.
+                    # PRODUCT INTEGRITY. What the customer just named always
+                    # outranks whatever product this conversation happened to
+                    # be about before. Falling back to a stale active_product
+                    # here is how a "quiero comprar una pega" became a
+                    # checkout for Taylor -- the worst possible outcome. Only
+                    # runs when there IS a previous product to be contaminated
+                    # by, so a first-time purchase costs no extra lookups.
                     other_named = _other_products_named_in_message(
                         live_candidate_context, message_text,
                         core_state.get("active_product_name") or "",
                     )
-                    if other_named:
+                    if len(other_named) == 1:
+                        # Unambiguous: resolve it to real live IDs first, then
+                        # let the checkout proceed on THAT product.
+                        resolved = _resolve_named_product(other_named[0])
+                        if resolved:
+                            save_fred_core_state(
+                                conversation_id, **_fred_core_active_product_fields(resolved)
+                            )
+                            core_state.update(_fred_core_active_product_fields(resolved))
+                            direct_sale_candidate = resolved
+                            has_active_product = True
+                            print("[FredCore] producto de la compra resuelto en vivo: {}.".format(
+                                resolved.get("product_name"),
+                            ))
+                        else:
+                            _deliver_flow_reply(customer_phone, conversation_id, (
+                                "Encontré {} pero no pude confirmar una variante vendible ahora "
+                                "mismo. ¿Querés que lo revise con Isa?"
+                            ).format(other_named[0]))
+                            return JSONResponse(content={"ok": True})
+                    elif len(other_named) > 1:
                         options = "\n".join("• {}".format(name) for name in other_named[:3])
                         clarification = (
                             "Para no equivocarme con el pedido, ¿cuál de estas querés?\n{}"

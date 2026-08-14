@@ -41,11 +41,12 @@ class HonestIsaNotificationTests(unittest.TestCase):
         self.assertNotIn("se lo pasé", text)
         self.assertIn("quedó registrada", text)
 
+    @patch.object(app, "send_whatsapp_text", return_value=False)
     @patch.object(app, "create_pending_action", return_value=99)
     @patch.object(app, "set_conversation_state")
     @patch.object(app, "pending_action_count", return_value=0)
     def test_queue_reports_false_when_every_channel_fails(
-        self, count, set_state, create_action,
+        self, count, set_state, create_action, send_text,
     ):
         with patch.object(app, "send_isa_pending_buttons", return_value=False), patch.object(
             app, "send_isa_pending_notification", return_value=False,
@@ -57,22 +58,41 @@ class HonestIsaNotificationTests(unittest.TestCase):
         create_action.assert_called_once()
         self.assertFalse(notified)
 
+    @patch.object(app, "send_whatsapp_text", return_value=True)
+    @patch.object(app, "create_pending_action", return_value=99)
+    @patch.object(app, "set_conversation_state")
+    @patch.object(app, "pending_action_count", return_value=0)
+    def test_plain_text_summary_rescues_a_failed_card(
+        self, count, set_state, create_action, send_text,
+    ):
+        # A transient card failure inside an open window must still reach Isa.
+        with patch.object(app, "send_isa_pending_buttons", return_value=False), patch.object(
+            app, "send_isa_pending_notification", return_value=False,
+        ):
+            notified = app._queue_for_isa(
+                7, "5491111111111", "purchase_review", "resumen", "mensaje",
+            )
+        self.assertTrue(notified)
+        self.assertIn("Pendiente #99", send_text.call_args.args[1])
+
+    @patch.object(app, "send_whatsapp_text", return_value=False)
     @patch.object(app, "create_pending_action", return_value=99)
     @patch.object(app, "set_conversation_state")
     @patch.object(app, "pending_action_count", return_value=0)
     def test_queue_reports_true_when_the_card_reaches_isa(
-        self, count, set_state, create_action,
+        self, count, set_state, create_action, send_text,
     ):
         with patch.object(app, "send_isa_pending_buttons", return_value=True):
             self.assertTrue(app._queue_for_isa(
                 7, "5491111111111", "human_handoff", "resumen", "mensaje",
             ))
 
+    @patch.object(app, "send_whatsapp_text", return_value=False)
     @patch.object(app, "create_pending_action", return_value=99)
     @patch.object(app, "set_conversation_state")
     @patch.object(app, "pending_action_count", return_value=3)
     def test_template_is_not_resent_when_isa_already_has_a_queue(
-        self, count, set_state, create_action,
+        self, count, set_state, create_action, send_text,
     ):
         with patch.object(app, "send_isa_pending_buttons", return_value=False), patch.object(
             app, "send_isa_pending_notification",
@@ -162,6 +182,83 @@ class CustomerAnswerRoutingTests(unittest.TestCase):
         )]
         app._forward_customer_answer_to_isa(7, "5491111111111", "Sí, puedo.")
         send_message.assert_not_called()
+
+
+class ReasonForCustomerTests(unittest.TestCase):
+    """Isa instructs Fred; Fred writes for the customer. Her instruction must
+    never be copied through verbatim (production sent "Ok envíale al cliente
+    que no hay stock" straight to a customer)."""
+
+    def test_instruction_wrapper_is_stripped(self):
+        cases = {
+            "Ok envíale al cliente que no hay stock": "No hay stock",
+            "envíale que no tenemos stock suficiente": "No tenemos stock suficiente",
+            "decile que llega el martes": "Llega el martes",
+            "avisá al cliente que se demora una semana": "Se demora una semana",
+        }
+        for written, expected in cases.items():
+            self.assertEqual(app._reason_for_customer(written), expected)
+
+    def test_a_plain_reason_is_left_untouched(self):
+        for text in (
+            "No hay stock suficiente para esa cantidad",
+            "El producto viene con 3 grupos de fibras",
+        ):
+            self.assertEqual(app._reason_for_customer(text), text)
+
+
+class PurchaseDraftIntegrityTests(unittest.TestCase):
+    """A purchase may never be summarised, escalated or approved unless its
+    product identity is real and sellable right now."""
+
+    def test_a_draft_without_a_real_sku_is_rejected(self):
+        for sku in ("", None, "a confirmar"):
+            self.assertEqual(
+                app._purchase_draft_integrity_error({"selected_sku": sku, "quantity": 2}),
+                "sin SKU real",
+            )
+
+    @patch.object(app, "get_stock", return_value={"found": False})
+    def test_a_sku_the_store_does_not_know_is_an_integrity_error(self, get_stock):
+        error = app._purchase_draft_integrity_error({"selected_sku": "GHOST-1", "quantity": 1})
+        self.assertIn("no existe", error)
+
+    @patch.object(app, "get_stock", return_value={
+        "found": True, "status": "in_stock", "quantity": 1,
+    })
+    def test_insufficient_stock_is_reported_as_stock_not_identity(self, get_stock):
+        error = app._purchase_draft_integrity_error({"selected_sku": "REAL-1", "quantity": 5})
+        self.assertIn("stock insuficiente", error)
+
+    @patch.object(app, "get_stock", return_value={
+        "found": True, "status": "in_stock", "quantity": 40,
+    })
+    def test_a_real_sellable_draft_passes(self, get_stock):
+        self.assertEqual(
+            app._purchase_draft_integrity_error({"selected_sku": "REAL-1", "quantity": 2}), "",
+        )
+
+
+class CheckoutFailureClassificationTests(unittest.TestCase):
+    """"No hay stock" and "este borrador apunta a un producto inexistente"
+    need different actions from Isa and must never be conflated."""
+
+    def test_missing_sku_is_named_an_integrity_error(self):
+        message = app._classify_checkout_failure({"selected_sku": "a confirmar"}, ValueError("x"))
+        self.assertIn("integridad", message.lower())
+        self.assertNotIn("no hay stock", message.lower())
+
+    @patch.object(app, "get_stock", return_value={"found": False})
+    def test_unknown_sku_is_named_an_integrity_error(self, get_stock):
+        message = app._classify_checkout_failure({"selected_sku": "GHOST-1"}, ValueError("x"))
+        self.assertIn("integridad", message.lower())
+
+    @patch.object(app, "get_stock", return_value={
+        "found": True, "status": "in_stock", "quantity": 40,
+    })
+    def test_a_healthy_product_is_never_called_a_stock_problem(self, get_stock):
+        message = app._classify_checkout_failure({"selected_sku": "REAL-1"}, ValueError("boom"))
+        self.assertIn("no es falta de", message.lower())
 
 
 class IsaLegendTests(unittest.TestCase):

@@ -137,7 +137,7 @@ class ApproveCheckoutFailureTests(unittest.TestCase):
         customer_messages = [c.args for c in send_message.call_args_list if c.args[0] == "5491111111111"]
         self.assertEqual(customer_messages, [])
         isa_messages = [c.args[1] for c in send_message.call_args_list if c.args[0] == app.ISA_WHATSAPP_NUMBER]
-        self.assertTrue(any("El pendiente sigue abierto" in message for message in isa_messages))
+        self.assertTrue(any("el pendiente sigue abierto" in message.lower() for message in isa_messages))
 
     @patch.object(app, "pending_action_count", return_value=0)
     @patch.object(app, "record_bot_message")
