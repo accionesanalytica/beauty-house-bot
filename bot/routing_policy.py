@@ -93,6 +93,17 @@ def resolve_harness_routing(
         if getattr(item, "status", "") in {"unavailable_tool", "failed"}
         and "isa" in _normalise(getattr(item, "customer_fallback", ""))
     ), None)
+    # A missing live verifier is a limit on ONE datum, not a reason to throw
+    # away an approved answer. When a governing topic was retrieved (and that
+    # topic does not itself demand review -- that case is the branch below),
+    # the approved policy still answers the question and the unavailable check
+    # stays what it actually is: guidance on wording. Promoting it to a
+    # handoff is what made Fred reply "El dato live requerido no tiene
+    # verificador disponible" to a showroom question the KB already covers.
+    if unavailable_requiring_isa and governing_topic and not (
+        obligations and obligations.escalation_required
+    ):
+        unavailable_requiring_isa = None
     order_status_isa_reason = _order_status_needs_isa(dynamic_requirements)
 
     if governing_topic and obligations and obligations.escalation_required:
@@ -258,6 +269,12 @@ def align_reply_with_routing(
                 "Con ese dato se lo paso junto con todo el contexto."
             ).format(" y ".join(missing))
         if contract["unavailable_messages"]:
+            # Deliberately replaces the base here: by this point the turn is
+            # genuinely escalating, and leaving a dangling clarifying question
+            # ("¿qué producto buscás?") would invite an answer nobody will act
+            # on. An approved Knowledge answer never reaches this branch any
+            # more -- the guard in resolve_harness_routing keeps a governing
+            # topic from being escalated over one unverifiable datum.
             base = " ".join(contract["unavailable_messages"])
         clauses = []
         if "isa" not in _normalise(base):

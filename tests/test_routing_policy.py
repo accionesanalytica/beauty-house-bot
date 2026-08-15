@@ -129,6 +129,52 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertIn("Se lo paso", reply)
 
 
+class KnowledgeOutranksAnUnavailableCheckTests(unittest.TestCase):
+    """An approved topic answers the question even when one live datum it
+    declares has no verifier. Production replied "El dato live requerido no
+    tiene verificador disponible. Escribile a Isa." to a showroom question the
+    Knowledge already covered, because that missing check was promoted to a
+    routing decision."""
+
+    UNAVAILABLE = SimpleNamespace(
+        status="unavailable_tool",
+        customer_fallback=(
+            "No puedo confirmar horarios disponibles en vivo desde acá; "
+            "podés revisar el calendario aprobado o lo vemos con Isa."
+        ),
+    )
+
+    def _routing(self, escalation_required):
+        return resolve_harness_routing(
+            "Quiero comprar y abonar en efectivo, ¿puedo pasar a retirar hoy?", [],
+            decision={"action": "reply", "reason": "normal_response"},
+            knowledge_retrieval=SimpleNamespace(
+                governing_topic="pickups_showroom",
+                obligations=SimpleNamespace(escalation_required=escalation_required),
+            ),
+            dynamic_requirements=[self.UNAVAILABLE],
+        )
+
+    def test_governing_topic_keeps_the_turn_in_chat(self):
+        routing = self._routing(escalation_required=False)
+        self.assertEqual(routing["decision"]["action"], "reply")
+        self.assertIsNone(routing["handoff"])
+
+    def test_the_topic_can_still_demand_isa_itself(self):
+        # When the approved Knowledge says the case needs review, it escalates
+        # -- that decision belongs to the KB, not to a missing verifier.
+        routing = self._routing(escalation_required=True)
+        self.assertEqual(routing["decision"]["action"], "handoff_to_isa")
+
+    def test_without_any_topic_the_old_escalation_still_applies(self):
+        routing = resolve_harness_routing(
+            "¿Cuánto cuesta el courier?", [],
+            decision={"action": "reply", "reason": "normal_response"},
+            dynamic_requirements=[self.UNAVAILABLE],
+        )
+        self.assertEqual(routing["decision"]["action"], "handoff_to_isa")
+
+
 class GroundedDiscoveryBypassTests(unittest.TestCase):
     """D1.1: a missing bare 'sku' argument must not erase a discovery answer
     that already resolved a real match against a verified live Tiendanube
