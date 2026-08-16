@@ -10,10 +10,13 @@ from unittest.mock import patch
 
 BOT_DIR = Path(__file__).resolve().parents[1] / "bot"
 sys.path.insert(0, str(BOT_DIR))
-os.environ.setdefault("GEMINI_API_KEY", "test-key")
 import app  # noqa: E402
 
 
+# Isa's number is what enables the reminder at all. Supplied here instead
+# of read from the environment, so the test asserts the same thing on any
+# machine and in CI.
+@patch.object(app, "ISA_WHATSAPP_NUMBER", "5491100000000")
 class IsaReminderTests(unittest.TestCase):
     @patch.object(app, "send_isa_pending_notification", return_value=True)
     @patch.object(app, "claim_daily_isa_reminder", return_value=True)

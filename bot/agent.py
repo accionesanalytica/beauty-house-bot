@@ -711,11 +711,64 @@ def _filter_relevant_candidates(
     ]
 
 
+# Words that carry no product identity on their own: purchase verbs, pronouns,
+# greetings, quantities and filler. A message built ONLY out of these ("las
+# quiero", "sí dale", "esas") points at nothing the store sells, so nothing may
+# be presented as an answer to it -- that is exactly how a turn with no anchor
+# ended up recommending hair flowers to someone who wrote "Las quiero".
+_NO_PRODUCT_CONTENT_WORDS = frozenset({
+    # Purchase verbs and intent.
+    "quiero", "quiera", "quisiera", "comprar", "compro", "compra", "llevar",
+    "llevo", "necesito", "pedir", "pido", "ordenar", "avanzar", "avancemos",
+    "proceder", "dame", "mandame", "vendeme",
+    # Pronouns and deictics -- these REFER to something, they never name it.
+    "las", "los", "esas", "esos", "esta", "este", "estas", "estos", "aquella",
+    "eso", "esa", "ese", "ella", "ellas", "una", "uno", "unas", "unos", "eses",
+    # Greetings, courtesy and filler.
+    "hola", "buenas", "fred", "porfa", "favor", "gracias", "please", "dale",
+    "listo", "perfecto", "bueno", "genial", "entonces", "tambien", "mejor",
+    "dsp", "despues", "dos", "tres", "cuatro", "cinco",
+    # Quantities and units.
+    "unidad", "unidades", "pares", "par", "pack", "packs", "cantidad",
+})
+
+_ACTIVE_PRODUCT_MARKER = "Producto activo de esta conversación:"
+
+
+def _message_carries_product_content(user_message: str) -> bool:
+    """Does the customer's own message contain ANY word that could name or
+    describe a product?
+
+    Deliberately generous: one non-filler word of three letters or more is
+    enough ("pestañas", "natural", "isabel", "chocolate"). This is not a match
+    against the catalog and never tries to be -- it only separates a message
+    that talks about products at all from one that is pure reference ("las
+    quiero") or pure courtesy ("dale"). The catalog and live stock decide what
+    the words actually resolve to; this decides whether there is anything to
+    resolve.
+    """
+    words = re.findall(r"[a-záéíóúñ0-9]{3,}", (user_message or "").lower())
+    return any(word not in _NO_PRODUCT_CONTENT_WORDS for word in words)
+
+
+def _turn_has_a_product_anchor(user_message: str, rag_context: Optional[str]) -> bool:
+    """True when this turn has something real to attach a candidate to: either
+    the customer named/described a product in this very message, or the
+    conversation already has an active product Fred Core confirmed earlier
+    (which is what makes "las quiero" a legitimate follow-up instead of a
+    guess). Without either, a candidate can only ever come from similarity,
+    and similarity is never allowed to answer on its own."""
+    if _ACTIVE_PRODUCT_MARKER in (rag_context or ""):
+        return True
+    return _message_carries_product_content(user_message)
+
+
 def classify_graceful_discovery_fallback(
     *,
     product_discovery_turn: bool,
     handoff_request: Optional[Dict[str, Any]],
     candidates: List[Dict[str, Any]],
+    has_product_anchor: bool = True,
 ) -> str:
     """Which tier applies when the model exhausted the turn without ever
     closing a valid set_turn_decision. Pure — only counts and set membership,
@@ -725,6 +778,10 @@ def classify_graceful_discovery_fallback(
       "none"     — this fallback does not apply (not a discovery turn, or a
                    handoff is already required — that keeps its existing
                    priority untouched).
+      "ask"      — the turn has no product anchor at all: the customer named
+                   and described nothing, and no active product exists. Any
+                   candidate here comes purely from similarity, so none may be
+                   offered. Fred asks what they are looking for instead.
       "single"   — exactly one real, identifiable (has a SKU) candidate ->
                    show it immediately. Price/stock render honestly as
                    confirmed or not; a pending check is never a reason to
@@ -739,6 +796,12 @@ def classify_graceful_discovery_fallback(
     """
     if not product_discovery_turn or handoff_request:
         return "none"
+    # Checked before counting: with no anchor, the number of candidates is
+    # irrelevant. One similarity hit is not more trustworthy than three, and
+    # showing the single one is precisely the dangerous case (it reads as an
+    # answer, while a menu at least reads as a question).
+    if not has_product_anchor:
+        return "ask"
     count = len(candidates)
     if count == 1:
         sku = str(candidates[0].get("sku") or "").strip()
@@ -815,6 +878,19 @@ def _render_multi_candidate_reply(
     return _ensure_first_greeting(text, greeting_required)
 
 
+def _render_discovery_question_reply(*, greeting_required: bool) -> str:
+    """The turn produced candidates, but nothing in it authorises showing one.
+    Ask instead of guessing. This never names a product, never counts how many
+    were found and never hints that Fred "has something in mind" — mentioning
+    an unnamed find is how a similarity hit turns into an expectation."""
+    text = (
+        "Contame un poco más así no te mando cualquier cosa: ¿qué producto "
+        "estás buscando? Si tenés el nombre como figura en la tienda o el "
+        "link, con eso lo ubico enseguida 😊"
+    )
+    return _ensure_first_greeting(text, greeting_required)
+
+
 def _render_discovery_escalation_offer(*, greeting_required: bool) -> str:
     """Last-resort, still-graceful reply when nothing converged with enough
     confidence: only an honest admission plus an offer, in text — never an
@@ -866,7 +942,16 @@ def _build_fallback_response(
     gate to usefully enforce, and letting it apply here previously caused it
     to silently override this reply with a stale lookup message.
     """
-    if tier == "single":
+    if tier == "ask":
+        reply = _render_discovery_question_reply(greeting_required=greeting_required)
+        match_type = "unresolved"
+        matched_product = ""
+        summary = (
+            "El turno no tenía ningún ancla de producto (la clienta no "
+            "nombró ni describió nada y no hay producto activo); se "
+            "preguntó en lugar de ofrecer un candidato por similitud."
+        )
+    elif tier == "single":
         reply = _render_single_candidate_reply(
             candidates[0], price_requested=price_requested, greeting_required=greeting_required,
             shipping_requested=shipping_requested,
@@ -1590,6 +1675,7 @@ def answer(
         ),
         handoff_request=handoff_request,
         candidates=candidates,
+        has_product_anchor=_turn_has_a_product_anchor(user_message, rag_context),
     )
     if fallback_tier != "none":
         built = _build_fallback_response(
