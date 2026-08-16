@@ -18,7 +18,6 @@ BOT_DIR = Path(__file__).resolve().parents[1] / "bot"
 sys.path.insert(0, str(BOT_DIR))
 
 # Importing app creates a Gemini client, but these tests never call it.
-os.environ.setdefault("GEMINI_API_KEY", "test-key")
 import app  # noqa: E402
 import agent  # noqa: E402
 from tiendanube_events import webhook_signature_is_valid  # noqa: E402

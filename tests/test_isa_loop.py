@@ -13,7 +13,6 @@ from unittest.mock import patch
 BOT_DIR = Path(__file__).resolve().parents[1] / "bot"
 sys.path.insert(0, str(BOT_DIR))
 
-os.environ.setdefault("GEMINI_API_KEY", "test-key")
 import app  # noqa: E402
 
 
@@ -402,6 +401,8 @@ class IsaLegendTests(unittest.TestCase):
         self.assertEqual(send_message.call_args.args[1], app.ISA_OPTIONS_LEGEND)
 
 
+@patch.object(app, "list_pending_actions", new=lambda **kwargs: [])
+@patch.object(app, "set_isa_awaiting", new=lambda *args, **kwargs: None)
 class ConsultationKeepOpenTests(unittest.TestCase):
     @patch.object(app, "set_conversation_state")
     @patch.object(app, "record_bot_message")

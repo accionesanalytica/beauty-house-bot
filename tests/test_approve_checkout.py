@@ -38,6 +38,11 @@ PURCHASE_REVIEW_ACTION = {
 CHECKOUT = {"id": 999, "checkout_url": "https://tiendanube.example/checkout/999"}
 
 
+# handle_isa_message scans open cases before routing a button. That scan is
+# a Supabase read, and a unit test must not depend on the developer having
+# a populated .env -- these classes are about the checkout decision, not
+# about what else happens to be pending.
+@patch.object(app, "list_pending_actions", new=lambda **kwargs: [])
 class ApproveCheckoutTypeGuardTests(unittest.TestCase):
     @patch.object(app, "create_approved_checkout")
     @patch.object(app, "send_whatsapp_text", return_value=True)
@@ -61,6 +66,7 @@ class ApproveCheckoutTypeGuardTests(unittest.TestCase):
         self.assertIn("no es una compra para aprobar", send_message.call_args.args[1])
 
 
+@patch.object(app, "list_pending_actions", new=lambda **kwargs: [])
 class ApproveCheckoutHappyPathTests(unittest.TestCase):
     """Approval revalidates the SAME identity and sends the real Tiendanube
     product link. Fred no longer builds a checkout of his own -- cart, data,
@@ -117,6 +123,7 @@ class ApproveCheckoutHappyPathTests(unittest.TestCase):
         self.assertEqual(to_customer, [])
 
 
+@patch.object(app, "list_pending_actions", new=lambda **kwargs: [])
 class ApproveCheckoutFailureTests(unittest.TestCase):
     @patch.object(app, "resolve_pending_action")
     @patch.object(app, "save_pending_action_checkout")

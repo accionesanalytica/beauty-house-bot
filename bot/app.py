@@ -15,6 +15,7 @@ import re
 import secrets
 import socket
 import sys
+import threading
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -296,7 +297,39 @@ _message_worker_id = "{}:{}:{}".format(socket.gethostname(), os.getpid(), secret
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMS = 768
 
-gemini_client = genai.Client(api_key=GEMINI_KEY)
+# Built on first use, never at import. Importing this module must not require
+# any external credential: the test suite imports it to exercise pure routing
+# and formatting logic, and CI has no keys by design. Constructing the client
+# eagerly made `import app` fail with "Missing key inputs argument!", which
+# says nothing about the real problem and happens before any test can run.
+#
+# The same rule already governs DeepSeek in agent.py (the key is read inside
+# the call and a missing one raises a plain message), so this keeps one
+# pattern for external credentials instead of two.
+_gemini_client = None
+_gemini_client_lock = threading.Lock()
+
+
+def gemini_client():
+    """The Gemini client, created on first real use.
+
+    Raises a clear, actionable error when the key is missing -- at the moment
+    something actually needs Gemini, not at import. Nothing here catches
+    errors coming FROM Gemini: an expired key, a quota error or an outage must
+    surface exactly as the provider reported it.
+    """
+    global _gemini_client
+    with _gemini_client_lock:
+        if _gemini_client is None:
+            # Read here rather than at import so a key configured later in the
+            # process lifetime (or in a test) is honoured.
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "Falta GEMINI_API_KEY en las variables de entorno."
+                )
+            _gemini_client = genai.Client(api_key=api_key)
+        return _gemini_client
 
 
 # ============================================================
@@ -306,7 +339,7 @@ gemini_client = genai.Client(api_key=GEMINI_KEY)
 def embed_text(text: str, task_type: str = "RETRIEVAL_QUERY") -> list:
     """Genera embedding de 768 dimensiones, normalizado."""
 
-    result = gemini_client.models.embed_content(
+    result = gemini_client().models.embed_content(
         model=EMBED_MODEL,
         contents=text,
         config=types.EmbedContentConfig(
