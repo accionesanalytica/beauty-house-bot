@@ -248,6 +248,7 @@ def classify_turn_data_requirement(
     knowledge_context: str = "",
     dynamic_requirements: Sequence[Any] = (),
     product_lexicon: Any = (),
+    product_lexicon_available: bool = True,
 ) -> Dict[str, str]:
     """What this turn needs, and why.
 
@@ -316,6 +317,14 @@ def classify_turn_data_requirement(
     # 11. Nothing commercial, nothing personal, and Knowledge retrieved a
     #     confident governing answer: policies, hours, showroom, generic
     #     returns, generic payment methods, generic shipping.
+    #
+    #     Guarded by the lexicon being genuinely loaded. Without it, check 7
+    #     above was blind -- it could not have detected a named product, so
+    #     "no blocker fired" proves nothing and knowledge_only would be an
+    #     unearned conclusion. Fail closed: keep spending, and say why.
+    if not product_lexicon_available:
+        return verdict(INTENT_UNKNOWN, DATA_CATALOG, "product_lexicon_unavailable")
+
     if governing_topic and (knowledge_context or "").strip():
         return verdict(
             INTENT_POLICY_QUESTION, DATA_KNOWLEDGE_ONLY, "governing_topic_answers_turn"

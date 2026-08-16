@@ -961,41 +961,68 @@ def _log_turn_timing(
         print("ERROR registrando timing del turno (tipo: {}).".format(type(error).__name__))
 
 
-_CATALOG_SNAPSHOT_PATH = Path(__file__).resolve().parents[1] / "data" / "catalog.json"
+# The words that identify a product, versioned with the code (see
+# api/build_product_lexicon.py). This used to be derived from
+# data/catalog.json, which .gitignore excludes as a locally generated dump --
+# so it existed on one machine and nowhere else, and CI and production both
+# built an empty lexicon. An empty lexicon does not fail safe: it silently
+# switches OFF the "customer named a product" blocker, which is the guard that
+# keeps a product question from being answered out of a policy document.
+_PRODUCT_LEXICON_PATH = Path(__file__).resolve().parents[1] / "data" / "product_lexicon.txt"
 _product_lexicon_cache = None
+_product_lexicon_status = "unloaded"
+
+
+def _load_product_lexicon() -> None:
+    """Read the versioned lexicon once, and say plainly what happened."""
+    global _product_lexicon_cache, _product_lexicon_status
+    words = set()
+    try:
+        for line in _PRODUCT_LEXICON_PATH.read_text(encoding="utf-8").splitlines():
+            word = line.strip()
+            if word and not word.startswith("#"):
+                words.add(word)
+        _product_lexicon_status = "ok" if words else "empty"
+    except FileNotFoundError:
+        _product_lexicon_status = "missing"
+    except Exception as error:  # noqa: BLE001
+        _product_lexicon_status = "error:{}".format(type(error).__name__)
+
+    _product_lexicon_cache = frozenset(words)
+    print("[FredCatalog] product_lexicon={} status={} source={}".format(
+        len(_product_lexicon_cache), _product_lexicon_status,
+        _PRODUCT_LEXICON_PATH.name,
+    ))
+    if _product_lexicon_status != "ok":
+        # Loud on purpose. Without this list Fred cannot tell that a customer
+        # named a product, and the turn would look answerable from Knowledge.
+        print(
+            "ERROR CRÍTICO: sin léxico de productos, Fred no puede reconocer "
+            "que una clienta nombró un producto. Regenerá con "
+            "`python api/build_product_lexicon.py`. Mientras tanto ningún "
+            "turno se clasifica como knowledge_only."
+        )
 
 
 def product_lexicon() -> frozenset:
-    """Identifying words from the catalog snapshot, built once per process.
+    """Identifying words from the real catalog, loaded once per process.
 
-    A snapshot (not a live call) on purpose: this is used to recognise that a
-    customer NAMED something, never to claim it exists or is sellable -- those
-    still require the live store. Product families change far more slowly than
-    stock, so a stale snapshot costs at worst an unnecessary catalog lookup,
-    which is the safe direction. A missing or broken file degrades to an empty
-    lexicon, which also fails safe (no product detected -> keep spending).
+    Never a live call: this recognises that a customer NAMED something, and
+    never claims the thing exists or is sellable -- those still require the
+    store, per request. Product families change far more slowly than stock.
     """
-    global _product_lexicon_cache
-    if _product_lexicon_cache is not None:
-        return _product_lexicon_cache
-    names = []
-    try:
-        with open(_CATALOG_SNAPSHOT_PATH, encoding="utf-8") as handle:
-            payload = json.load(handle)
-        products = payload if isinstance(payload, list) else payload.get("products", [])
-        for product in products:
-            name = product.get("name") if isinstance(product, dict) else product
-            if isinstance(name, dict):
-                name = name.get("es") or name.get("pt") or ""
-            if name:
-                names.append(str(name))
-    except Exception as error:  # noqa: BLE001
-        print("ERROR cargando léxico de productos (tipo: {}).".format(type(error).__name__))
-    _product_lexicon_cache = build_product_lexicon(names)
-    print("[Catalogo] léxico de productos: {} palabras identificadoras.".format(
-        len(_product_lexicon_cache),
-    ))
+    if _product_lexicon_cache is None:
+        _load_product_lexicon()
     return _product_lexicon_cache
+
+
+def product_lexicon_available() -> bool:
+    """Whether the product-name blocker can actually do its job.
+
+    An empty lexicon counts as unavailable, not as "no products matched":
+    those two look identical to a caller and only one of them is safe.
+    """
+    return bool(product_lexicon()) and _product_lexicon_status == "ok"
 
 
 def _log_turn_knowledge(
@@ -5706,6 +5733,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 knowledge_context=knowledge_context,
                 dynamic_requirements=knowledge_bundle.dynamic_requirements,
                 product_lexicon=product_lexicon(),
+                product_lexicon_available=product_lexicon_available(),
             )
 
             # Enriching the query with the active product keeps bare
