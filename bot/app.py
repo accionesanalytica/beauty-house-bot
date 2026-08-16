@@ -17,6 +17,8 @@ import socket
 import sys
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from urllib.parse import parse_qs
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -72,6 +74,8 @@ from durable_worker import DeliveryContext, current_delivery_context
 from message_queue import extract_inbound_messages, ordered_turn_text
 from routing_policy import (
     align_reply_with_routing,
+    build_product_lexicon,
+    classify_turn_data_requirement,
     legacy_special_sale_context,
     lifting_clarification_reply,
     resolve_harness_routing,
@@ -373,7 +377,6 @@ def search_similar_products(query: str, limit: int = 3, query_embedding=None) ->
         ]
 
         cursor.close()
-        conn.close()
 
         candidates = fuse_catalog_candidates(
             lexical_rows, semantic_rows, limit=limit * 2
@@ -450,8 +453,54 @@ def _catalog_retrieval_query(
     return " ".join(part for part in parts if part).strip()
 
 
-def _live_candidate_context(catalog_context: str, query: str = "", limit: int = 3) -> str:
-    """Verify RAG candidates before the model writes a recommendation."""
+def _fetch_in_parallel(fetch, items, error_label: str) -> list:
+    """Run `fetch` over `items` concurrently, returning results in INPUT ORDER
+    with None wherever the call raised.
+
+    Purely a scheduling change. Each call is independent (different product,
+    different SKU), nobody reads another's result, and the caller still walks
+    the outcomes sequentially afterwards -- so the reply Fred builds is
+    identical, only sooner. A single item runs inline: a thread would add
+    latency, not remove it.
+
+    Errors keep their existing shape: caught per item, logged with the same
+    message, and skipped by the caller. One product failing must never take
+    down the others, exactly as in the sequential version.
+    """
+    def guarded(item):
+        try:
+            return fetch(item)
+        except Exception as error:  # noqa: BLE001
+            print("ERROR {} (tipo: {}).".format(error_label, type(error).__name__))
+            return None
+
+    items = list(items)
+    if len(items) <= 1:
+        return [guarded(item) for item in items]
+    with ThreadPoolExecutor(max_workers=min(4, len(items))) as pool:
+        return list(pool.map(guarded, items))
+
+
+def _count_live_call(live_calls: dict = None) -> None:
+    """Record one outbound Tiendanube request. Purely additive bookkeeping:
+    it never raises, never blocks, and never influences what gets fetched."""
+    if live_calls is None:
+        return
+    try:
+        live_calls["count"] = live_calls.get("count", 0) + 1
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _live_candidate_context(
+    catalog_context: str, query: str = "", limit: int = 3, live_calls: dict = None,
+) -> str:
+    """Verify RAG candidates before the model writes a recommendation.
+
+    live_calls is an optional counter the caller owns (never module state, so
+    concurrent turns can't contaminate each other). It only counts; nothing
+    here reads it or behaves differently because of it.
+    """
     normalized_query = _normalized_text(query)
     requires_lashes = "pestana" in normalized_query
     product_ids = []
@@ -461,6 +510,7 @@ def _live_candidate_context(catalog_context: str, query: str = "", limit: int = 
     # from every lipstick, brow product or liner that can be "chocolate".
     if requires_lashes and "chocolate" in normalized_query:
         try:
+            _count_live_call(live_calls)
             for product in search_available_products("chocolate", limit=10):
                 product_id = str(product.get("product_id") or "")
                 if product_id and product_id not in product_ids:
@@ -474,14 +524,20 @@ def _live_candidate_context(catalog_context: str, query: str = "", limit: int = 
         if len(product_ids) >= limit:
             break
 
+    # Every candidate is an independent lookup, so they are fetched together
+    # rather than one after another. Counting happens here, in the calling
+    # thread, so the tally never races.
+    for _ in product_ids:
+        _count_live_call(live_calls)
+    availabilities = _fetch_in_parallel(
+        lambda product_id: get_product_availability(int(product_id)),
+        product_ids,
+        "verificando candidata Tiendanube",
+    )
+
     verified = []
-    for product_id in product_ids:
-        try:
-            availability = get_product_availability(int(product_id))
-        except Exception as error:  # noqa: BLE001
-            print("ERROR verificando candidata Tiendanube (tipo: {}).".format(type(error).__name__))
-            continue
-        if not availability.get("found"):
+    for availability in availabilities:
+        if availability is None or not availability.get("found"):
             continue
         in_stock = [
             variant for variant in availability.get("variants", [])
@@ -815,6 +871,171 @@ def send_customer_action_buttons(phone_number: str, text: str, buttons: list) ->
         return False
 
 
+# --- turn observability -----------------------------------------------
+#
+# Two lines per agent turn, greppable and machine-parseable, so "Fred is slow"
+# and "Fred answered wrong" stop being anecdotes. Purely descriptive: nothing
+# here decides anything, and every helper swallows its own errors -- an
+# observability bug must never cost a customer their answer.
+#
+# Phases are wall-clock and sequential, matching how the turn actually runs
+# today. They do not sum to total_ms: total_ms also covers store reads,
+# formatting and delivery, and the gap between the two is itself a signal.
+
+_TIMING_PHASES = ("knowledge_ms", "catalog_ms", "live_stock_ms", "llm_ms")
+
+
+def _new_turn_timings() -> dict:
+    return {phase: 0.0 for phase in _TIMING_PHASES}
+
+
+@contextmanager
+def _timed(timings: dict, phase: str):
+    """Accumulate elapsed ms into one phase. Accumulates rather than assigns:
+    catalog and live verification are each entered more than once per turn,
+    and what matters is the total spent there, not the last visit."""
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        try:
+            timings[phase] = timings.get(phase, 0.0) + (time.monotonic() - started) * 1000
+        except Exception:  # noqa: BLE001 - never let measurement break a turn
+            pass
+
+
+def _log_turn_timing(
+    timings: dict,
+    *,
+    started_at: float,
+    tool_calls: int = 0,
+    tokens_input: int = 0,
+    tokens_output: int = 0,
+) -> None:
+    try:
+        fields = " ".join([
+            "total_ms={}".format(round((time.monotonic() - started_at) * 1000)),
+            " ".join(
+                "{}={}".format(phase, round((timings or {}).get(phase, 0.0)))
+                for phase in _TIMING_PHASES
+            ),
+            "tool_calls={}".format(tool_calls),
+            "tokens_input={}".format(tokens_input),
+            "tokens_output={}".format(tokens_output),
+        ])
+        print("[FredTiming] {}".format(fields))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR registrando timing del turno (tipo: {}).".format(type(error).__name__))
+
+
+_CATALOG_SNAPSHOT_PATH = Path(__file__).resolve().parents[1] / "data" / "catalog.json"
+_product_lexicon_cache = None
+
+
+def product_lexicon() -> frozenset:
+    """Identifying words from the catalog snapshot, built once per process.
+
+    A snapshot (not a live call) on purpose: this is used to recognise that a
+    customer NAMED something, never to claim it exists or is sellable -- those
+    still require the live store. Product families change far more slowly than
+    stock, so a stale snapshot costs at worst an unnecessary catalog lookup,
+    which is the safe direction. A missing or broken file degrades to an empty
+    lexicon, which also fails safe (no product detected -> keep spending).
+    """
+    global _product_lexicon_cache
+    if _product_lexicon_cache is not None:
+        return _product_lexicon_cache
+    names = []
+    try:
+        with open(_CATALOG_SNAPSHOT_PATH, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        products = payload if isinstance(payload, list) else payload.get("products", [])
+        for product in products:
+            name = product.get("name") if isinstance(product, dict) else product
+            if isinstance(name, dict):
+                name = name.get("es") or name.get("pt") or ""
+            if name:
+                names.append(str(name))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR cargando léxico de productos (tipo: {}).".format(type(error).__name__))
+    _product_lexicon_cache = build_product_lexicon(names)
+    print("[Catalogo] léxico de productos: {} palabras identificadoras.".format(
+        len(_product_lexicon_cache),
+    ))
+    return _product_lexicon_cache
+
+
+def _log_turn_knowledge(
+    *, embedding_status: str, retrieval_hits: int = 0, embedding_error: str = "",
+) -> None:
+    """Whether Knowledge actually ran, and why not when it didn't.
+
+    This exists because an embedding failure silently disables the ENTIRE
+    Knowledge block (app skips it when query_embedding is None), so Fred loses
+    every approved answer and degrades to catalog-only with nothing in the logs
+    to say so. Under a provider rate limit that looks identical to "the KB has
+    no chunk for this" -- a content problem and an infrastructure problem
+    wearing the same face. This line tells them apart.
+    """
+    try:
+        print("[FredKnowledge] embedding_status={} retrieval_hits={} embedding_error={}".format(
+            embedding_status or "unknown",
+            retrieval_hits,
+            embedding_error or "none",
+        ))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR registrando knowledge del turno (tipo: {}).".format(type(error).__name__))
+
+
+def _log_turn_routing(routing_requirement: dict = None, *, live_calls: dict = None) -> None:
+    """What this turn needed, versus what it actually spent.
+
+    data_required is the policy's verdict (routing_policy.classify_turn_data_
+    requirement). skipped_live is not hypothetical: it reports whether this
+    turn genuinely made zero Tiendanube requests, counted at the call sites.
+
+    The pair is the measurement. A turn logged as
+        data_required=knowledge_only skipped_live=false
+    is a request Fred paid for and did not need -- counting those across real
+    traffic is what says whether the cut is worth making, and how much.
+    """
+    try:
+        requirement = routing_requirement or {}
+        calls = (live_calls or {}).get("count", 0)
+        print("[FredRouting] intent={} data_required={} skipped_live={} reason={}".format(
+            requirement.get("intent") or "unknown",
+            requirement.get("data_required") or "unknown",
+            "true" if not calls else "false",
+            requirement.get("reason") or "unknown",
+        ))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR registrando routing del turno (tipo: {}).".format(type(error).__name__))
+
+
+def _log_turn_decision(
+    *,
+    topic=None,
+    grounded_by: str = "",
+    core_state: dict = None,
+    buttons_added: bool = False,
+) -> None:
+    """What Fred concluded, in the same shape every turn. active_product and
+    active_sku are read from Fred Core at the END of the turn, so the line
+    reflects what the NEXT message will actually be anchored to -- which is
+    the thing worth auditing after a wrong answer."""
+    try:
+        state = core_state or {}
+        print("[FredDecision] topic={} grounded_by={} active_product={} active_sku={} buttons_added={}".format(
+            topic or "none",
+            grounded_by or "none",
+            state.get("active_product_name") or "none",
+            state.get("active_sku") or "none",
+            "yes" if buttons_added else "no",
+        ))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR registrando decisión del turno (tipo: {}).".format(type(error).__name__))
+
+
 def _offer_customer_actions(
     conversation_id: int, customer_phone: str, reply_text: str, core_state: dict,
     offer_isa: bool = False,
@@ -888,44 +1109,6 @@ def _start_purchase_from_button(
     )
 
 
-def _resolve_named_product(product_name: str) -> dict:
-    """Turn a product NAME into real, live-verified purchase identity.
-
-    A purchase may only ever be anchored to something Tiendanube confirms is
-    sellable right now, so this returns the real SKU/variant/price or nothing
-    at all. A name alone is never enough to open a checkout.
-    """
-    try:
-        results = search_available_products(product_name, limit=5)
-    except Exception as error:  # noqa: BLE001
-        print("ERROR resolviendo producto nombrado (tipo: {}).".format(type(error).__name__))
-        return {}
-    normalized_target = _normalized_text(product_name)
-    for product in results:
-        if _normalized_text(str(product.get("name") or "")) != normalized_target:
-            continue
-        variants = [v for v in (product.get("variants") or []) if v.get("sku")]
-        if len(variants) != 1:
-            # More than one sellable variant: the variant itself still has to
-            # be chosen, so this is not yet an unambiguous purchase identity.
-            return {}
-        sku = str(variants[0]["sku"]).strip()
-        try:
-            stock = get_stock(sku)
-        except Exception as error:  # noqa: BLE001
-            print("ERROR verificando SKU resuelto (tipo: {}).".format(type(error).__name__))
-            return {}
-        if not stock.get("found") or stock.get("status") != "in_stock":
-            return {}
-        return {
-            "sku": stock.get("sku") or sku,
-            "product_name": stock.get("product_name") or product.get("name"),
-            "variant": stock.get("variant") or "",
-            "unit_price": stock.get("price"),
-        }
-    return {}
-
-
 def _purchase_draft_integrity_error(intake: dict) -> str:
     """Why this draft must NOT become a summary or an Isa review, or "".
 
@@ -953,58 +1136,261 @@ def _purchase_draft_integrity_error(intake: dict) -> str:
     return ""
 
 
-def _other_products_named_in_message(
-    live_context: str, message_text: str, active_product_name: str,
-) -> list:
-    """Live-verified products the customer's own words point at, excluding the
-    one already active.
+# "SHOOW TOOLS - ISABEL I (CHOCOLATE)" is a store name; "Isabel I (Chocolate)"
+# is what a person says. Stripping the brand is presentation only -- identity
+# always stays the full catalog name plus the SKU.
+_BRAND_PREFIX_RE = re.compile(r"^(?:PRE\s*VENTA\s*-\s*)?SHOOW\s*TOOLS\s*-\s*", re.IGNORECASE)
+# A preorder has no immediate stock and its price/date are quoted case by case
+# (legacy_special_sale_context already routes "preventa" to Isa). It must never
+# appear among the options for a normal, immediate purchase.
+_PREORDER_NAME_RE = re.compile(r"\bPRE\s*VENTA\b", re.IGNORECASE)
+_MAX_VARIANT_OPTIONS = 5
+# Words that describe a category or a house brand rather than identify a
+# product. "beauty" matches ten unrelated things in this catalog, so it can
+# never be the word that establishes what the customer meant.
+_NON_IDENTIFYING_WORDS = frozenset({
+    "pestanas", "pestana", "shoow", "tools", "beauty", "house", "cosmetics",
+    "producto", "productos", "version", "pack", "set", "kit", "color", "colores",
+    "maquillaje", "perfume", "perfumes",
+})
 
-    This is the guard against the worst possible failure: someone says "quiero
-    4 Taylor" while Isabel I is the active product, Taylor can't be pinned to
-    exactly one SKU (there are several Taylor products), and the checkout
-    silently opens on Isabel I instead. Naming a different product must never
-    resolve to the old one -- if it can't be resolved to exactly one, Fred
-    asks which one.
+
+def _identifying_words(text: str) -> list:
+    """The words in `text` that could actually pin down a product."""
+    return [
+        word for word in re.findall(r"[a-z0-9]+", _normalized_text(text))
+        if len(word) >= 3 and word not in _NON_IDENTIFYING_WORDS
+    ]
+
+
+def _message_names(message_text: str, label: str) -> bool:
+    """Did the customer actually say this, in their own message?
+
+    Every identifying word of `label` has to be present. This is the strict
+    half of the commercial rule ("producto mencionado explícitamente por la
+    clienta") and it is what separates "quiero comprar Isabel I" -- where
+    "isabel" really is in the message -- from "un perfume de Rare Beauty",
+    where the live search returns products that merely share a common word.
+    A substring hit in the store is a coincidence; the customer's own words
+    are the evidence.
+    """
+    normalized_message = _normalized_text(message_text)
+    words = _identifying_words(label)
+    return bool(words) and all(word in normalized_message for word in words)
+
+
+def _short_product_label(product_name: str) -> str:
+    return _BRAND_PREFIX_RE.sub("", str(product_name or "")).strip() or str(product_name or "").strip()
+
+
+def _shared_product_label(product_names: list) -> str:
+    """The leading words every matched name has in common -- "Isabel I" for the
+    fourteen "SHOOW TOOLS - ISABEL I (...)" products. Taken from real catalog
+    names, never from the customer's phrasing and never invented: when the
+    names share no common start, this returns "" and the caller asks without
+    naming anything."""
+    word_lists = [_short_product_label(name).split() for name in product_names if name]
+    if not word_lists:
+        return ""
+    shared = []
+    for position in range(min(len(words) for words in word_lists)):
+        candidates = {words[position].lower() for words in word_lists}
+        if len(candidates) != 1:
+            break
+        shared.append(word_lists[0][position])
+    # A single shared word like "(CHOCOLATE)" or a bare "-" identifies nothing.
+    label = " ".join(shared).strip(" -–—")
+    return label if len(label) >= 3 else ""
+
+
+def _live_products_named_in_message(
+    live_context: str, message_text: str, active_product_name: str,
+    live_calls: dict = None,
+) -> list:
+    """Full live product records (name + in-stock variants) the customer's own
+    words point at, excluding the active one and any preorder.
+
+    Probing is deliberately literal: the customer's own distinctive words are
+    searched against the live store, never against the semantic index. The
+    RAG catalog regularly misses a plainly-named model and, worse, happily
+    returns something merely similar -- which is the one thing a purchase may
+    never be built on. This keeps the real SKUs and variants rather than
+    collapsing them to names, so an ambiguous purchase can be ASKED about
+    using the store's actual options.
+
+    Excluding the active product is the guard against the worst failure mode:
+    someone says "quiero 4 Taylor" while Isabel I is active, Taylor resolves
+    to several products, and the checkout silently opens on Isabel I instead.
     """
     normalized_message = _normalized_text(message_text)
     normalized_active = _normalized_text(active_product_name or "")
     stopwords = {
-        # Purchase verbs and quantities.
         "quiero", "comprar", "compro", "llevar", "llevo", "quisiera", "necesito",
         "unidades", "unidad", "pares", "pack", "packs", "cantidad",
-        # Greetings and filler. These used to consume the probe budget and hide
-        # the actual product noun -- the concrete cause of a real production
-        # bug where "hola fred, quiero comprar una pega de pestañas" opened a
-        # checkout on a stale product because only "hola" and "fred" were ever
-        # looked up.
         "hola", "buenas", "fred", "porfa", "favor", "gracias", "please", "entonces",
         "tambien", "mejor", "entonce", "bueno", "genial", "entoces",
-        # Category words too generic to identify a product on their own.
         "pestanas", "pestana", "shoow", "tools", "version", "producto", "productos",
     }
-    # The customer's own distinctive words, minus anything already part of the
-    # active product's name. The RAG catalog is semantic and regularly misses a
-    # plainly-named model, so this asks Tiendanube directly -- the same live
-    # search the products flow already uses.
     probes = [
         word for word in re.findall(r"[a-z0-9]{4,}", normalized_message)
-        if word not in stopwords and word not in normalized_active
+        if word not in stopwords
+        and word not in _NON_IDENTIFYING_WORDS
+        and word not in normalized_active
     ]
-    named = []
-    for probe in probes[:4]:
-        try:
-            results = search_available_products(probe, limit=5)
-        except Exception as error:  # noqa: BLE001
-            print("ERROR buscando producto nombrado (tipo: {}).".format(type(error).__name__))
+    probes = probes[:4]
+    # One search per probe word, and no probe depends on another's result --
+    # so they go out together. Results are consumed below in probe order, so
+    # `found` ends up in exactly the order the sequential version produced.
+    for _ in probes:
+        _count_live_call(live_calls)
+    searches = _fetch_in_parallel(
+        lambda probe: search_available_products(probe, limit=10),
+        probes,
+        "buscando producto nombrado",
+    )
+
+    found = []
+    seen_names = set()
+    for probe, results in zip(probes, searches):
+        if results is None:
             continue
+        probe_word = re.compile(r"\b{}\b".format(re.escape(probe)))
         for product in results:
             product_name = str(product.get("name") or "").strip()
             normalized_name = _normalized_text(product_name)
             if not product_name or normalized_name == normalized_active:
                 continue
-            if probe in normalized_name and product_name not in named:
-                named.append(product_name)
-    return named
+            if _PREORDER_NAME_RE.search(product_name):
+                continue
+            # Whole word, not substring: Tiendanube's own text search is
+            # generous ("rare" pulls in anything containing those letters),
+            # and a partial hit is not the customer naming a product.
+            if probe_word.search(normalized_name) and product_name not in seen_names:
+                seen_names.add(product_name)
+                found.append(product)
+    return found
+
+
+def _purchase_identity_from_message(
+    live_context: str, message_text: str, active_product_name: str,
+    live_calls: dict = None,
+) -> dict:
+    """Resolve WHAT the customer just asked to buy, under one rule: a SKU is
+    never chosen by similarity.
+
+    Identity requires all three -- the customer named it, it matches a real
+    catalog product, and live stock confirms it. The three possible outcomes
+    map exactly to the commercial rule:
+
+      {"status": "resolved", "candidate": {...}}
+          One unambiguous, live, in-stock SKU. Safe to pin and to put behind
+          a [Comprar] button.
+      {"status": "ambiguous", "label": ..., "options": [...]}
+          The words are real and match the catalog, but they name more than
+          one sellable thing (fourteen products called "Isabel I", or one
+          product with several variants). Fred asks; Fred never picks.
+      {"status": "unknown"}
+          Nothing the customer said resolves to a live product. The normal
+          conversational path continues -- this function stays silent rather
+          than guessing.
+    """
+    products = _live_products_named_in_message(
+        live_context, message_text, active_product_name, live_calls,
+    )
+    if not products:
+        return {"status": "unknown"}
+
+    # Every sellable option the named words point at, flattened across
+    # products. A product with three in-stock variants is three options, and
+    # three products with one variant each is also three -- both are "more
+    # than one thing the customer could have meant".
+    options = []
+    for product in products:
+        product_name = str(product.get("name") or "").strip()
+        variants = [v for v in (product.get("variants") or []) if str(v.get("sku") or "").strip()]
+        for variant in variants:
+            description = str(variant.get("description") or "").strip()
+            options.append({
+                "sku": str(variant["sku"]).strip(),
+                "product_name": product_name,
+                "variant": description,
+                "label": "{}{}".format(
+                    _short_product_label(product_name),
+                    " — {}".format(description) if description else "",
+                ),
+            })
+
+    if not options:
+        return {"status": "unknown"}
+
+    if len(options) == 1:
+        # One candidate is still not enough on its own. Two more gates before
+        # it can become purchasable identity:
+        #   1. the customer must actually have named it (a lone live match is
+        #      not evidence -- the store's search is generous), and
+        #   2. that exact SKU must be re-verified live, the same way the
+        #      [Comprar] button does. A search result is evidence; get_stock
+        #      is confirmation.
+        only = options[0]
+        if not _message_names(message_text, _short_product_label(only["product_name"])):
+            return {"status": "unknown"}
+        try:
+            _count_live_call(live_calls)
+            stock = get_stock(only["sku"])
+        except Exception as error:  # noqa: BLE001
+            print("ERROR verificando SKU único nombrado (tipo: {}).".format(type(error).__name__))
+            return {"status": "unknown"}
+        if not stock.get("found") or stock.get("status") != "in_stock":
+            return {"status": "unknown"}
+        return {
+            "status": "resolved",
+            "candidate": {
+                "sku": stock.get("sku") or only["sku"],
+                "product_name": stock.get("product_name") or only["product_name"],
+                "variant": stock.get("variant") or only["variant"],
+                "unit_price": stock.get("price"),
+            },
+        }
+
+    # Several sellable things matched. That is only real ambiguity if they are
+    # variants of ONE product the customer named -- the several "Isabel I"
+    # products -- and not simply everything sharing a brand.
+    #
+    # Two gates, and both are about evidence rather than judgment:
+    #   1. the customer said the shared name themselves, and
+    #   2. the store really has a product BY that name.
+    # Gate 2 is what separates "Isabel I" (there is a product called exactly
+    # that, the rest are its variants) from "Rare Beauty" (a brand: every
+    # match is "Rare Beauty - <something else>", and someone asking for a
+    # Rare Beauty perfume has not named a product at all). Failing either gate
+    # is not an error -- it just means this turn is a conversation, not an
+    # identification, so the normal path answers it.
+    labels = [option["product_name"] for option in options]
+    label = _shared_product_label(labels)
+    if not label or not _message_names(message_text, label):
+        return {"status": "unknown"}
+    if not any(_short_product_label(name).lower() == label.lower() for name in labels):
+        return {"status": "unknown"}
+    return {"status": "ambiguous", "label": label, "options": options}
+
+
+def _render_variant_question(identity: dict) -> str:
+    """Ask which one, using the store's real options. Never picks, never
+    prices something that wasn't verified, and never pretends the list is
+    complete when it was capped."""
+    options = identity.get("options") or []
+    label = identity.get("label") or ""
+    opening = (
+        "¡Genial! 😊 Tenemos {} en varias opciones:".format(label) if label
+        else "¡Genial! 😊 Encontré varias opciones que pueden ser la que buscás:"
+    )
+    lines = ["• {}".format(option["label"]) for option in options[:_MAX_VARIANT_OPTIONS]]
+    closing = (
+        "¿Cuál buscabas?"
+        if len(options) <= _MAX_VARIANT_OPTIONS
+        else "Y algunas más. ¿Cuál buscabas? Si tenés el nombre exacto o el link, mejor todavía."
+    )
+    return "\n".join([opening] + lines + ["", closing])
 
 
 def _revalidate_product_candidate(candidate: dict) -> dict:
@@ -1816,6 +2202,33 @@ def _isa_direct_contact_reply(lead: str) -> str:
     if not number:
         return lead
     return "{} Podés escribirle directamente acá: {}".format(lead, number)
+
+
+# A handoff carries two different strings and they must never be confused: the
+# "summary" is written for Isa and for the audit trail (it names topics,
+# routing sources and verifiers), while what the customer reads is chosen HERE,
+# from the deterministic reason alone. Rendering a summary as customer copy is
+# what produced replies like "El topic aprobado requiere revisión de Isa para
+# este caso" -- an internal audit field used as conversation.
+_ISA_HANDOFF_LEADS = {
+    "special_sale_request": (
+        "Este pedido lo prepara Isa personalmente para darte el precio y el "
+        "plazo reales."
+    ),
+    "human_request": "Dale, lo mejor es que lo veas directamente con Isa.",
+    "purchase_intent": "Para cerrar la compra te acompaña Isa.",
+    "unable_to_verify": (
+        "Esto no lo tengo confirmado y prefiero no darte un dato incorrecto, "
+        "así que lo mejor es que lo veas con Isa."
+    ),
+}
+_ISA_HANDOFF_DEFAULT_LEAD = "Esto prefiero que lo veas con Isa."
+
+
+def _isa_handoff_lead(reason: Optional[str]) -> str:
+    """The customer-facing sentence for a handoff. Only ever derived from the
+    deterministic reason -- never from a summary, however well it reads."""
+    return _ISA_HANDOFF_LEADS.get(str(reason or ""), _ISA_HANDOFF_DEFAULT_LEAD)
 
 
 def _isa_handoff_confirmation(notified: bool) -> str:
@@ -5132,6 +5545,16 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
         # Observability starts here, after deterministic shortcuts and before
         # retrieval/model work. It intentionally measures only agent turns.
         agent_turn_started = time.monotonic()
+        turn_timings = _new_turn_timings()
+        # Per-turn, never module state: concurrent webhooks must not share a
+        # counter. Defaults chosen so an early failure still logs honestly.
+        turn_live_calls = {"count": 0}
+        routing_requirement = {
+            "intent": "unknown", "data_required": "catalog", "reason": "not_classified",
+        }
+        knowledge_health = {
+            "embedding_status": "skipped", "retrieval_hits": 0, "embedding_error": "",
+        }
         catalog_context = ""
         knowledge_context = ""
         knowledge_bundle = KnowledgeRetrieval()
@@ -5147,23 +5570,38 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 message_text, prior_history, core_state.get("active_product_name") or "",
             )
             if not KNOWLEDGE_RAG_ENABLED:
-                catalog_context = search_similar_products(catalog_query)
+                with _timed(turn_timings, "catalog_ms"):
+                    catalog_context = search_similar_products(catalog_query)
                 knowledge_context = ""
             else:
-                try:
-                    query_embedding = embed_text(
-                        catalog_query, task_type="RETRIEVAL_QUERY"
-                    )
-                except Exception as error:  # noqa: BLE001
-                    print("ERROR generando embedding (tipo: {})".format(type(error).__name__))
-                    query_embedding = None
+                # The embedding is generated once and serves BOTH retrievers.
+                # It is attributed to knowledge_ms because it only exists on
+                # the Knowledge path (with Knowledge off, the catalog does its
+                # own lexical search and no embedding is produced at all).
+                with _timed(turn_timings, "knowledge_ms"):
+                    try:
+                        query_embedding = embed_text(
+                            catalog_query, task_type="RETRIEVAL_QUERY"
+                        )
+                        knowledge_health["embedding_status"] = (
+                            "ok" if query_embedding is not None else "empty"
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        print("ERROR generando embedding (tipo: {})".format(type(error).__name__))
+                        query_embedding = None
+                        # Recorded, not just printed: this is the difference
+                        # between "the KB has no chunk" and "Knowledge never
+                        # ran", which otherwise look identical downstream.
+                        knowledge_health["embedding_status"] = "failed"
+                        knowledge_health["embedding_error"] = type(error).__name__
 
                 catalog_context = ""
                 knowledge_context = ""
                 if query_embedding is not None:
-                    catalog_context = search_similar_products(
-                        catalog_query, query_embedding=query_embedding
-                    )
+                    with _timed(turn_timings, "catalog_ms"):
+                        catalog_context = search_similar_products(
+                            catalog_query, query_embedding=query_embedding
+                        )
                     def retrieve_knowledge(retrieval_query):
                         return search_knowledge_bundle(
                             retrieval_query,
@@ -5175,9 +5613,10 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                             ),
                         )
 
-                    knowledge_bundle, knowledge_query, _ = retrieve_with_recent_context(
-                        message_text, prior_history, retrieve_knowledge
-                    )
+                    with _timed(turn_timings, "knowledge_ms"):
+                        knowledge_bundle, knowledge_query, _ = retrieve_with_recent_context(
+                            message_text, prior_history, retrieve_knowledge
+                        )
                     # Grounding observability: enough to tell from the logs
                     # whether retrieval found the approved answer, without
                     # dumping chunk contents.
@@ -5190,13 +5629,20 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                         knowledge_query[:60], knowledge_bundle.governing_topic,
                         len(knowledge_sections), knowledge_sections[:4],
                     ))
-                    dynamic_check_outcomes = execute_dynamic_requirements(
-                        knowledge_bundle.dynamic_requirements,
-                        {
-                            "get_order_status": get_order_status,
-                            "get_stock": get_stock,
-                        },
-                    )
+                    knowledge_health["retrieval_hits"] = len(knowledge_sections)
+                    # Real Tiendanube calls (get_order_status/get_stock), not
+                    # retrieval -- they belong to the live bucket even though
+                    # Knowledge is what asked for them.
+                    with _timed(turn_timings, "live_stock_ms"):
+                        for _ in knowledge_bundle.dynamic_requirements or ():
+                            _count_live_call(turn_live_calls)
+                        dynamic_check_outcomes = execute_dynamic_requirements(
+                            knowledge_bundle.dynamic_requirements,
+                            {
+                                "get_order_status": get_order_status,
+                                "get_stock": get_stock,
+                            },
+                        )
                     dynamic_context = format_dynamic_check_context(
                         dynamic_check_outcomes
                     )
@@ -5213,7 +5659,21 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     # Knowledge is optional. A temporary embedding/provider
                     # outage must still leave Fred with lexical retrieval and
                     # live Tiendanube verification for commercial answers.
-                    catalog_context = search_similar_products(catalog_query)
+                    with _timed(turn_timings, "catalog_ms"):
+                        catalog_context = search_similar_products(catalog_query)
+
+            # What this turn actually needed. Classified here, once Knowledge
+            # has spoken and before the expensive live verification below --
+            # which is exactly where a future cut would go. For now it only
+            # measures: nothing downstream reads this, and the turn proceeds
+            # identically whatever it says.
+            routing_requirement = classify_turn_data_requirement(
+                message_text,
+                governing_topic=knowledge_bundle.governing_topic,
+                knowledge_context=knowledge_context,
+                dynamic_requirements=knowledge_bundle.dynamic_requirements,
+                product_lexicon=product_lexicon(),
+            )
 
             # Enriching the query with the active product keeps bare
             # follow-ups ("¿cómo quedan?") on topic, but it must never hide a
@@ -5226,7 +5686,8 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             merged_own_words = False
             if catalog_query != message_text:
                 try:
-                    own_words_context = search_similar_products(message_text)
+                    with _timed(turn_timings, "catalog_ms"):
+                        own_words_context = search_similar_products(message_text)
                 except Exception as error:  # noqa: BLE001
                     own_words_context = ""
                     print("ERROR buscando catálogo por el mensaje propio (tipo: {}).".format(
@@ -5241,9 +5702,14 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # With two merged searches the newly-named product can sit past
             # the usual cutoff, so allow a few more live verifications on that
             # turn rather than silently dropping it.
-            live_candidate_context = _live_candidate_context(
-                catalog_context, catalog_query, limit=6 if merged_own_words else 3,
-            )
+            # Up to `limit` sequential get_product_availability calls against
+            # Tiendanube, on every agent turn, before the model is ever asked
+            # anything. Measuring it is the whole point of live_stock_ms.
+            with _timed(turn_timings, "live_stock_ms"):
+                live_candidate_context = _live_candidate_context(
+                    catalog_context, catalog_query, limit=6 if merged_own_words else 3,
+                    live_calls=turn_live_calls,
+                )
             if live_candidate_context:
                 catalog_context = "{}\n\n{}".format(catalog_context, live_candidate_context)
             active_product_fact = ""
@@ -5311,25 +5777,61 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # customer does tap the button the product is already pinned to
             # something the live store confirmed.
             if _expresses_purchase(message_text) and not core_state.get("active_sku"):
-                named = _other_products_named_in_message(
-                    live_candidate_context, message_text,
-                    core_state.get("active_product_name") or "",
-                )
-                if len(named) == 1:
-                    resolved = _resolve_named_product(named[0])
-                    if resolved:
-                        try:
-                            save_fred_core_state(
-                                conversation_id, **_fred_core_active_product_fields(resolved)
-                            )
-                        except Exception as error:  # noqa: BLE001
-                            print("ERROR guardando producto resuelto (tipo: {}).".format(
-                                type(error).__name__,
-                            ))
-                        core_state.update(_fred_core_active_product_fields(resolved))
-                        print("[FredCore] producto identificado para ofrecer compra: {}.".format(
-                            resolved.get("product_name"),
+                with _timed(turn_timings, "live_stock_ms"):
+                    identity = _purchase_identity_from_message(
+                        live_candidate_context, message_text,
+                        core_state.get("active_product_name") or "",
+                        live_calls=turn_live_calls,
+                    )
+                if identity["status"] == "resolved":
+                    resolved = identity["candidate"]
+                    try:
+                        save_fred_core_state(
+                            conversation_id, **_fred_core_active_product_fields(resolved)
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        print("ERROR guardando producto resuelto (tipo: {}).".format(
+                            type(error).__name__,
                         ))
+                    core_state.update(_fred_core_active_product_fields(resolved))
+                    print("[FredCore] producto identificado para ofrecer compra: {}.".format(
+                        resolved.get("product_name"),
+                    ))
+                elif identity["status"] == "ambiguous":
+                    # The words are real and the catalog confirms them, but they
+                    # name more than one sellable thing. Picking one here is the
+                    # single most expensive mistake Fred can make (a wrong sale),
+                    # so the code asks and the model never gets the chance to
+                    # choose. Deterministic: no model call, no [Comprar] button,
+                    # no active_sku written.
+                    if (
+                        not persisted_claim
+                        and CONVERSATION_DEBOUNCE_SECONDS
+                        and conversation_id
+                        and wa_message_id
+                        and not is_latest_customer_message(conversation_id, wa_message_id)
+                    ):
+                        print("[Conversacion] Respuesta obsoleta omitida por mensaje posterior.")
+                        return JSONResponse(content={"ok": True})
+                    question = _render_variant_question(identity)
+                    print("[FredCore] compra ambigua: {} opciones reales, se pregunta.".format(
+                        len(identity["options"]),
+                    ))
+                    if send_whatsapp_text(customer_phone, question):
+                        record_bot_message(conversation_id, question)
+                    # A real turn with a real cost: it did retrieval and live
+                    # verification, it just never reached the model. Logging it
+                    # is what keeps "Fred is slow" attributable.
+                    _log_turn_timing(turn_timings, started_at=agent_turn_started)
+                    _log_turn_knowledge(**knowledge_health)
+                    _log_turn_routing(routing_requirement, live_calls=turn_live_calls)
+                    _log_turn_decision(
+                        topic=knowledge_bundle.governing_topic,
+                        grounded_by="live",
+                        core_state=core_state,
+                        buttons_added=False,
+                    )
+                    return JSONResponse(content={"ok": True})
 
             grounded_reply = _grounded_lash_recommendation(live_candidate_context, catalog_query)
             if grounded_reply:
@@ -5344,16 +5846,17 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 }
             else:
                 knowledge_answer_used = True
-                result = answer(
-                    message_text,
-                    history=prior_history,
-                    rag_context=rag_context,
-                    greeting_required=not any(
-                        message.get("role") == "assistant"
-                        for message in prior_history
-                    ),
-                    verbose=False,
-                )
+                with _timed(turn_timings, "llm_ms"):
+                    result = answer(
+                        message_text,
+                        history=prior_history,
+                        rag_context=rag_context,
+                        greeting_required=not any(
+                            message.get("role") == "assistant"
+                            for message in prior_history
+                        ),
+                        verbose=False,
+                    )
             usage = result.get("usage") or {}
             print(
                 "[IA] llamadas={} prompt_tokens={} completion_tokens={}".format(
@@ -5389,6 +5892,21 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 print("[Fred] grounded_by=none -> respuesta honesta + contacto de Isa.")
                 if send_whatsapp_text(customer_phone, honest):
                     record_bot_message(conversation_id, honest)
+                _log_turn_timing(
+                    turn_timings,
+                    started_at=agent_turn_started,
+                    tool_calls=len(result.get("tool_calls") or ()),
+                    tokens_input=usage.get("prompt_tokens", 0) or 0,
+                    tokens_output=usage.get("completion_tokens", 0) or 0,
+                )
+                _log_turn_knowledge(**knowledge_health)
+                _log_turn_routing(routing_requirement, live_calls=turn_live_calls)
+                _log_turn_decision(
+                    topic=knowledge_bundle.governing_topic,
+                    grounded_by="none",
+                    core_state=core_state,
+                    buttons_added=False,
+                )
                 return JSONResponse(content={"ok": True})
 
             sale_candidate = result.get("sale_candidate")
@@ -5494,9 +6012,11 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     )
                 else:
                     # Fred ya no abre casos para Isa por decisión del modelo:
-                    # responde con honestidad y deja su contacto.
+                    # responde con honestidad y deja su contacto. El summary
+                    # del handoff es material de auditoría para Isa y nunca
+                    # texto para la clienta -- la frase sale del reason.
                     reply = _isa_direct_contact_reply(
-                        handoff.get("summary") or "Esto prefiero que lo veas con Isa."
+                        _isa_handoff_lead(handoff.get("reason"))
                     )
 
             # C4 is presentation-only: decisions, tools and sales state are
@@ -5545,6 +6065,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             print("[Fred] grounded_by={}".format(grounded_by))
 
             delivered = False
+            buttons_added = False
             if reply == "__FULFILLMENT_BUTTONS__":
                 delivered = send_customer_fulfillment_buttons(customer_phone)
                 if delivered:
@@ -5564,6 +6085,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 # A normal CHAT answer carries the two explicit doors out of
                 # the conversation. Offering them changes nothing by itself.
                 delivered = True
+                buttons_added = True
                 print("[Conversacion] Respuesta del agente con botones de acción.")
             elif send_whatsapp_text(customer_phone, reply):
                 delivered = True
@@ -5590,6 +6112,26 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 knowledge_context_used=bool(knowledge_context),
                 duration_ms=round((time.monotonic() - agent_turn_started) * 1000),
             )
+            # llm_ms is the whole answer() call, so it also contains the tool
+            # calls the agent makes inside its own rounds (which are Tiendanube
+            # HTTP, not model time). tool_calls is what tells the two apart:
+            # a large llm_ms with a high tool_calls is a tools problem, the
+            # same number with tool_calls=0 is a model problem.
+            _log_turn_timing(
+                turn_timings,
+                started_at=agent_turn_started,
+                tool_calls=len(result.get("tool_calls") or ()),
+                tokens_input=usage.get("prompt_tokens", 0) or 0,
+                tokens_output=usage.get("completion_tokens", 0) or 0,
+            )
+            _log_turn_knowledge(**knowledge_health)
+            _log_turn_routing(routing_requirement, live_calls=turn_live_calls)
+            _log_turn_decision(
+                topic=knowledge_bundle.governing_topic,
+                grounded_by=grounded_by,
+                core_state=core_state,
+                buttons_added=buttons_added,
+            )
         except Exception as error:  # noqa: BLE001
             print(f"ERROR respondiendo con agente (tipo: {type(error).__name__})")
             _send_service_fallback(
@@ -5606,6 +6148,17 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 catalog_context_used=bool(catalog_context),
                 knowledge_context_used=bool(knowledge_context),
                 duration_ms=round((time.monotonic() - agent_turn_started) * 1000),
+            )
+            # A failed turn is the one you most want timings for: it still
+            # spent whatever it spent before falling over.
+            _log_turn_timing(turn_timings, started_at=agent_turn_started)
+            _log_turn_knowledge(**knowledge_health)
+            _log_turn_routing(routing_requirement, live_calls=turn_live_calls)
+            _log_turn_decision(
+                topic=knowledge_bundle.governing_topic,
+                grounded_by="error",
+                core_state=core_state,
+                buttons_added=False,
             )
 
         return JSONResponse(content={"ok": True})

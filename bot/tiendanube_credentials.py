@@ -8,6 +8,8 @@ is saved in Supabase and is preferred for all production API calls.
 import base64
 import hashlib
 import os
+import threading
+import time
 from typing import Dict
 
 import psycopg2
@@ -134,15 +136,55 @@ def _authorized_credential() -> Dict[str, str]:
     return {"store_id": row[0], "access_token": token}
 
 
+# The stored credential is read from Postgres on EVERY Tiendanube request --
+# a fresh connection, query and close each time, measured at ~500ms. A turn
+# that verifies six products therefore spends about three seconds re-reading
+# a value that changes only when the owner re-authorises the app.
+#
+# This caches it in-process for a short window. Semantics are preserved rather
+# than traded away: any request that Tiendanube rejects as unauthorised calls
+# invalidate_tiendanube_configuration() and retries once with a fresh read
+# (see tiendanube_tools._get), so a rotated credential takes effect on the
+# very next call instead of after the TTL. The TTL is only a backstop.
+_CREDENTIAL_CACHE_SECONDS = 60.0
+_credential_cache = {"value": None, "expires_at": 0.0}
+_credential_lock = threading.Lock()
+
+
+def invalidate_tiendanube_configuration() -> None:
+    """Drop the cached credential so the next read hits the database.
+
+    Called when Tiendanube rejects a request as unauthorised: that is the one
+    signal that the cached value is genuinely wrong.
+    """
+    with _credential_lock:
+        _credential_cache["value"] = None
+        _credential_cache["expires_at"] = 0.0
+
+
 def get_tiendanube_configuration() -> Dict[str, str]:
     """Return the current production credential without exposing it in logs."""
 
     user_agent = os.getenv(
         "TIENDANUBE_USER_AGENT", "BeautyHouseBot (support@example.com)"
     ).strip()
+
+    with _credential_lock:
+        cached = _credential_cache["value"]
+        fresh = time.monotonic() < _credential_cache["expires_at"]
+    if cached and fresh:
+        # Copied before returning: callers have always received a private dict
+        # they could mutate, and caching must not quietly start sharing one.
+        configuration = dict(cached)
+        configuration["user_agent"] = user_agent
+        return configuration
+
     authorized = _authorized_credential()
     if authorized:
         authorized["user_agent"] = user_agent
+        with _credential_lock:
+            _credential_cache["value"] = dict(authorized)
+            _credential_cache["expires_at"] = time.monotonic() + _CREDENTIAL_CACHE_SECONDS
         return authorized
 
     store_id = os.getenv("TIENDANUBE_STORE_ID", "").strip()
