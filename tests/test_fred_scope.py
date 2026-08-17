@@ -412,3 +412,147 @@ class PolicyBypassSkipsCatalogAndStoreTests(unittest.TestCase):
     def test_without_a_governing_topic_nothing_is_skipped(self):
         calls, _ = self._run("una consulta cualquiera", topic=None)
         self.assertGreater(calls["catalog"], 0)
+
+
+class AnOrderNamedByItsNumberNeedsNothingElseTests(unittest.TestCase):
+    """"pedido 6345" carries its own identifier.
+
+    Nothing has to be inferred from surrounding words, from history, or from
+    the catalog -- and none of those can add anything to it. It used to fall
+    through to the generic path and pay for a catalog search and a live
+    product lookup to answer a question the order number already answered.
+    """
+
+    def test_every_explicit_form_classifies_as_an_existing_order(self):
+        for message in ("pedido 6345", "orden 6345", "pedido #6345", "orden #6345",
+                        "Pedido 6345", "hola, orden #6345"):
+            with self.subTest(message=message):
+                verdict = _verdict(message, **KB)
+                self.assertEqual(verdict["intent"], "existing_order")
+                self.assertEqual(verdict["data_required"], DATA_LIVE)
+
+    def test_the_number_is_read_from_the_message_not_hardcoded(self):
+        from routing_policy import order_number_reference
+
+        for message, expected in (("pedido 6345", "6345"), ("orden #12", "12"),
+                                  ("pedido 999999", "999999")):
+            with self.subTest(message=message):
+                self.assertEqual(order_number_reference(message), expected)
+
+    def test_a_bare_number_or_an_unrelated_one_is_not_an_order_reference(self):
+        from routing_policy import order_number_reference
+
+        for message in ("6345", "quiero 12 cajas", "el 5 de mayo", "pedido"):
+            with self.subTest(message=message):
+                self.assertEqual(order_number_reference(message), "")
+
+    def test_it_looks_the_order_up_directly_without_catalog_or_product_stock(self):
+        looked_up, calls = [], {"catalog": 0, "live": 0}
+        store = {"mode": "CHAT"}
+
+        def get_state(conversation_id):
+            base = dict.fromkeys([
+                "active_product_id", "active_product_name", "active_sku",
+                "active_variant", "unit_price", "quantity", "delivery_method",
+                "customer_name", "customer_email", "postal_code",
+                "checkout_step", "order_number",
+            ])
+            base["mode"] = "CHAT"
+            base.update(store)
+            return base
+
+        mocks = {
+            "CONVERSATION_DEBOUNCE_SECONDS": 0, "BOT_RESPONSE_MODE": "agent",
+            "get_fred_core_state": get_state,
+            "save_fred_core_state": lambda c, **f: store.update(
+                {k: v for k, v in f.items() if v is not None}),
+            "reset_fred_core_checkout": lambda c: None,
+            "get_active_sales_intake": lambda c: None,
+            "get_product_selection": lambda *a, **k: None,
+            "record_inbound_message": lambda *a, **k: (7, "BOT", False),
+            "record_bot_message": lambda *a, **k: None,
+            "record_agent_turn": lambda **k: None,
+            # Deliberately non-empty: an old complaint must not be consulted.
+            "load_history": lambda *a, **k: [
+                {"role": "user", "content": "el protector llegó abierto"}],
+            "is_latest_customer_message": lambda *a, **k: True,
+            "send_whatsapp_text": lambda p, t: True,
+            "search_similar_products": lambda *a, **k: (
+                calls.__setitem__("catalog", calls["catalog"] + 1) or ""),
+            "_live_candidate_context": lambda *a, **k: (
+                calls.__setitem__("live", calls["live"] + 1) or ""),
+            "answer": lambda t, **k: {
+                "reply": "(modelo)", "tool_calls": [], "usage": {},
+                "decision": {"action": "reply", "reason": "normal_response"}},
+            "get_order_status": lambda n: looked_up.append(n) or {
+                "found": True, "order_number": n, "payment_status": "paid",
+                "shipping_status": "unpacked", "fulfillment_status": "UNPACKED",
+                "shipping_type": "ship", "tracking": None, "carrier": None},
+        }
+        for message, expected in (("pedido 6345", "6345"), ("orden 6345", "6345"),
+                                  ("pedido #6345", "6345")):
+            with self.subTest(message=message):
+                looked_up.clear()
+                calls["catalog"] = calls["live"] = 0
+                store.clear()
+                store["mode"] = "CHAT"
+                handles = [patch.object(app, n, v) for n, v in mocks.items()]
+                for handle in handles:
+                    handle.start()
+                stream = io.StringIO()
+                try:
+                    with redirect_stdout(stream):
+                        asyncio.run(app.webhook_post(_Request(message)))
+                finally:
+                    for handle in reversed(handles):
+                        handle.stop()
+                self.assertEqual(looked_up, [expected])
+                self.assertEqual(calls["catalog"], 0, "no debe consultar catálogo")
+                self.assertEqual(calls["live"], 0, "no debe verificar stock de producto")
+                self.assertIn("[OrderLive]", stream.getvalue())
+
+    def test_it_works_without_fred_having_just_asked_for_a_number(self):
+        # No prior assistant message at all: the reference stands alone.
+        self.assertFalse(app._fred_just_asked_for_order_number([]))
+        self.assertEqual(_verdict("pedido 6345")["intent"], "existing_order")
+
+
+class WholesaleConditionsDoNotMixTests(unittest.TestCase):
+    """SHOOW TOOLS has its own approved minimums; the generic ones must not be
+    read as applying to it."""
+
+    @classmethod
+    def setUpClass(cls):
+        from knowledge_rag import load_knowledge_chunks
+        cls.chunks = load_knowledge_chunks(BOT_DIR.parent / "knowledge")
+
+    def _context(self, query):
+        from knowledge_rag import retrieve_local_knowledge
+        return retrieve_local_knowledge(query, self.chunks).context or ""
+
+    def test_the_shoow_tools_minimum_is_the_approved_one(self):
+        self.assertIn("12 cajas", self._context(
+            "cuál es el mínimo de pestañas SHOOW TOOLS mayorista"))
+
+    def test_the_shoow_tools_price_is_the_approved_one(self):
+        self.assertIn("18.000", self._context(
+            "cuánto salen las pestañas SHOOW TOOLS mayorista"))
+
+    def test_the_approved_brand_list_is_untouched(self):
+        context = self._context("qué marcas trabajan por mayor")
+        for brand in ("GOT2B", "Kleancolor", "Moira"):
+            self.assertIn(brand, context)
+
+    def test_wherever_the_generic_minimum_is_stated_it_says_it_is_generic(self):
+        # The mixing guard, checked at the source rather than per query: any
+        # chunk that states the generic minimum alongside SHOOW TOOLS content
+        # must also say which one governs.
+        import re
+        from pathlib import Path
+
+        scoped = "rigen exclusivamente las condiciones de su sección"
+        for path in (BOT_DIR.parent / "knowledge").rglob("*.md"):
+            text = path.read_text(encoding="utf-8")
+            if "3, 6 o 12 unidades" in text:
+                with self.subTest(path=path.name):
+                    self.assertIn(scoped, text)

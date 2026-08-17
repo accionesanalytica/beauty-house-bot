@@ -82,6 +82,7 @@ from routing_policy import (
     _carries_commercial_object,
     _named_catalog_product,
     _pickup_of_a_specific_order,
+    order_number_reference,
     align_reply_with_routing,
     build_product_lexicon,
     classify_turn_data_requirement,
@@ -5820,8 +5821,13 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
 
         order_number = extract_order_number(message_text)
         normalized_for_tracking = _knowledge_normalise(message_text)
+        # "pedido 6345" names an order outright. The number IS the identifier,
+        # so nothing has to be inferred from surrounding words or from history
+        # -- and no catalog or product lookup can add anything to it. This
+        # stands on its own even when Fred did not just ask for a number.
         strong_tracking_evidence = bool(
             _STRONG_TRACKING_TRIGGER_RE.search(normalized_for_tracking)
+            or order_number_reference(normalized_for_tracking)
             or _pickup_of_a_specific_order(normalized_for_tracking)
         )
         if order_number and strong_tracking_evidence:

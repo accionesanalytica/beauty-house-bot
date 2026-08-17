@@ -28,7 +28,7 @@ Habitualmente 7 a 20 días hábiles, sujeto a origen, disponibilidad, aduana y l
 
 ## ¿Hay un mínimo mayorista único?
 
-No. Depende de cada producto y habitualmente puede ser 3, 6 o 12 unidades. La publicación vigente define el mínimo y precio exactos.
+No. Depende de cada producto y habitualmente puede ser 3, 6 o 12 unidades. La publicación vigente define el mínimo y precio exactos. Las marcas con lista mayorista propia aprobada quedan fuera de este mínimo genérico: para SHOOW TOOLS rigen exclusivamente las condiciones de su sección específica.
 
 ## ¿Las pestañas se reutilizan?
 

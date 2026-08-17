@@ -123,6 +123,19 @@ _PROCEDURE_QUESTION_RE = re.compile(
     r"\bque\s+tengo\s+que\s+hacer\b|\bse\s+puede\b|\bes\s+necesario\b|"
     r"\bcomo\s+funciona\b"
 )
+# An order named by its number: "pedido 6345", "orden #6345". This is the
+# least ambiguous thing a customer can say about an order -- the number IS the
+# identifier -- so it needs no surrounding evidence and no retrieval to work
+# out what it means. It stands alone even when Fred did not just ask for it.
+_ORDER_NUMBER_REFERENCE_RE = re.compile(r"\b(?:pedido|orden)\s*#?\s*(\d{2,})\b")
+
+
+def order_number_reference(normalized_message: str) -> str:
+    """The order number a message names outright, or ""."""
+    match = _ORDER_NUMBER_REFERENCE_RE.search(normalized_message)
+    return match.group(1) if match else ""
+
+
 # Pointing at ONE order that already exists: possessive, or identified by
 # number, or explicitly the one they placed.
 _SPECIFIC_ORDER_REF_RE = re.compile(
@@ -402,7 +415,11 @@ def classify_turn_data_requirement(
     #    Collecting is only an order question when it points at a specific
     #    order; "¿cómo puedo retirar un pedido?" asks how pickups work, which
     #    approved policy answers without touching the store.
-    if _EXISTING_ORDER_RE.search(normalised) or _pickup_of_a_specific_order(normalised):
+    if (
+        _EXISTING_ORDER_RE.search(normalised)
+        or _ORDER_NUMBER_REFERENCE_RE.search(normalised)
+        or _pickup_of_a_specific_order(normalised)
+    ):
         return verdict(INTENT_EXISTING_ORDER, DATA_LIVE, "existing_order")
 
     # 4. Approved policy answers this, and nothing about the turn points at
