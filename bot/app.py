@@ -1103,6 +1103,28 @@ def log_output_stage(stage: str, text: str, **flags) -> None:
         print("ERROR registrando etapa de salida (tipo: {}).".format(type(error).__name__))
 
 
+def history_without_commercial_handoffs(prior_history: list) -> list:
+    """The conversation minus Fred's own previous sales copy.
+
+    Context engineering, and the first line of defence: the demonstrated root
+    cause was stage=model already carrying the purchase handoff, because the
+    previous assistant turn WAS that handoff and reproducing the most recent
+    answer is a natural completion. The model cannot repeat what it was never
+    shown.
+
+    Only Fred's own commercial copy is removed, and only on a policy turn.
+    Customer messages are always kept -- a short follow-up ("¿y el sábado?")
+    needs them to make sense -- and so is every other thing Fred said. This
+    narrows the prompt; it does not erase the conversation.
+    """
+    kept = []
+    for item in prior_history or []:
+        if item.get("role") == "assistant" and _carries_commercial_copy(item.get("content")):
+            continue
+        kept.append(item)
+    return kept
+
+
 def _restrict_output_to_turn_decision(reply: str, *, policy_turn: bool) -> str:
     """Only components this turn's decision authorises may reach the customer.
 
@@ -6424,13 +6446,26 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             else:
                 knowledge_answer_used = True
                 with _timed(turn_timings, "llm_ms"):
+                    # First defence, before the model writes anything: a
+                    # policy turn is not shown Fred's own previous sales copy.
+                    # The output filter downstream stays as the second.
+                    model_history = prior_history
+                    if policy_bypass:
+                        model_history = history_without_commercial_handoffs(prior_history)
+                        if len(model_history) != len(prior_history):
+                            print(
+                                "[FredContext] policy turn: {} mensajes de venta "
+                                "previos fuera del prompt.".format(
+                                    len(prior_history) - len(model_history),
+                                )
+                            )
                     result = answer(
                         message_text,
-                        history=prior_history,
+                        history=model_history,
                         rag_context=rag_context,
                         greeting_required=not any(
                             message.get("role") == "assistant"
-                            for message in prior_history
+                            for message in model_history
                         ),
                         verbose=False,
                     )

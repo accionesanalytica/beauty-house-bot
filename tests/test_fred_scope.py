@@ -728,7 +728,10 @@ class TheVisibleAnswerBelongsToThisTurnTests(unittest.TestCase):
         def answer(text, **kwargs):
             captured["rag_context"] = kwargs.get("rag_context", "")
             captured["history"] = kwargs.get("history", [])
-            return {"reply": model_reply, "tool_calls": [], "usage": {},
+            # A callable lets a test model react to what it was actually
+            # shown, which is the only way to prove the prompt was filtered.
+            reply = model_reply(**kwargs) if callable(model_reply) else model_reply
+            return {"reply": reply, "tool_calls": [], "usage": {},
                     "decision": {"action": "reply", "reason": "normal_response"}}
 
         mocks = {
@@ -939,3 +942,120 @@ class OnlyThisTurnsComponentsReachTheCustomerTests(TheVisibleAnswerBelongsToThis
         self.assertIn("stage=model", first)
         # And it is gone by the time anything is sent.
         self.assertIn("purchase_handoff=no", stages[-1])
+
+
+class ThePromptNeverCarriesAPreviousSaleTests(TheVisibleAnswerBelongsToThisTurnTests):
+    """First defence: context engineering. The model cannot repeat what it was
+    never shown.
+
+    The demonstrated root cause was stage=model already carrying the purchase
+    handoff, because the previous assistant turn WAS that handoff. Filtering
+    the output afterwards works, but it works on a mistake that did not need
+    to be made.
+    """
+
+    def _echoing_turn(self, history):
+        """A model that reproduces the last assistant message it can see --
+        the behaviour that caused the incident."""
+        def echo(**kwargs):
+            previous = next(
+                (m["content"] for m in reversed(kwargs.get("history", []))
+                 if m.get("role") == "assistant"),
+                "",
+            )
+            return (previous + "\n\n" if previous else "") + \
+                "El showroom atiende con reserva previa."
+
+        sent, captured, output = self._turn(
+            "quiero pasar por el showroom", echo, history)
+        return sent, captured["history"], output
+
+    def test_the_model_is_not_shown_the_previous_sale(self):
+        _, history_seen, output = self._echoing_turn(self._contaminated_history())
+        self.assertFalse(
+            [m for m in history_seen if "cerrar la compra" in str(m.get("content"))])
+        self.assertIn("[FredContext]", output)
+
+    def test_the_handoff_is_already_absent_at_the_model_stage(self):
+        _, _, output = self._echoing_turn(self._contaminated_history())
+        model_stage = next(line for line in output.splitlines()
+                           if "stage=model" in line)
+        self.assertIn("purchase_handoff=no", model_stage)
+        self.assertIn("isa_contact=no", model_stage)
+
+    def test_the_payload_is_clean_and_the_second_defence_had_nothing_to_do(self):
+        sent, _, output = self._echoing_turn(self._contaminated_history())
+        self.assertNotIn("cerrar la compra", sent[0])
+        self.assertNotIn("+5491124548738", sent[0])
+        self.assertIn("showroom", sent[0].lower())
+        self.assertIn("handoff_appended=no", output)
+        # Nothing left for the output filter to drop -- which is the point.
+        filter_stage = next(line for line in output.splitlines()
+                            if "stage=decision_filter" in line)
+        self.assertIn("dropped=no", filter_stage)
+
+    def test_customer_messages_are_never_dropped(self):
+        # A short follow-up needs them to make sense; only Fred's own sales
+        # copy is removed.
+        history = self._contaminated_history() + [
+            {"role": "user", "content": "gracias"},
+        ]
+        _, history_seen, _ = self._echoing_turn(history)
+        self.assertEqual(
+            [m["content"] for m in history_seen if m["role"] == "user"],
+            ["quiero 4", "gracias"],
+        )
+
+    def test_other_things_fred_said_are_kept(self):
+        history = [
+            {"role": "user", "content": "hola"},
+            {"role": "assistant", "content": "¡Hola! ¿En qué te ayudo? 😊"},
+            {"role": "assistant", "content": (
+                "¡Genial! Para cerrar la compra (SHOOW TOOLS - ISABEL I) te paso "
+                "con Isa, que la coordina directamente. Podés escribirle "
+                "directamente acá: +5491124548738")},
+        ]
+        _, history_seen, _ = self._echoing_turn(history)
+        contents = [m["content"] for m in history_seen]
+        self.assertIn("¡Hola! ¿En qué te ayudo? 😊", contents)
+        self.assertFalse([c for c in contents if "cerrar la compra" in c])
+
+    def test_a_commercial_turn_keeps_its_full_history(self):
+        # The filter is scoped to policy turns: nothing is hidden from a turn
+        # that is genuinely about buying.
+        history = self._contaminated_history()
+        self.assertEqual(
+            app.history_without_commercial_handoffs([
+                {"role": "user", "content": "hola"},
+            ]),
+            [{"role": "user", "content": "hola"}],
+        )
+        self.assertEqual(len(app.history_without_commercial_handoffs(history)), 1)
+
+
+class TheOutputFilterStandsOnItsOwnTests(unittest.TestCase):
+    """Second defence, tested independently of the first.
+
+    Context filtering removes the likeliest source; it cannot remove every
+    source. The output filter must still hold on its own if commercial copy
+    reaches the reply by some other route.
+    """
+
+    def test_it_drops_commercial_copy_regardless_of_history(self):
+        contaminated = (
+            "Genial! Para cerrar la compra (SHOOW TOOLS - ISABEL I) te paso con "
+            "Isa. Podés escribirle directamente acá: +5491124548738"
+            "\n\nEl showroom atiende con reserva previa."
+        )
+        result = app._restrict_output_to_turn_decision(contaminated, policy_turn=True)
+        self.assertNotIn("cerrar la compra", result)
+        self.assertIn("showroom", result.lower())
+
+    def test_it_leaves_a_commercial_turn_alone(self):
+        text = "Para cerrar la compra te acompaña Isa."
+        self.assertEqual(
+            app._restrict_output_to_turn_decision(text, policy_turn=False), text)
+
+    def test_its_markers_track_freds_own_copy(self):
+        for lead in app._ISA_HANDOFF_LEADS.values():
+            self.assertIn(lead, app.commercial_copy_markers())
