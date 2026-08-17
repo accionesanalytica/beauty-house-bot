@@ -1058,6 +1058,72 @@ def _log_turn_knowledge(
         print("ERROR registrando knowledge del turno (tipo: {}).".format(type(error).__name__))
 
 
+def _previous_assistant_message(prior_history: list) -> str:
+    return next(
+        (
+            str(item.get("content") or "").strip()
+            for item in reversed(prior_history or [])
+            if item.get("role") == "assistant"
+        ),
+        "",
+    )
+
+
+def _reply_belongs_to_this_turn(reply: str, prior_history: list) -> str:
+    """Remove any part of the reply that is simply the previous answer again.
+
+    A turn's visible answer must belong to that turn's decision. The model
+    writes the final text freely, and with the previous exchange in its
+    context it can reproduce it verbatim -- which is exactly what happened: a
+    showroom question came back with the previous turn's sale handoff, phone
+    number and all, because that copy was the most recent assistant message.
+
+    Deliberately literal: it removes text that IS the previous message, and
+    never edits or rewrites anything else. Nothing is looked up, nothing is
+    classified, and a reply that merely resembles the previous one is left
+    alone -- only an actual reproduction is dropped.
+    """
+    previous = _previous_assistant_message(prior_history)
+    current = str(reply or "").strip()
+    if not previous or not current or len(previous) < 40:
+        return current
+    if previous not in current:
+        return current
+    remainder = current.replace(previous, "").strip()
+    remainder = re.sub(r"\n{3,}", "\n\n", remainder).strip()
+    # Empty means the reply was NOTHING BUT the previous answer. Returning it
+    # anyway -- the obvious "never send an empty message" reflex -- would let
+    # the recycled copy through in precisely the worst case. The caller sends
+    # an honest "I could not answer" instead.
+    return remainder
+
+
+def _log_turn_output(
+    reply: str, *, model_used: bool, recycled_stripped: bool, prior_history: list = (),
+) -> None:
+    """Where the text that is about to be sent came from.
+
+    Enough to settle "why did Fred say that" from the logs alone: which layers
+    contributed, how long the result is, whether it carries handoff copy, and
+    whether a reproduction of the previous answer had to be removed.
+    """
+    try:
+        text = str(reply or "")
+        number = isa_contact_number()
+        sources = "+".join(part for part in (
+            "model" if model_used else "deterministic",
+            "knowledge_obligations" if text.count("\n\n") else "",
+        ) if part)
+        print("[FredOutput] sources={} chars={} handoff_appended={} recycled_stripped={}".format(
+            sources or "none",
+            len(text),
+            "yes" if (number and number in text) else "no",
+            "yes" if recycled_stripped else "no",
+        ))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR registrando salida del turno (tipo: {}).".format(type(error).__name__))
+
+
 def _log_turn_routing(routing_requirement: dict = None, *, live_calls: dict = None) -> None:
     """What this turn needed, versus what it actually spent.
 
@@ -6141,12 +6207,17 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             if live_candidate_context:
                 catalog_context = "{}\n\n{}".format(catalog_context, live_candidate_context)
             active_product_fact = ""
-            if core_state.get("active_product_name"):
+            if core_state.get("active_product_name") and not policy_bypass:
                 # A plain fact for the model's own reasoning, on top of the
                 # retrieval-query enrichment above: this is the product this
                 # conversation is already about, so a follow-up that doesn't
                 # repeat its name ("¿cómo quedan?") still has context instead
                 # of restarting discovery from scratch.
+                #
+                # Withheld on a policy turn. This turn's own decision says it
+                # is not about a product, so handing the model a product to
+                # talk about is an invitation to talk about it -- which is how
+                # a showroom question came back with the previous turn's sale.
                 active_product_fact = "Producto activo de esta conversación: {}.".format(
                     core_state["active_product_name"]
                 )
@@ -6498,6 +6569,29 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 ) if present
             ) or "model"
             print("[Fred] grounded_by={}".format(grounded_by))
+
+            # Contract: the visible answer of a turn belongs to that turn's
+            # decision. The model writes the final text and can reproduce the
+            # previous answer verbatim when it is sitting in its context --
+            # a showroom question came back carrying the previous turn's sale.
+            reply_before_guard = reply
+            reply = _reply_belongs_to_this_turn(reply, prior_history)
+            if not reply:
+                # The whole answer was last turn's answer again, so this turn
+                # produced nothing of its own. Saying so is better than
+                # repeating a sale the customer never asked about.
+                print("[FredOutput] respuesta descartada: era íntegramente la anterior.")
+                _send_service_fallback(
+                    customer_phone, conversation_id, message_text, prior_history,
+                    "La respuesta reproducía el turno anterior.",
+                )
+                return JSONResponse(content={"ok": True})
+            _log_turn_output(
+                reply,
+                model_used=knowledge_answer_used,
+                recycled_stripped=reply != reply_before_guard,
+                prior_history=prior_history,
+            )
 
             delivered = False
             buttons_added = False
