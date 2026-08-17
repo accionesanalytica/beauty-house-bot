@@ -679,3 +679,164 @@ class TheCurrentMessageDecidesTests(unittest.TestCase):
         self.assertEqual(calls["catalog"], 0)
         self.assertEqual(calls["live"], 0)
         self.assertNotIn("cerrar la compra", " ".join(sent))
+
+
+class TheVisibleAnswerBelongsToThisTurnTests(unittest.TestCase):
+    """Routing was already right; the OUTPUT was not.
+
+    Production, same conversation, active_product still pinned:
+
+        [FredRouting] intent=policy_question ... reason=governing_topic_answers_turn
+        [FredDecision] topic=pickups_showroom grounded_by=knowledge
+        (no [FredScope] line at all)
+
+    and the single message sent was the PREVIOUS turn's sale handoff -- phone
+    number included -- followed by the showroom answer. One payload, two
+    turns' worth of copy. The model writes the final text, and with the old
+    exchange in its context it reproduced it verbatim.
+    """
+
+    SALE_COPY = (
+        "¡Genial! Para cerrar la compra (SHOOW TOOLS - ISABEL I) te paso con Isa, "
+        "que la coordina directamente. Podés escribirle directamente acá: "
+        "+5491124548738"
+    )
+
+    def _turn(self, message, model_reply, history):
+        sent = []
+        captured = {}
+
+        def get_state(conversation_id):
+            base = dict.fromkeys([
+                "active_product_id", "active_sku", "active_variant", "unit_price",
+                "quantity", "delivery_method", "customer_name", "customer_email",
+                "postal_code", "checkout_step", "order_number",
+            ])
+            base["mode"] = "CHAT"
+            base["active_product_name"] = "SHOOW TOOLS - ISABEL I"
+            return base
+
+        # The real dataclass, not a stand-in: a partial double sends the turn
+        # down the service-fallback path and the test would assert nothing.
+        from knowledge_rag import KnowledgeRetrieval
+
+        bundle = KnowledgeRetrieval(
+            context="- [politicas / showroom] El showroom atiende con reserva previa.",
+            governing_topic="pickups_showroom",
+        )
+
+        def answer(text, **kwargs):
+            captured["rag_context"] = kwargs.get("rag_context", "")
+            captured["history"] = kwargs.get("history", [])
+            return {"reply": model_reply, "tool_calls": [], "usage": {},
+                    "decision": {"action": "reply", "reason": "normal_response"}}
+
+        mocks = {
+            "CONVERSATION_DEBOUNCE_SECONDS": 0, "BOT_RESPONSE_MODE": "agent",
+            "KNOWLEDGE_RAG_ENABLED": True,
+            "get_fred_core_state": get_state,
+            "save_fred_core_state": lambda c, **f: None,
+            "reset_fred_core_checkout": lambda c: None,
+            "get_active_sales_intake": lambda c: None,
+            "get_product_selection": lambda *a, **k: None,
+            "record_inbound_message": lambda *a, **k: (7, "BOT", False),
+            "record_bot_message": lambda *a, **k: None,
+            "record_agent_turn": lambda **k: None,
+            "load_history": lambda *a, **k: list(history),
+            "is_latest_customer_message": lambda *a, **k: True,
+            "send_whatsapp_text": lambda p, t: sent.append(t) or True,
+            "embed_text": lambda *a, **k: [0.0] * 768,
+            "search_similar_products": lambda *a, **k: "",
+            "_live_candidate_context": lambda *a, **k: "",
+            "retrieve_with_recent_context": lambda m, h, fn: (bundle, m, None),
+            "execute_dynamic_requirements": lambda *a, **k: (),
+            "answer": answer,
+        }
+        handles = [patch.object(app, name, value) for name, value in mocks.items()]
+        for handle in handles:
+            handle.start()
+        stream = io.StringIO()
+        try:
+            with redirect_stdout(stream):
+                asyncio.run(app.webhook_post(_Request(message)))
+        finally:
+            for handle in reversed(handles):
+                handle.stop()
+        return sent, captured, stream.getvalue()
+
+    def _contaminated_history(self):
+        return [
+            {"role": "user", "content": "quiero 4"},
+            {"role": "assistant", "content": self.SALE_COPY},
+        ]
+
+    def test_the_sent_text_carries_no_copy_from_the_previous_sale(self):
+        # The exact production payload, reproduced: the model returns the old
+        # sale handoff because it is the most recent assistant message.
+        sent, _, _ = self._turn(
+            "quiero pasar por el showroom",
+            self.SALE_COPY + "\n\nEl showroom atiende con reserva previa.",
+            self._contaminated_history())
+
+        self.assertEqual(len(sent), 1)
+        delivered = sent[0]
+        self.assertNotIn("cerrar la compra", delivered)
+        # The literal number from the fixture, not isa_contact_number(): that
+        # reads the environment and is empty in CI, where assertNotIn("") is
+        # vacuously false and the check would be worse than useless.
+        self.assertNotIn("+5491124548738", delivered)
+        self.assertNotIn("ISABEL", delivered.upper())
+        self.assertIn("showroom", delivered.lower())
+
+    def test_a_policy_turn_is_never_handed_the_active_product(self):
+        # The invitation is withheld: this turn's own decision says it is not
+        # about a product, so the model is not given one to talk about.
+        _, captured, _ = self._turn(
+            "quiero pasar por el showroom", "El showroom atiende con reserva.",
+            self._contaminated_history())
+        self.assertNotIn("Producto activo", captured["rag_context"])
+
+    def test_the_output_line_reports_that_a_reproduction_was_removed(self):
+        _, _, output = self._turn(
+            "quiero pasar por el showroom",
+            self.SALE_COPY + "\n\nEl showroom atiende con reserva previa.",
+            self._contaminated_history())
+        self.assertIn("[FredOutput]", output)
+        self.assertIn("recycled_stripped=yes", output)
+        self.assertIn("handoff_appended=no", output)
+
+    def test_a_normal_answer_is_delivered_untouched(self):
+        # The guard only removes an actual reproduction. Anything else, even
+        # on the same contaminated conversation, is left exactly as written.
+        answer_text = "El showroom atiende con reserva previa en Vidal 2680."
+        sent, _, output = self._turn(
+            "quiero pasar por el showroom", answer_text, self._contaminated_history())
+        self.assertIn(answer_text, sent[0])
+        self.assertIn("recycled_stripped=no", output)
+
+    def test_a_reply_that_merely_resembles_the_previous_one_is_kept(self):
+        similar = "Para cerrar la compra te acompaña Isa."
+        sent, _, _ = self._turn(
+            "quiero pasar por el showroom", similar, self._contaminated_history())
+        self.assertIn(similar, sent[0])
+
+    def test_active_product_may_stay_in_state(self):
+        # Nothing is cleared to make this pass: the pinned product survives the
+        # turn, it simply stops contaminating the answer.
+        saved = []
+        with patch.object(app, "save_fred_core_state", lambda c, **f: saved.append(f)):
+            sent, _, _ = self._turn(
+                "quiero pasar por el showroom",
+                self.SALE_COPY + "\n\nEl showroom atiende con reserva previa.",
+                self._contaminated_history())
+        self.assertNotIn("cerrar la compra", sent[0])
+        self.assertFalse([f for f in saved if f.get("active_product_name") is None])
+
+    def test_a_reply_that_is_nothing_but_the_previous_one_is_never_sent(self):
+        # The degenerate case: the model produced only the old answer, so this
+        # turn has nothing of its own. Fred says he could not answer rather
+        # than repeating a sale the customer never asked about.
+        sent, _, output = self._turn(
+            "quiero pasar por el showroom", self.SALE_COPY, self._contaminated_history())
+        self.assertNotIn("cerrar la compra", " ".join(sent))
+        self.assertIn("era íntegramente la anterior", output)
