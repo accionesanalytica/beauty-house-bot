@@ -101,7 +101,15 @@ _FIRST_PERSON_RE = re.compile(r"\b(mi|mis|me|yo|conmigo|mio|mia)\b")
 
 # An order that already exists. No document can report its state.
 _EXISTING_ORDER_RE = re.compile(
-    r"\b(mi pedido|el pedido|mis pedidos|mi orden|mi compra|"
+    # Collecting an order is a question ABOUT an existing order, not a new
+    # purchase. "quiero retirar un pedido" classified as purchase_intent
+    # because of the "quiero", and the whole tracking flow was skipped. The
+    # order noun is what separates it from the approved policy question
+    # "¿puedo retirar por el showroom?", which names no order and stays
+    # answerable from Knowledge.
+    r"\b(retir\w+\s+(?:un|una|mi|el|la|los|las)?\s*(?:pedido|orden|compra)|"
+    r"paso\s+a\s+(?:buscar|retirar)|"
+    r"mi pedido|el pedido|mis pedidos|mi orden|mi compra|"
     # "no supe más nada DEL envío" is the same question as "mi envío".
     r"(?:mi|el|del)\s+env[íi]o|"
     r"mi paquete|numero de orden|n[úu]mero de orden|seguimiento|tracking|"

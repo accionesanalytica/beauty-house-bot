@@ -2344,6 +2344,11 @@ def _looks_like_a_hedge(text: str) -> bool:
 # llegó perfecto, gracias" would wrongly get treated as a status request.
 # This stricter subset is safe to trigger TRACKING mode with zero LLM rounds.
 _STRONG_TRACKING_TRIGGER_RE = re.compile(
+    # Collecting an order is tracking, not shopping: it needs the order's real
+    # state before anything else can be said. Requires the order noun, so the
+    # approved policy question ("¿puedo retirar por el showroom?") is untouched.
+    r"retir\w+\s+(?:un|una|mi|el|la|los|las)?\s*(?:pedido|orden|compra)|"
+    r"paso\s+a\s+(?:buscar|retirar)|"
     r"donde\s+esta\s+mi\s+(?:compra|pedido|orden)|no\s+me\s+lleg[oa]\b|"
     r"\btracking\b|\bseguimiento\b|numero\s+de\s+(?:orden|pedido)|"
     r"consultar\s+mi\s+(?:compra|pedido|orden)|"
@@ -2379,6 +2384,37 @@ def _most_recent_customer_message(history: list) -> str:
 def _extract_menu_selection(text: str) -> Optional[str]:
     match = _MENU_SELECTION_RE.match(_normalized_text(text).strip())
     return match.group(1) if match else None
+
+
+# Fred asking for an order number is a QUESTION, and the answer to it is the
+# next message. That continuity was missing: the deterministic prompt sets
+# mode=TRACKING, but when the model asked in its own words nothing recorded
+# that a number was expected, so a bare "6295" arrived as a fresh turn. The
+# retrieval query was then rebuilt from surrounding history and picked up an
+# unrelated complaint from earlier in the conversation ("el protector solar
+# llegó abierto"), which pulled damaged-product Knowledge into an order lookup.
+_ASKED_FOR_ORDER_NUMBER_RE = re.compile(
+    r"n[úu]mero\s+de\s+(?:orden|pedido)|nro\.?\s+de\s+(?:orden|pedido)|"
+    r"c[óo]digo\s+de\s+(?:orden|pedido)|qu[ée]\s+pedido\s+es"
+)
+
+
+def _fred_just_asked_for_order_number(prior_history: list) -> bool:
+    """Did Fred's LAST message ask for an order number?
+
+    Only the last one: an order-number request from earlier in the thread has
+    already been answered or abandoned, and treating a number as an answer to
+    a stale question is the same class of bug this fixes.
+    """
+    last_assistant = next(
+        (
+            str(item.get("content") or "")
+            for item in reversed(prior_history or [])
+            if item.get("role") == "assistant"
+        ),
+        "",
+    )
+    return bool(_ASKED_FOR_ORDER_NUMBER_RE.search(_normalized_text(last_assistant)))
 
 
 def _extract_bare_order_number(text: str) -> Optional[str]:
@@ -2440,8 +2476,45 @@ def _render_order_status_reply(result: dict) -> str:
     )
 
 
+# Wanting to collect an order, in the customer's own words.
+_PICKUP_REQUEST_RE = re.compile(
+    r"\bretir\w+|\bpaso\s+a\s+(?:buscar|retirar)|\bpasar\s+a\s+(?:buscar|retirar)|"
+    r"\blo\s+busco\b|\bir\s+a\s+buscar\b"
+)
+
+
+def _pickup_requested(message_text: str, prior_history: list) -> bool:
+    """Did the customer ask to COLLECT the order, here or in the message that
+    started this tracking exchange? The trigger usually sits one turn back
+    ("quiero retirar un pedido" -> "¿cuál es tu número de orden?" -> "6295"),
+    so the customer's own last two messages are what count."""
+    recent = [message_text] + [
+        str(item.get("content") or "")
+        for item in reversed(prior_history or [])
+        if item.get("role") == "user"
+    ][:2]
+    return any(_PICKUP_REQUEST_RE.search(_normalized_text(text)) for text in recent)
+
+
+def _pickup_next_step() -> str:
+    """The approved pickup policy, which starts with a reservation.
+
+    A live order status is NOT authorisation to come and collect: "paid and
+    being prepared" says the payment cleared, not that anything is packed,
+    at the showroom, or that there is a slot. Production inferred exactly
+    that ("está pagado y en preparación, no hay problema para retirarlo").
+    Per knowledge/procedures/pickups.md the first requirement is a booking,
+    and availability is never confirmed without Isa's approval.
+    """
+    return (
+        " Para el retiro hace falta reservar día y horario: decime cuándo te "
+        "quedaría cómodo y lo coordinamos con Isa antes de que vengas. 😊"
+    )
+
+
 def _fred_core_lookup_order(
     conversation_id: int, customer_phone: str, order_number: str, prior_history: list,
+    pickup_requested: bool = False,
 ) -> str:
     """Zero LLM rounds: real Tiendanube lookup, deterministic reply, and a
     deterministic handoff (never left to model judgment) when the order
@@ -2481,7 +2554,10 @@ def _fred_core_lookup_order(
         )
 
     save_fred_core_state(conversation_id, mode="CHAT", order_number=order_number)
-    return _render_order_status_reply(result)
+    reply = _render_order_status_reply(result)
+    # The status is reported first and on its own terms; the pickup policy is
+    # appended, never derived from it.
+    return reply + _pickup_next_step() if pickup_requested else reply
 
 
 def _fred_core_handle_tracking(
@@ -2490,7 +2566,10 @@ def _fred_core_handle_tracking(
     order_number = extract_order_number(message_text) or _extract_bare_order_number(message_text)
     if not order_number:
         return "No pasa nada, decime sólo el número de orden y lo reviso. 😊"
-    return _fred_core_lookup_order(conversation_id, customer_phone, order_number, prior_history)
+    return _fred_core_lookup_order(
+        conversation_id, customer_phone, order_number, prior_history,
+        pickup_requested=_pickup_requested(message_text, prior_history),
+    )
 
 
 # --- mode=MENU, opción 1: ver productos ---------------------------------
@@ -5594,12 +5673,34 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             _STRONG_TRACKING_TRIGGER_RE.search(_knowledge_normalise(message_text))
         )
         if order_number and strong_tracking_evidence:
-            reply = _fred_core_lookup_order(conversation_id, customer_phone, order_number, prior_history)
+            reply = _fred_core_lookup_order(
+                conversation_id, customer_phone, order_number, prior_history,
+                pickup_requested=_pickup_requested(message_text, prior_history),
+            )
             _deliver_flow_reply(customer_phone, conversation_id, reply)
             return JSONResponse(content={"ok": True})
         if strong_tracking_evidence and not order_number:
             save_fred_core_state(conversation_id, mode="TRACKING")
             _deliver_flow_reply(customer_phone, conversation_id, ORDER_NUMBER_PROMPT_TEXT)
+            return JSONResponse(content={"ok": True})
+
+        # Fred asked for an order number and this message is one. That answers
+        # the question that was actually asked, so it is looked up directly --
+        # no retrieval, no catalog search, and above all no rebuilding of
+        # "what did the customer mean" from surrounding history, which is what
+        # dragged an unrelated damaged-product complaint into an order lookup.
+        # This catches the case the TRACKING mode above misses: the model
+        # asking for the number in its own words instead of the fixed prompt.
+        bare_order_number = _extract_bare_order_number(message_text)
+        if bare_order_number and _fred_just_asked_for_order_number(prior_history):
+            print("[FredCore] número de orden en respuesta directa: {}.".format(
+                bare_order_number,
+            ))
+            reply = _fred_core_lookup_order(
+                conversation_id, customer_phone, bare_order_number, prior_history,
+                pickup_requested=_pickup_requested(message_text, prior_history),
+            )
+            _deliver_flow_reply(customer_phone, conversation_id, reply)
             return JSONResponse(content={"ok": True})
 
         # Observability starts here, after deterministic shortcuts and before
