@@ -258,3 +258,150 @@ class TheWholeConversationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GenericPickupPolicyIsNotATrackingTurnTests(unittest.TestCase):
+    """Asking HOW pickups work is not asking about one order.
+
+    The regression: keying on "retirar + pedido" sent "hola como puedo retirar
+    un pedido" into TRACKING, so a policy question was answered with a request
+    for an order number the customer never had in mind.
+    """
+
+    def _tracking(self, message):
+        from knowledge_rag import _normalise as knowledge_normalise
+        return app._pickup_of_a_specific_order(knowledge_normalise(message))
+
+    def test_asking_how_a_pickup_works_is_never_tracking(self):
+        for message in (
+            "¿Cómo puedo retirar un pedido?",
+            "hola como puedo retirar un pedido",
+            "cómo retiro un pedido",
+            "¿cómo funciona el retiro?",
+            "¿qué necesito para retirar un pedido?",
+            "¿qué hace falta para retirar una compra?",
+            "¿se puede retirar un pedido en el showroom?",
+        ):
+            with self.subTest(message=message):
+                self.assertFalse(self._tracking(message))
+
+    def test_wanting_to_collect_a_specific_order_is_tracking(self):
+        for message in (
+            "Quiero retirar mi pedido",
+            "quiero retirar mi compra",
+            "paso a buscar el pedido",
+            "necesito retirar mi orden",
+        ):
+            with self.subTest(message=message):
+                self.assertTrue(self._tracking(message))
+
+    def test_a_named_order_wins_even_when_phrased_as_a_procedure(self):
+        # "¿cómo retiro el pedido 6295?" names an order, so its real state
+        # still matters -- the procedure wording does not erase that.
+        for message in ("¿cómo retiro el pedido 6295?",
+                        "como hago para retirar mi pedido"):
+            with self.subTest(message=message):
+                self.assertTrue(self._tracking(message))
+
+    def test_the_generic_question_stays_a_knowledge_turn(self):
+        for message in ("¿Cómo puedo retirar un pedido?",
+                        "¿qué necesito para retirar?"):
+            with self.subTest(message=message):
+                verdict = classify_turn_data_requirement(
+                    message,
+                    governing_topic="pickups_showroom",
+                    knowledge_context="- [politicas / showroom] Texto aprobado.",
+                    product_lexicon=app.product_lexicon(),
+                )
+                self.assertEqual(verdict["data_required"], DATA_KNOWLEDGE_ONLY)
+
+
+class TrackingReleasesInsteadOfHoldingTests(unittest.TestCase):
+    """Waiting for an order number is waiting, not owning the conversation."""
+
+    def _run_from_tracking(self, message):
+        store, sent, model_calls = {"mode": "TRACKING"}, [], []
+
+        def get_state(conversation_id):
+            base = {
+                "mode": "CHAT", "active_product_id": None, "active_product_name": None,
+                "active_sku": None, "active_variant": None, "unit_price": None,
+                "quantity": None, "delivery_method": None, "customer_name": None,
+                "customer_email": None, "postal_code": None, "checkout_step": None,
+                "order_number": None,
+            }
+            base.update(store)
+            return base
+
+        mocks = {
+            "CONVERSATION_DEBOUNCE_SECONDS": 0, "BOT_RESPONSE_MODE": "agent",
+            "get_fred_core_state": get_state,
+            "save_fred_core_state": lambda c, **f: store.update(
+                {k: v for k, v in f.items() if v is not None}),
+            "reset_fred_core_checkout": lambda c: None,
+            "get_active_sales_intake": lambda c: None,
+            "get_product_selection": lambda *a, **k: None,
+            "record_inbound_message": lambda *a, **k: (7, "BOT", False),
+            "record_bot_message": lambda *a, **k: None,
+            "record_agent_turn": lambda **k: None,
+            "load_history": lambda *a, **k: [],
+            "is_latest_customer_message": lambda *a, **k: True,
+            "send_whatsapp_text": lambda phone, text: sent.append(text) or True,
+            "send_customer_action_buttons": lambda *a, **k: True,
+            "get_order_status": lambda n: {
+                "order_number": n, "tracking": None,
+                "payment_status": "paid", "shipping_status": "unpacked"},
+            "search_similar_products": lambda *a, **k: "",
+            "_live_candidate_context": lambda *a, **k: "",
+            "answer": lambda text, **kwargs: model_calls.append(text) or {
+                "reply": "(respuesta normal)", "tool_calls": [], "usage": {},
+                "decision": {"action": "reply", "reason": "normal_response"}},
+        }
+        handles = [patch.object(app, name, value) for name, value in mocks.items()]
+        for handle in handles:
+            handle.start()
+        try:
+            with redirect_stdout(io.StringIO()):
+                asyncio.run(app.webhook_post(Request(message, "w0")))
+        finally:
+            for handle in reversed(handles):
+                handle.stop()
+        return sent, model_calls, store
+
+    def test_a_number_is_still_treated_as_the_order_number(self):
+        sent, model_calls, store = self._run_from_tracking("6295")
+        self.assertIn("#6295", sent[0])
+        self.assertEqual(model_calls, [])
+
+    def test_cancelar_leaves_tracking_and_is_answered_in_the_same_turn(self):
+        sent, model_calls, store = self._run_from_tracking("cancelar")
+        self.assertEqual(store["mode"], "CHAT")
+        self.assertTrue(model_calls, "el mensaje debía procesarse normalmente")
+        self.assertNotIn(app.ORDER_NUMBER_PROMPT_TEXT, " ".join(sent))
+
+    def test_changing_the_subject_is_answered_without_a_second_message(self):
+        # The whole point: the customer must not have to repeat themselves.
+        sent, model_calls, store = self._run_from_tracking("hola quiero pasar al showroom")
+        self.assertEqual(store["mode"], "CHAT")
+        self.assertEqual(model_calls, ["hola quiero pasar al showroom"])
+        self.assertTrue(sent)
+
+    def test_a_plain_greeting_does_not_stay_stuck(self):
+        # "hola" is answered by the social shortcut without a model call, so
+        # what matters here is that TRACKING let go and the greeting got a
+        # greeting -- not another request for a number.
+        for message in ("hola", "tengo otra pregunta"):
+            with self.subTest(message=message):
+                sent, _, store = self._run_from_tracking(message)
+                self.assertEqual(store["mode"], "CHAT")
+                self.assertTrue(sent)
+                self.assertNotIn("número de orden", " ".join(sent).lower())
+
+    def test_leaving_tracking_never_answers_with_the_order_prompt(self):
+        for message in ("cancelar", "hola", "quiero pasar al showroom",
+                        "tengo otra pregunta"):
+            with self.subTest(message=message):
+                sent, _, _ = self._run_from_tracking(message)
+                self.assertNotIn(
+                    "número de orden", " ".join(sent).lower(),
+                    "salir de TRACKING no debe volver a pedir el número")

@@ -74,6 +74,7 @@ from conversation_quality import apply_conversation_contract
 from durable_worker import DeliveryContext, current_delivery_context
 from message_queue import extract_inbound_messages, ordered_turn_text
 from routing_policy import (
+    _pickup_of_a_specific_order,
     align_reply_with_routing,
     build_product_lexicon,
     classify_turn_data_requirement,
@@ -2344,11 +2345,6 @@ def _looks_like_a_hedge(text: str) -> bool:
 # llegó perfecto, gracias" would wrongly get treated as a status request.
 # This stricter subset is safe to trigger TRACKING mode with zero LLM rounds.
 _STRONG_TRACKING_TRIGGER_RE = re.compile(
-    # Collecting an order is tracking, not shopping: it needs the order's real
-    # state before anything else can be said. Requires the order noun, so the
-    # approved policy question ("¿puedo retirar por el showroom?") is untouched.
-    r"retir\w+\s+(?:un|una|mi|el|la|los|las)?\s*(?:pedido|orden|compra)|"
-    r"paso\s+a\s+(?:buscar|retirar)|"
     r"donde\s+esta\s+mi\s+(?:compra|pedido|orden)|no\s+me\s+lleg[oa]\b|"
     r"\btracking\b|\bseguimiento\b|numero\s+de\s+(?:orden|pedido)|"
     r"consultar\s+mi\s+(?:compra|pedido|orden)|"
@@ -2562,10 +2558,23 @@ def _fred_core_lookup_order(
 
 def _fred_core_handle_tracking(
     conversation_id: int, customer_phone: str, message_text: str, prior_history: list,
-) -> str:
+):
+    """Waiting for an order number is waiting, not holding the conversation.
+
+    A message that answers the question gets looked up. A message that plainly
+    does not -- "cancelar", "hola", "quiero pasar al showroom" -- releases
+    TRACKING and returns None, which makes the caller reprocess THIS SAME
+    message as a normal CHAT turn. Nobody has to send it twice.
+
+    TRACKING used to answer anything non-numeric with "decime sólo el número
+    de orden", which meant a customer who changed the subject could not get
+    out: every new question was answered with the same request.
+    """
     order_number = extract_order_number(message_text) or _extract_bare_order_number(message_text)
     if not order_number:
-        return "No pasa nada, decime sólo el número de orden y lo reviso. 😊"
+        print("[FredCore] TRACKING liberado: el mensaje no es un número de orden.")
+        save_fred_core_state(conversation_id, mode="CHAT")
+        return None
     return _fred_core_lookup_order(
         conversation_id, customer_phone, order_number, prior_history,
         pickup_requested=_pickup_requested(message_text, prior_history),
@@ -5669,8 +5678,10 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             return JSONResponse(content={"ok": True})
 
         order_number = extract_order_number(message_text)
+        normalized_for_tracking = _knowledge_normalise(message_text)
         strong_tracking_evidence = bool(
-            _STRONG_TRACKING_TRIGGER_RE.search(_knowledge_normalise(message_text))
+            _STRONG_TRACKING_TRIGGER_RE.search(normalized_for_tracking)
+            or _pickup_of_a_specific_order(normalized_for_tracking)
         )
         if order_number and strong_tracking_evidence:
             reply = _fred_core_lookup_order(

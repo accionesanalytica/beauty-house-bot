@@ -99,17 +99,57 @@ _INDIVIDUAL_CLAIM_RE = re.compile(
 )
 _FIRST_PERSON_RE = re.compile(r"\b(mi|mis|me|yo|conmigo|mio|mia)\b")
 
+# --- collecting an order: policy question vs one real order ------------
+#
+# "¿cómo puedo retirar un pedido?" and "quiero retirar mi pedido" share a verb
+# and a noun and mean completely different things. The first asks how pickups
+# work -- approved Knowledge answers it and asking for an order number is a
+# non sequitur. The second is about ONE order that exists, which cannot be
+# answered without looking it up.
+#
+# Keying on "retirar + pedido" could not tell them apart, and sent a policy
+# question into TRACKING. The distinction is grammatical, not lexical: a
+# question about the PROCEDURE versus a reference to a SPECIFIC order.
+_PICKUP_OF_AN_ORDER_RE = re.compile(
+    r"retir\w+\s+(?:un|una|mi|mis|el|la|los|las)?\s*(?:pedido|orden|compra|paquete)|"
+    r"pas(?:o|ar)\s+a\s+(?:buscar|retirar)"
+)
+# Asking how something is done, or what it requires. Generic by nature: a
+# procedure has no order number.
+_PROCEDURE_QUESTION_RE = re.compile(
+    r"\bcomo\b|\bde\s+que\s+manera\b|\bque\s+necesito\b|\bque\s+hace\s+falta\b|"
+    r"\bque\s+requisitos\b|\bcuales\s+son\s+los\s+requisitos\b|"
+    r"\bque\s+tengo\s+que\s+hacer\b|\bse\s+puede\b|\bes\s+necesario\b|"
+    r"\bcomo\s+funciona\b"
+)
+# Pointing at ONE order that already exists: possessive, or identified by
+# number, or explicitly the one they placed.
+_SPECIFIC_ORDER_REF_RE = re.compile(
+    r"\bmis?\s+(?:pedido|orden|compra|paquete)\b|"
+    r"\b(?:el|la)\s+(?:pedido|orden|compra)\s+que\s+(?:hice|compre|pedi|encargue)\b|"
+    r"\b(?:pedido|orden)\s*#?\s*\d{2,}\b"
+)
+
+
+def _pickup_of_a_specific_order(normalized_message: str) -> bool:
+    """Does this ask to collect ONE existing order (-> look it up), rather
+    than asking how pickups work (-> approved policy answers it)?
+
+    A specific order reference wins outright: "¿cómo retiro el pedido 6295?"
+    names an order, so its real state still matters. Otherwise a procedural
+    question means this is policy, and no order number should ever be asked
+    for -- which is the regression this exists to prevent.
+    """
+    if not _PICKUP_OF_AN_ORDER_RE.search(normalized_message):
+        return False
+    if _SPECIFIC_ORDER_REF_RE.search(normalized_message):
+        return True
+    return not _PROCEDURE_QUESTION_RE.search(normalized_message)
+
+
 # An order that already exists. No document can report its state.
 _EXISTING_ORDER_RE = re.compile(
-    # Collecting an order is a question ABOUT an existing order, not a new
-    # purchase. "quiero retirar un pedido" classified as purchase_intent
-    # because of the "quiero", and the whole tracking flow was skipped. The
-    # order noun is what separates it from the approved policy question
-    # "¿puedo retirar por el showroom?", which names no order and stays
-    # answerable from Knowledge.
-    r"\b(retir\w+\s+(?:un|una|mi|el|la|los|las)?\s*(?:pedido|orden|compra)|"
-    r"paso\s+a\s+(?:buscar|retirar)|"
-    r"mi pedido|el pedido|mis pedidos|mi orden|mi compra|"
+    r"\b(mi pedido|el pedido|mis pedidos|mi orden|mi compra|"
     # "no supe más nada DEL envío" is the same question as "mi envío".
     r"(?:mi|el|del)\s+env[íi]o|"
     r"mi paquete|numero de orden|n[úu]mero de orden|seguimiento|tracking|"
@@ -148,7 +188,10 @@ _PURCHASE_INTENT_RE = re.compile(
     r"\b(comprar|compro|compra[r]?me|encargar|encargo|te\s+pido|le\s+pido|"
     r"me\s+llevo|lo\s+llevo|las?\s+llevo|los\s+llevo|llevar|llevo|"
     r"me\s+quedo\s+con|me\s+interesa[n]?|reserv\w+|apart\w+|"
-    r"quiero|quisiera|necesito|dame|mandame|pagar[íi]a|transferencia|"
+    # "necesito 2 packs" is a purchase. "qué necesito para retirar" asks what
+    # a procedure requires, which approved policy answers -- the interrogative
+    # in front is the whole difference.
+    r"quiero|quisiera|(?<!que )necesito|dame|mandame|pagar[íi]a|transferencia|"
     r"proceder|avanzar|hacer\s+el\s+pedido)\b"
 )
 # A variant axis: the customer is choosing WITHIN a product, which can only be
@@ -199,6 +242,11 @@ _NON_IDENTIFYING_CATALOG_WORDS = frozenset({
     "grande", "chico", "chica", "largo", "corto", "mejor", "gratis", "natural",
     "mini", "maxi", "super", "ultra", "full", "plus", "basic", "clasico",
     "mano", "manos", "casa", "parte", "desde", "hasta", "entre", "sobre",
+    # Logistics, not identity. Catalog entries like "PEDIDO AL MAYOR" and
+    # "(BAJO PEDIDO) PROSA - ..." put "pedido" in the lexicon, which then made
+    # "¿cómo puedo retirar un pedido?" look like a named product.
+    "pedido", "pedidos", "orden", "ordenes", "compra", "compras", "envio",
+    "envios", "retiro", "retiros", "entrega", "entregas", "mayor",
     # Colours are variant attributes, handled by _VARIANT_ATTRIBUTE_RE.
     "negro", "negra", "blanco", "blanca", "rojo", "roja", "verde", "azul",
     "rosa", "rosado", "marron", "chocolate", "dorado", "plateado", "nude",
@@ -287,8 +335,11 @@ def classify_turn_data_requirement(
     if _INDIVIDUAL_CLAIM_RE.search(normalised) and _FIRST_PERSON_RE.search(normalised):
         return verdict(INTENT_INDIVIDUAL_CLAIM, DATA_LIVE, "individual_claim")
 
-    # 3. An order that already exists.
-    if _EXISTING_ORDER_RE.search(normalised):
+    # 3. An order that already exists -- including asking to collect ONE.
+    #    Collecting is only an order question when it points at a specific
+    #    order; "¿cómo puedo retirar un pedido?" asks how pickups work, which
+    #    approved policy answers without touching the store.
+    if _EXISTING_ORDER_RE.search(normalised) or _pickup_of_a_specific_order(normalised):
         return verdict(INTENT_EXISTING_ORDER, DATA_LIVE, "existing_order")
 
     # 4-5. Commercial facts only the store holds.

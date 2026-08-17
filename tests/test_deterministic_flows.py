@@ -102,9 +102,17 @@ class FredCoreTrackingTests(unittest.TestCase):
         self.assertIn("RR123456789AR", reply)
         save_state.assert_called_once_with(7, mode="CHAT", order_number="1234")
 
-    def test_handle_tracking_without_a_number_asks_again_and_stays_in_tracking(self):
-        reply = app._fred_core_handle_tracking(7, "5491111111111", "no tengo el número a mano", [])
-        self.assertEqual(reply, "No pasa nada, decime sólo el número de orden y lo reviso. 😊")
+    def test_handle_tracking_without_a_number_releases_instead_of_asking_again(self):
+        # Deliberately changed: TRACKING used to answer anything non-numeric
+        # with "decime sólo el número de orden", so a customer who changed the
+        # subject could not get out -- every new question got the same reply.
+        # Returning None hands this same message to the normal CHAT path, and
+        # nobody has to send it twice.
+        with patch.object(app, "save_fred_core_state") as save_state:
+            reply = app._fred_core_handle_tracking(
+                7, "5491111111111", "no tengo el número a mano", [])
+        self.assertIsNone(reply)
+        save_state.assert_called_once_with(7, mode="CHAT")
 
     @patch.object(app, "_queue_for_isa")
     @patch.object(app, "get_order_status", return_value={"found": False, "message": "No encontré esa orden."})

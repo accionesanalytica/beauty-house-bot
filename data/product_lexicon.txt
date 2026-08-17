@@ -1,6 +1,6 @@
 # Palabras que identifican un producto del catálogo real.
 # Generado por api/build_product_lexicon.py -- no editar a mano.
-# fuente: data/catalog.json | productos: 907 | fecha: 2026-08-16
+# fuente: data/catalog.json | productos: 907 | fecha: 2026-08-17
 0pat
 10ml
 10mm
@@ -662,7 +662,6 @@ mattes
 mattifying
 mauve
 maybelline
-mayor
 mcgrath
 mcmichael
 mecha
@@ -770,7 +769,6 @@ patchouli
 patrick
 peach
 pecas
-pedido
 peeling
 pega
 peinado
