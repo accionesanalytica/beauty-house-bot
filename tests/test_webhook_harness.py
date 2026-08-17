@@ -128,10 +128,10 @@ class WebhookHarnessTests(unittest.TestCase):
         with patch.object(app, "search_similar_products", return_value="Productos encontrados: Isabel I") as retrieve, patch.object(
             app, "answer", return_value=agent_result
         ) as ask_model:
-            response = self._post("Busco pestañas naturales", "wamid-standard")
+            response = self._post("¿Tienen Isabel I?", "wamid-standard")
 
         self.assertEqual(response.status_code, 200)
-        retrieve.assert_called_once_with("Busco pestañas naturales")
+        retrieve.assert_called_once_with("¿Tienen Isabel I?")
         self.assertEqual(ask_model.call_args.kwargs["history"], [{"role": "user", "content": "Busco algo natural"}])
         self.assertEqual(ask_model.call_args.kwargs["rag_context"], "Productos encontrados: Isabel I")
         self.assertTrue(ask_model.call_args.kwargs["greeting_required"])
@@ -243,38 +243,6 @@ class WebhookHarnessTests(unittest.TestCase):
         self.assertIn("Isa", delivered)
         self.assertIn(app.isa_contact_number(), delivered)
 
-    @patch.object(app, "record_bot_message")
-    @patch.object(app, "send_whatsapp_text", return_value=True)
-    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
-    @patch.object(app, "load_history", return_value=[])
-    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    @patch.object(app, "SALES_INTAKE_ENABLED", True)
-    def test_the_buy_button_opens_the_checkout_on_exactly_that_sku(
-        self, history, inbound, send_message, record_message
-    ):
-        # The click fixed the product. The checkout must use that SKU and
-        # never re-discover what the customer "meant".
-        live_stock = {
-            "found": True, "status": "in_stock", "sku": "3D24A",
-            "product_name": "AOA STUDIO - PEGA DE PESTAÑAS COREANA",
-            "variant": "", "price": "18000.00",
-        }
-        with patch.object(app, "get_stock", return_value=live_stock) as get_stock, patch.object(
-            app, "_start_sales_intake", return_value="pedir datos",
-        ) as start_intake, patch.object(app, "answer") as ask_model:
-            response = self._post_button(
-                "{}3D24A".format(app.BUY_BUTTON_PREFIX), "Comprar", "wamid-buy-click",
-            )
-
-        self.assertEqual(response.status_code, 200)
-        ask_model.assert_not_called()
-        get_stock.assert_called_once_with("3D24A")
-        self.assertEqual(start_intake.call_args.args[1]["sku"], "3D24A")
-        self.assertEqual(
-            start_intake.call_args.args[1]["product_name"],
-            "AOA STUDIO - PEGA DE PESTAÑAS COREANA",
-        )
-
     @patch.object(app, "_send_service_fallback")
     @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
@@ -314,59 +282,6 @@ class WebhookHarnessTests(unittest.TestCase):
         self.assertIn("nombre exacto", reply)
         self.assertIn("link", reply)
         self.assertEqual(app._lifting_clarification_reply("Busco pestañas naturales"), "")
-
-    @patch.object(app, "record_agent_turn")
-    @patch.object(app, "record_bot_message")
-    @patch.object(app, "send_whatsapp_text", return_value=True)
-    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
-    @patch.object(app, "load_history", return_value=[])
-    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    def test_lifting_enters_knowledge_flow_and_enforces_approved_reference(
-        self, history, inbound, send_message, record_message, record_turn
-    ):
-        from knowledge_rag import KnowledgeObligations, KnowledgeRetrieval
-
-        obligations = KnowledgeObligations(
-            topics=("lashes_guidance",),
-            required_disclosures=({
-                "id": "lifting-band", "text": "Con lifting no se recomienda banda completa.",
-            },),
-            required_links=({
-                "id": "lifting-link", "link_type": "approved_static_link",
-                "url": "https://www.instagram.com/p/DZ3U5VGtnrX/",
-            },),
-        )
-        retrieval = KnowledgeRetrieval(
-            rows=({"source_id": "lifting", "content": "Taylor cluster"},),
-            context="Conocimiento aprobado: Taylor cluster; no banda completa.",
-            obligations=obligations,
-            retrieved_topics=("lashes_guidance",),
-            governing_topic="lashes_guidance",
-        )
-        result = {
-            "reply": "Para lifting podés evaluar Taylor cluster.",
-            "tool_calls": [],
-            "decision": {"action": "reply", "reason": "normal_response"},
-            "usage": {},
-            "model_calls": 1,
-        }
-        with patch.object(app, "KNOWLEDGE_RAG_ENABLED", True), patch.object(
-            app, "embed_text", return_value=[0.1]
-        ), patch.object(
-            app, "search_similar_products", return_value=""
-        ), patch.object(
-            app, "search_knowledge_bundle", return_value=retrieval
-        ) as knowledge, patch.object(app, "answer", return_value=result) as ask_model:
-            response = self._post(
-                "Tengo lifting, ¿qué pestañas me recomendás?", "wamid-lifting-knowledge"
-            )
-
-        self.assertEqual(response.status_code, 200)
-        knowledge.assert_called_once()
-        ask_model.assert_called_once()
-        visible = send_message.call_args.args[1]
-        self.assertIn("no se recomienda banda completa", visible)
-        self.assertIn("https://www.instagram.com/p/DZ3U5VGtnrX/", visible)
 
     def test_isa_policy_instruction_is_translated_not_forwarded_verbatim(self):
         reply = app._isa_customer_instruction(
@@ -466,136 +381,6 @@ class WebhookHarnessTests(unittest.TestCase):
         self.assertEqual(candidate["sku"], "ISABEL-CHOCO")
         self.assertEqual(candidate["unit_price"], "30000")
         get_stock.assert_called_once_with("ISABEL-CHOCO")
-
-    @patch.object(app, "record_agent_turn")
-    @patch.object(app, "record_bot_message")
-    @patch.object(app, "send_whatsapp_text", return_value=True)
-    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
-    @patch.object(app, "load_history", return_value=[])
-    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    @patch.object(app, "KNOWLEDGE_RAG_ENABLED", False)
-    @patch.object(app, "SALES_INTAKE_ENABLED", True)
-    @patch.object(app, "get_active_sales_intake", return_value=None)
-    def test_purchase_message_outranks_recommendation_card(
-        self, active_intake, history, inbound, send_message, record_message, record_turn
-    ):
-        live_context = (
-            "Disponibilidad Tiendanube verificada para candidatas recuperadas:\n"
-            "- SHOOW TOOLS - ISABEL I (CHOCOLATE) | variantes disponibles: 8/8/10/12 mm "
-            "| SKU: ISABEL-CHOCO"
-        )
-        stock = {
-            "found": True, "status": "in_stock", "sku": "ISABEL-CHOCO",
-            "product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
-            "variant": "8/8/10/12 mm", "price": "30000",
-        }
-        agent_result = {
-            "reply": "Dale, te confirmo Isabel I chocolate 😊",
-            "tool_calls": [], "usage": {},
-            "decision": {"action": "reply", "reason": "normal_response"},
-        }
-        with patch.object(app, "search_similar_products", return_value="Productos encontrados"), patch.object(
-            app, "_live_candidate_context", return_value=live_context
-        ), patch.object(app, "get_stock", return_value=stock), patch.object(
-            app, "_start_sales_intake"
-        ) as start_intake, patch.object(
-            app, "answer", return_value=agent_result
-        ), patch.object(app, "send_customer_action_buttons", return_value=True) as action_buttons:
-            response = self._post(
-                "Me quedo con Isabel I chocolate. Quiero 2 unidades, envío. "
-                "Nombre: Luis Vera. Email: luis@example.com",
-                "wamid-direct-purchase",
-            )
-
-        self.assertEqual(response.status_code, 200)
-        # Writing a purchase no longer opens a checkout. It stays a
-        # conversation, and Fred offers a Comprar button carrying the real SKU.
-        start_intake.assert_not_called()
-        buy_ids = [
-            b["id"] for b in action_buttons.call_args.args[2]
-            if b["id"].startswith(app.BUY_BUTTON_PREFIX)
-        ]
-        self.assertEqual(buy_ids, ["{}ISABEL-CHOCO".format(app.BUY_BUTTON_PREFIX)])
-
-    @patch.object(app, "record_agent_turn")
-    @patch.object(app, "record_bot_message")
-    @patch.object(app, "send_whatsapp_text", return_value=True)
-    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
-    @patch.object(app, "load_history", return_value=[])
-    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    @patch.object(app, "KNOWLEDGE_RAG_ENABLED", False)
-    @patch.object(app, "SALES_INTAKE_ENABLED", True)
-    @patch.object(app, "get_active_sales_intake", return_value=None)
-    def test_purchase_details_use_fred_core_active_product_without_model(
-        self, active_intake, history, inbound, send_message, record_message, record_turn
-    ):
-        # Fred Core's active_product -- not conversation_product_selections
-        # -- is what a purchase-intent message resolves against now.
-        fred_core_state = {
-            "mode": "CHAT", "active_product_id": "ISABEL-CHOCO",
-            "active_product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
-            "active_sku": "ISABEL-CHOCO", "active_variant": "8/8/10/12 mm",
-            "unit_price": "30000", "quantity": None, "delivery_method": None,
-            "customer_name": None, "customer_email": None, "postal_code": None,
-            "checkout_step": None, "order_number": None,
-        }
-        live_stock = {
-            "found": True, "status": "in_stock", "sku": "ISABEL-CHOCO",
-            "product_name": "SHOOW TOOLS - ISABEL I (CHOCOLATE)",
-            "variant": "8/8/10/12 mm", "price": "30000",
-        }
-        with patch.object(app, "search_similar_products", return_value=""), patch.object(
-            app, "_live_candidate_context", return_value=""
-        ), patch.object(app, "get_fred_core_state", return_value=fred_core_state), patch.object(
-            app, "get_stock", return_value=live_stock
-        ), patch.object(app, "_start_sales_intake") as start_intake, patch.object(
-            app, "send_customer_action_buttons", return_value=True,
-        ) as action_buttons, patch.object(app, "answer", return_value={
-            "reply": "Dale, tomo nota 😊", "tool_calls": [], "usage": {},
-            "decision": {"action": "reply", "reason": "normal_response"},
-        }):
-            response = self._post(
-                "Quiero 2 unidades, envío. Nombre: Luis Vera. Email: luis@example.com",
-                "wamid-previous-selection",
-            )
-
-        self.assertEqual(response.status_code, 200)
-        # The active product is still remembered and still what the Comprar
-        # button would buy -- but it no longer opens a checkout by itself.
-        start_intake.assert_not_called()
-        buy_ids = [
-            b["id"] for b in action_buttons.call_args.args[2]
-            if b["id"].startswith(app.BUY_BUTTON_PREFIX)
-        ]
-        self.assertEqual(buy_ids, ["{}ISABEL-CHOCO".format(app.BUY_BUTTON_PREFIX)])
-
-    @patch.object(app, "record_agent_turn")
-    @patch.object(app, "record_bot_message")
-    @patch.object(app, "send_whatsapp_text", return_value=True)
-    @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
-    @patch.object(app, "load_history", return_value=[])
-    @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    @patch.object(app, "KNOWLEDGE_RAG_ENABLED", False)
-    @patch.object(app, "SALES_INTAKE_ENABLED", True)
-    @patch.object(app, "get_active_sales_intake", return_value=None)
-    def test_model_purchase_handoff_cannot_open_blank_sale_form(
-        self, active_intake, history, inbound, send_message, record_message, record_turn
-    ):
-        result = {
-            "reply": "Voy a preparar la compra.", "tool_calls": [], "usage": {},
-            "handoff": {"reason": "purchase_intent", "summary": "Quiere comprar."},
-            "decision": {"action": "start_sales_intake", "reason": "purchase_intent"},
-        }
-        with patch.object(app, "search_similar_products", return_value=""), patch.object(
-            app, "_live_candidate_context", return_value=""
-        ), patch.object(app, "get_product_selection", return_value=None), patch.object(
-            app, "_start_sales_intake"
-        ) as start_intake, patch.object(app, "answer", return_value=result):
-            response = self._post("Quiero comprar", "wamid-no-product")
-
-        self.assertEqual(response.status_code, 200)
-        start_intake.assert_not_called()
-        self.assertIn("cuál producto", send_message.call_args.args[1])
 
     @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_bot_message")
@@ -718,10 +503,10 @@ class WebhookHarnessTests(unittest.TestCase):
         ) as retrieve, patch.object(
             app, "_live_candidate_context", return_value="Disponibilidad Tiendanube verificada"
         ), patch.object(app, "answer", return_value=agent_result):
-            response = self._post("Busco pestañas chocolate", "wamid-embedding-outage")
+            response = self._post("¿Tienen Isabel I chocolate?", "wamid-embedding-outage")
 
         self.assertEqual(response.status_code, 200)
-        retrieve.assert_called_once_with("Busco pestañas chocolate")
+        retrieve.assert_called_once_with("¿Tienen Isabel I chocolate?")
         send_message.assert_called_once_with(self.PHONE, agent_result["reply"])
 
 

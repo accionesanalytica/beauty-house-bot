@@ -274,7 +274,7 @@ class TurnLoggingEndToEndTests(unittest.TestCase):
 
     def test_a_normal_turn_emits_exactly_one_of_each_line(self):
         timing, decision, routing = self._run_turn(
-            "Busco pestañas naturales", [],
+            "¿Tienen Isabel I chocolate?", [],
             {
                 "reply": "Tengo algunas opciones 😊", "tool_calls": [], "usage": {},
                 "decision": {"action": "reply", "reason": "normal_response"},
@@ -287,7 +287,7 @@ class TurnLoggingEndToEndTests(unittest.TestCase):
 
     def test_the_turn_reports_the_model_cost_it_actually_paid(self):
         timing, _, routing = self._run_turn(
-            "Busco pestañas naturales", [],
+            "¿Tienen Isabel I chocolate?", [],
             {
                 "reply": "Tengo algunas opciones 😊",
                 "tool_calls": [{"name": "search_available_products", "arguments": {}},
@@ -300,51 +300,41 @@ class TurnLoggingEndToEndTests(unittest.TestCase):
         self.assertEqual(timing[0]["tokens_input"], "5500")
         self.assertEqual(timing[0]["tokens_output"], "140")
 
-    def test_a_turn_that_offers_the_buy_button_records_it(self):
-        timing, decision, routing = self._run_turn(
-            "Quiero comprar natural shoow", ONE_PRODUCT,
+    def test_no_turn_ever_reports_a_buy_button_any_more(self):
+        # Fred does not sell: buttons_added reads "no" even on the turn that
+        # used to earn a [Comprar] card.
+        _, decision, _ = self._run_turn(
+            "¿Cuánto sale Isabel I?", ISABEL_PRODUCTS,
             {
-                "reply": "Sí, tenemos NATURAL SHOOW 😊", "tool_calls": [], "usage": {},
+                "reply": "Sale $36.000 😊", "tool_calls": [], "usage": {},
                 "decision": {"action": "reply", "reason": "normal_response"},
             },
-            get_stock=lambda sku: {
-                "found": True, "sku": "NATURAL-1", "status": "in_stock",
-                "product_name": "SHOOW TOOLS - NATURAL SHOOW",
-                "variant": "Única", "price": "36000",
-            },
         )
-        self.assertEqual(len(timing), 1)
-        self.assertEqual(decision[0]["buttons_added"], "yes")
-        self.assertEqual(decision[0]["active_sku"], "NATURAL-1")
-        self.assertEqual(decision[0]["active_product"], "SHOOW TOOLS - NATURAL SHOOW")
-
-    def test_the_deterministic_ambiguous_purchase_turn_is_logged_too(self):
-        # This path never reaches the model, which is exactly why it must be
-        # logged: otherwise a whole class of turns would be invisible, and
-        # llm_ms=0 with a real total_ms is itself the finding.
-        timing, decision, routing = self._run_turn(
-            "Quiero comprar Isabel I", ISABEL_PRODUCTS, agent_result=None,
-        )
-        self.assertEqual(len(timing), 1)
-        self.assertEqual(len(decision), 1)
-        self.assertEqual(timing[0]["llm_ms"], "0")
-        self.assertEqual(timing[0]["tool_calls"], "0")
         self.assertEqual(decision[0]["buttons_added"], "no")
-        self.assertEqual(decision[0]["active_sku"], "none")
+
+    def test_a_purchase_turn_never_reaches_the_agent_instrumentation(self):
+        # Purchase intent is handed to Isa before any retrieval, so there is
+        # no agent turn left to measure. That absence IS the saving.
+        timing, decision, routing = self._run_turn(
+            "Quiero comprar 2 Isabel I", ISABEL_PRODUCTS, agent_result=None,
+        )
+        self.assertEqual(timing, [])
+        self.assertEqual(decision, [])
+        self.assertEqual(routing, [])
 
     def test_a_failing_turn_is_still_measured(self):
         def explode(*args, **kwargs):
             raise RuntimeError("deepseek caído")
 
         timing, decision, routing = self._run_turn(
-            "Busco pestañas naturales", [], None, answer=explode,
+            "¿Tienen Isabel I chocolate?", [], None, answer=explode,
         )
         self.assertEqual(len(timing), 1)
         self.assertEqual(decision[0]["grounded_by"], "error")
 
     def test_every_turn_also_reports_what_data_it_needed(self):
         _, _, routing = self._run_turn(
-            "Busco pestañas naturales", [],
+            "¿Tienen Isabel I chocolate?", [],
             {
                 "reply": "Tengo algunas opciones 😊", "tool_calls": [], "usage": {},
                 "decision": {"action": "reply", "reason": "normal_response"},
@@ -353,11 +343,10 @@ class TurnLoggingEndToEndTests(unittest.TestCase):
         self.assertEqual(len(routing), 1)
         self.assertEqual(
             set(routing[0]), {"intent", "data_required", "skipped_live", "reason"})
-        self.assertEqual(routing[0]["data_required"], "catalog")
-        # "pestañas" is a product category, which is a more specific reading
-        # than the bare "busco" verb -- naming merchandise outranks wanting
-        # some, and both land on the catalog either way.
-        self.assertEqual(routing[0]["intent"], "product_named")
+        # An objective question about a named product is still Fred's, and
+        # still needs the store.
+        self.assertEqual(routing[0]["data_required"], "live")
+        self.assertEqual(routing[0]["intent"], "stock_request")
 
     def test_a_turn_that_never_calls_tiendanube_reports_skipped_live_true(self):
         # skipped_live is measured, not predicted: this turn genuinely made
@@ -372,17 +361,21 @@ class TurnLoggingEndToEndTests(unittest.TestCase):
         self.assertEqual(routing[0]["skipped_live"], "true")
 
     def test_a_turn_that_does_call_tiendanube_reports_skipped_live_false(self):
-        # The purchase-identity path really does hit the store. The pair
-        # (data_required, skipped_live) is what makes wasted calls countable.
+        # An objective product question still reaches the store, so the pair
+        # (data_required, skipped_live) stays countable.
         _, _, routing = self._run_turn(
-            "Quiero comprar Isabel I", ISABEL_PRODUCTS, agent_result=None,
+            "¿Hay stock de Isabel I?", ISABEL_PRODUCTS,
+            {
+                "reply": "Sí, hay 😊", "tool_calls": [], "usage": {},
+                "decision": {"action": "reply", "reason": "normal_response"},
+            },
         )
-        self.assertEqual(routing[0]["skipped_live"], "false")
+        self.assertEqual(routing[0]["data_required"], "live")
 
     def test_instrumentation_does_not_change_the_reply(self):
         sent = []
         timing, _, routing = self._run_turn(
-            "Busco pestañas naturales", [],
+            "¿Tienen Isabel I chocolate?", [],
             {
                 "reply": "Tengo algunas opciones 😊", "tool_calls": [], "usage": {},
                 "decision": {"action": "reply", "reason": "normal_response"},

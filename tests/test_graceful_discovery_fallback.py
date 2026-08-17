@@ -84,6 +84,7 @@ class ClassifyGracefulDiscoveryFallbackTests(unittest.TestCase):
         tier = classify_graceful_discovery_fallback(
             product_discovery_turn=False, handoff_request=None,
             candidates=[{"sku": "X"}],
+            recommendations_enabled=True,
         )
         self.assertEqual(tier, "none")
 
@@ -91,6 +92,7 @@ class ClassifyGracefulDiscoveryFallbackTests(unittest.TestCase):
         tier = classify_graceful_discovery_fallback(
             product_discovery_turn=True, handoff_request={"reason": "unable_to_verify"},
             candidates=[{"sku": "X"}],
+            recommendations_enabled=True,
         )
         self.assertEqual(tier, "none")
 
@@ -98,6 +100,7 @@ class ClassifyGracefulDiscoveryFallbackTests(unittest.TestCase):
         tier = classify_graceful_discovery_fallback(
             product_discovery_turn=True, handoff_request=None,
             candidates=[{"sku": "NATURAL-1"}],
+            recommendations_enabled=True,
         )
         self.assertEqual(tier, "single")
 
@@ -109,6 +112,7 @@ class ClassifyGracefulDiscoveryFallbackTests(unittest.TestCase):
         tier = classify_graceful_discovery_fallback(
             product_discovery_turn=True, handoff_request=None,
             candidates=[{"sku": "NATURAL-1", "price": None}],
+            recommendations_enabled=True,
         )
         self.assertEqual(tier, "single")
 
@@ -116,6 +120,7 @@ class ClassifyGracefulDiscoveryFallbackTests(unittest.TestCase):
         tier = classify_graceful_discovery_fallback(
             product_discovery_turn=True, handoff_request=None,
             candidates=[{"sku": ""}],
+            recommendations_enabled=True,
         )
         self.assertEqual(tier, "escalate")
 
@@ -123,6 +128,7 @@ class ClassifyGracefulDiscoveryFallbackTests(unittest.TestCase):
         tier = classify_graceful_discovery_fallback(
             product_discovery_turn=True, handoff_request=None,
             candidates=[{"sku": "A"}, {"sku": "B"}],
+            recommendations_enabled=True,
         )
         self.assertEqual(tier, "multi")
 
@@ -130,6 +136,7 @@ class ClassifyGracefulDiscoveryFallbackTests(unittest.TestCase):
         tier = classify_graceful_discovery_fallback(
             product_discovery_turn=True, handoff_request=None,
             candidates=[{"sku": "A"}, {"sku": "B"}, {"sku": "C"}],
+            recommendations_enabled=True,
         )
         self.assertEqual(tier, "multi")
 
@@ -137,6 +144,7 @@ class ClassifyGracefulDiscoveryFallbackTests(unittest.TestCase):
         tier = classify_graceful_discovery_fallback(
             product_discovery_turn=True, handoff_request=None,
             candidates=[{"sku": c} for c in "ABCD"],
+            recommendations_enabled=True,
         )
         self.assertEqual(tier, "escalate")
 
@@ -144,6 +152,7 @@ class ClassifyGracefulDiscoveryFallbackTests(unittest.TestCase):
         tier = classify_graceful_discovery_fallback(
             product_discovery_turn=True, handoff_request=None,
             candidates=[],
+            recommendations_enabled=True,
         )
         self.assertEqual(tier, "escalate")
 
@@ -188,6 +197,7 @@ class FilterRelevantCandidatesTests(unittest.TestCase):
         tier = classify_graceful_discovery_fallback(
             product_discovery_turn=True, handoff_request=None,
             candidates=candidates,
+            recommendations_enabled=True,
         )
         self.assertEqual(len(candidates), 1)
         self.assertEqual(tier, "single")
@@ -197,6 +207,7 @@ class FilterRelevantCandidatesTests(unittest.TestCase):
         tier = classify_graceful_discovery_fallback(
             product_discovery_turn=True, handoff_request=None,
             candidates=candidates,
+            recommendations_enabled=True,
         )
         self.assertEqual(candidates, [])
         self.assertEqual(tier, "escalate")
@@ -226,6 +237,11 @@ def decision_call(payload, call_id="d1"):
     }}
 
 
+# Recommendations are switched OFF in production (Fred no longer advises).
+# These tests keep the dormant renderers honest for the day they return,
+# so they enable the flag explicitly; the production default is pinned
+# separately in test_fred_scope.py.
+@patch.object(agent, "RECOMMENDATIONS_ENABLED", True)
 class GracefulFallbackIntegrationTests(unittest.TestCase):
     """End-to-end with agent.answer(), model/tools mocked."""
 
@@ -572,6 +588,11 @@ class ResolveDiscoveryFollowupNamesTests(unittest.TestCase):
         self.assertIsNone(_resolve_discovery_followup_names("¿tenés envío a Córdoba?", self.NAMES))
 
 
+# Recommendations are switched OFF in production (Fred no longer advises).
+# These tests keep the dormant renderers honest for the day they return,
+# so they enable the flag explicitly; the production default is pinned
+# separately in test_fred_scope.py.
+@patch.object(agent, "RECOMMENDATIONS_ENABLED", True)
 class DiscoveryFollowupIntegrationTests(unittest.TestCase):
     """Reproduces the reported real-world bug: Fred shows a menu, the
     customer asks an elliptical follow-up ("¿cuáles opciones serían?"), and

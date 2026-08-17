@@ -83,6 +83,7 @@ class AnchorClassificationTests(unittest.TestCase):
                 product_discovery_turn=True, handoff_request=None,
                 candidates=[{"product_name": "Flores plateadas", "sku": "FLORES-1"}],
                 has_product_anchor=False,
+                recommendations_enabled=True,
             ),
             "ask",
         )
@@ -96,6 +97,7 @@ class AnchorClassificationTests(unittest.TestCase):
                     {"product_name": "B", "sku": "B1"},
                 ],
                 has_product_anchor=False,
+                recommendations_enabled=True,
             ),
             "ask",
         )
@@ -109,6 +111,7 @@ class AnchorClassificationTests(unittest.TestCase):
                     classify_graceful_discovery_fallback(
                         product_discovery_turn=True, handoff_request=None,
                         candidates=candidates, has_product_anchor=True,
+                        recommendations_enabled=True,
                     ),
                     expected,
                 )
@@ -119,6 +122,7 @@ class AnchorClassificationTests(unittest.TestCase):
                 product_discovery_turn=True,
                 handoff_request={"reason": "human_request", "summary": "x"},
                 candidates=[], has_product_anchor=False,
+                recommendations_enabled=True,
             ),
             "none",
         )
@@ -128,11 +132,17 @@ class AnchorClassificationTests(unittest.TestCase):
             classify_graceful_discovery_fallback(
                 product_discovery_turn=False, handoff_request=None,
                 candidates=[], has_product_anchor=False,
+                recommendations_enabled=True,
             ),
             "none",
         )
 
 
+# Recommendations are switched OFF in production (Fred no longer advises).
+# These tests keep the dormant renderers honest for the day they return,
+# so they enable the flag explicitly; the production default is pinned
+# separately in test_fred_scope.py.
+@patch.object(agent, "RECOMMENDATIONS_ENABLED", True)
 class AnchorEndToEndTests(unittest.TestCase):
     @patch.object(agent, "_run_tool")
     @patch.object(agent, "_ask_deepseek")

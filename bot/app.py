@@ -41,6 +41,7 @@ from google import genai
 from google.genai import types
 
 from agent import (
+    RECOMMENDATIONS_ENABLED,
     answer,
     _collect_turn_candidates,
     _filter_relevant_candidates,
@@ -74,6 +75,10 @@ from conversation_quality import apply_conversation_contract
 from durable_worker import DeliveryContext, current_delivery_context
 from message_queue import extract_inbound_messages, ordered_turn_text
 from routing_policy import (
+    INTENT_ADVICE_REQUEST,
+    INTENT_PURCHASE_INTENT,
+    _carries_commercial_object,
+    _named_catalog_product,
     _pickup_of_a_specific_order,
     align_reply_with_routing,
     build_product_lexicon,
@@ -1101,28 +1106,22 @@ def _offer_customer_actions(
     conversation_id: int, customer_phone: str, reply_text: str, core_state: dict,
     offer_isa: bool = False,
 ) -> bool:
-    """Attach action buttons to a CHAT answer, only when they earn their place.
+    """No action buttons: Fred does not sell.
 
-    Offering is not executing: nothing changes until the customer taps. The
-    Isa button is deliberately NOT on every reply -- a bot that ends each
-    answer with "¿querés hablar con una persona?" reads as a bot that cannot
-    help. It appears only when Fred could not ground an answer, or when the
-    turn is personalised advice Isa prefers to take.
+    Fred's scope no longer includes closing a sale, so the [Comprar] button --
+    the only entry point into CHECKOUT -- is not offered at all. Purchase
+    intent goes to Isa with the product, variant and quantity the customer
+    already gave, instead of opening a checkout.
+
+    This is enforced by the contract, not by configuration: it returns False
+    whatever SALES_INTAKE_ENABLED or TIENDANUBE_CHECKOUT_MODE happen to be, so
+    an env var cannot accidentally put Fred back in the selling business.
+
+    Kept as a function rather than deleted so the call site, its tests and the
+    checkout code behind it stay intact while the new scope is validated in
+    production. Reconnecting it is one return statement.
     """
-    buttons = []
-    sku = (core_state or {}).get("active_sku")
-    name = (core_state or {}).get("active_product_name")
-    if sku and name:
-        buttons.append({
-            "id": "{}{}".format(BUY_BUTTON_PREFIX, sku),
-            "title": "Comprar",
-        })
-    if not buttons:
-        return False
-    if not send_customer_action_buttons(customer_phone, reply_text, buttons):
-        return False
-    record_bot_message(conversation_id, reply_text)
-    return True
+    return False
 
 
 # Personalised advice: the customer is asking what suits THEM, which Isa
@@ -2382,6 +2381,75 @@ def _extract_menu_selection(text: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+_ASK_WHICH_PRODUCT = (
+    "¡Dale! 😊 ¿Qué producto estás buscando? Si me pasás el nombre como figura "
+    "en la tienda, lo ubico enseguida."
+)
+
+
+def _quantity_in_message(normalized_message: str) -> str:
+    match = re.search(r"\b(\d{1,3})\s+\w{3,}", normalized_message)
+    return match.group(1) if match else ""
+
+
+def _isa_scope_handoff(message_text: str, core_state: dict) -> str:
+    """The two things Fred no longer does, answered without spending anything.
+
+    Advice ("¿cuál me recomendás?") and closing a sale ("quiero 4 Isabel I")
+    are Isa's. Recognising them here, from the message alone, is what removes
+    the catalog search, the live verification and the model rounds from turns
+    whose destination was never Fred.
+
+    Returns the reply to send, or "" to let the turn continue normally.
+
+    Purchase intent needs a commercial OBJECT to count: "quiero pasar por el
+    showroom" is not a purchase, and treating it as one is what sent a policy
+    question to the store. When the intent is real but no product is named
+    ("quiero 4 pestañas"), Fred asks which one instead of handing over a
+    request Isa cannot act on.
+    """
+    normalized = _knowledge_normalise(message_text)
+    verdict = classify_turn_data_requirement(
+        message_text,
+        product_lexicon=product_lexicon(),
+        product_lexicon_available=product_lexicon_available(),
+    )
+    intent = verdict.get("intent")
+
+    if intent == INTENT_ADVICE_REQUEST:
+        print("[FredScope] asesoramiento -> Isa (sin catálogo ni modelo).")
+        return _isa_direct_contact_reply(
+            "Para recomendarte la opción que mejor te queda, prefiero que te "
+            "asesore Isa directamente."
+        )
+
+    if intent != INTENT_PURCHASE_INTENT:
+        return ""
+
+    active_product = (core_state or {}).get("active_product_name") or ""
+    names_a_product = bool(
+        _named_catalog_product(normalized, product_lexicon()) or active_product
+    )
+    if not names_a_product:
+        if not _carries_commercial_object(normalized, product_lexicon()):
+            # A purchase verb with nothing to buy: not a purchase at all.
+            return ""
+        print("[FredScope] compra sin producto identificado -> se pregunta cuál.")
+        return _ASK_WHICH_PRODUCT
+
+    # Hand over what the customer already said, so Isa does not re-ask it.
+    quantity = _quantity_in_message(normalized)
+    detail = " ".join(part for part in (
+        "{} unidades de".format(quantity) if quantity else "",
+        active_product or message_text.strip(),
+    ) if part).strip()
+    print("[FredScope] intención de compra -> Isa (sin checkout ni botón).")
+    return _isa_direct_contact_reply(
+        "¡Genial! Para cerrar la compra ({}) te paso con Isa, que la coordina "
+        "directamente.".format(detail[:120])
+    )
+
+
 # Fred asking for an order number is a QUESTION, and the answer to it is the
 # next message. That continuity was missing: the deterministic prompt sets
 # mode=TRACKING, but when the model asked in its own words nothing recorded
@@ -2446,30 +2514,98 @@ def _fred_core_active_product_fields(candidate: dict) -> dict:
 
 # --- mode=TRACKING ----------------------------------------------------
 
-def _render_order_status_reply(result: dict) -> str:
-    """Honest, deterministic status text from only what Tiendanube returned.
-    Never invents a stage, a carrier or a date that wasn't in the result."""
-    order_number = result.get("order_number")
-    tracking = result.get("tracking")
-    shipping_status = str(result.get("shipping_status") or "").lower()
-    payment_status = str(result.get("payment_status") or "").lower()
-    if tracking:
-        return "Tu pedido #{} ya está en camino. Número de seguimiento: {}.".format(
-            order_number, tracking,
+def log_order_live(result: dict) -> None:
+    """What Tiendanube actually returned, with no personal data.
+
+    Deliberately only status-shaped fields: never a name, email, address,
+    phone or document. Reading this line next to [FredDecision] is what makes
+    "Fred said the wrong thing about my order" diagnosable.
+    """
+    try:
+        print(
+            "[OrderLive] order={} payment_status={} shipping_status={} "
+            "shipping_type={} fulfillment_status={} carrier={} tracking={}".format(
+                result.get("order_number") or "none",
+                result.get("payment_status") or "none",
+                result.get("shipping_status") or "none",
+                result.get("shipping_type") or "none",
+                result.get("fulfillment_status") or "none",
+                result.get("carrier") or "none",
+                "yes" if result.get("tracking") else "no",
+            )
         )
+    except Exception as error:  # noqa: BLE001
+        print("ERROR registrando estado live del pedido (tipo: {}).".format(type(error).__name__))
+
+
+# Preparation and delivery windows are Knowledge's, not this module's. They are
+# quoted rather than computed: no exact date is ever promised.
+_PREPARATION_WINDOW = "El plazo habitual de preparación es de 24 a 72 horas hábiles desde que se acredita el pago."
+_DELIVERY_WINDOW = "Una vez despachado, la entrega suele demorar entre 1 y 5 días hábiles."
+_WATCH_YOUR_EMAIL = "Te vamos a avisar por correo cuando avance."
+
+
+def _render_order_status_reply(result: dict) -> str:
+    """Deterministic status text built from the fulfillment Tiendanube
+    returned, never from payment alone.
+
+    The states are the ones the Tiendanube UI shows, measured against 40 real
+    orders (UNPACKED / PACKED / DISPATCHED / DELIVERED, each ship or pickup).
+    A paid order is not a packed one, and a packed one is not collectable:
+    each stage says only what it knows, and pickup coordination stays with the
+    approved policy rather than being inferred from a status.
+    """
+    order_number = result.get("order_number")
+    fulfillment = str(result.get("fulfillment_status") or "").upper()
+    is_pickup = str(result.get("shipping_type") or "").lower() == "pickup"
+    tracking = result.get("tracking")
+    carrier = result.get("carrier")
+    payment_status = str(result.get("payment_status") or "").lower()
+
+    # Payment first: nothing downstream has happened yet if it has not cleared.
     if payment_status and payment_status not in ("paid", "approved"):
         return (
             "Tu pedido #{} todavía no tiene el pago acreditado (estado: {}). "
             "En cuanto se acredite, empezamos a prepararlo."
         ).format(order_number, payment_status)
-    if shipping_status in ("", "unpacked", "unfulfilled", "pending"):
+
+    if fulfillment == "DELIVERED":
+        if is_pickup:
+            return "Tu pedido #{} figura como retirado. ¡Gracias! 😊".format(order_number)
+        return "Tu pedido #{} figura como entregado. ¡Gracias! 😊".format(order_number)
+
+    if fulfillment == "DISPATCHED":
+        text = "Tu pedido #{} ya fue despachado".format(order_number)
+        text += " con {}.".format(carrier) if carrier else "."
+        if tracking:
+            text += " Número de seguimiento: {}.".format(tracking)
+        text += " " + _DELIVERY_WINDOW
+        return text
+
+    if fulfillment == "PACKED":
+        if is_pickup:
+            # Deliberately NOT "listo para retirar": PACKED+pickup has not been
+            # observed against the Tiendanube UI yet, so this says only what is
+            # certain (it is packed) and asks the customer to wait for the
+            # confirmation rather than travel on a guess.
+            return (
+                "Tu pedido #{} ya está empaquetado. Antes de acercarte, esperá "
+                "la confirmación por correo así no hacés el viaje en vano."
+            ).format(order_number)
         return (
-            "Tu pedido #{} está en preparación. El plazo habitual es de 24 a 72 "
-            "horas hábiles desde que se acredita el pago."
+            "Tu pedido #{} ya está empaquetado y casi listo para salir. "
+            "Estate atenta al correo, que ahí te avisamos cuando se despache."
         ).format(order_number)
-    return "Tu pedido #{} figura como {}. Todavía no tengo un número de seguimiento cargado.".format(
-        order_number, shipping_status,
-    )
+
+    if fulfillment == "UNPACKED":
+        return (
+            "Tu pedido #{} todavía está en preparación y aún no salió. {} {}"
+        ).format(order_number, _PREPARATION_WINDOW, _WATCH_YOUR_EMAIL)
+
+    # No fulfillment record yet: say what is true and nothing more.
+    return (
+        "Tu pedido #{} está en preparación. {} {}"
+    ).format(order_number, _PREPARATION_WINDOW, _WATCH_YOUR_EMAIL)
 
 
 # Wanting to collect an order, in the customer's own words.
@@ -2525,6 +2661,8 @@ def _fred_core_lookup_order(
         return _isa_direct_contact_reply(
             "No pude consultar tu pedido en este momento."
         )
+
+    log_order_live(result)
 
     outcome = DynamicCheckOutcome(
         fact="order_status", verifier="get_order_status", status="completed", result=result,
@@ -5608,13 +5746,14 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # reprocess this same message there.
             core_state = get_fred_core_state(conversation_id)
 
-        # THE ONLY TWO DOORS OUT OF CHAT. A sensitive action starts because
-        # the customer tapped a button, never because Fred read a phrase.
+        # Fred no longer sells, so a [Comprar] tap can only come from a card
+        # sent before this scope change. It must not open a checkout: the
+        # customer is handed to Isa with the product they had chosen.
         if button_reply_id.startswith(BUY_BUTTON_PREFIX):
             sku = button_reply_id[len(BUY_BUTTON_PREFIX):].strip()
-            reply = _start_purchase_from_button(conversation_id, customer_phone, sku, core_state)
+            print("[FredCore] botón Comprar heredado (SKU {}) -> Isa, sin checkout.".format(sku))
+            reply = _isa_direct_contact_reply(_ISA_HANDOFF_LEADS["purchase_intent"])
             _deliver_flow_reply(customer_phone, conversation_id, reply)
-            print("[FredCore] compra iniciada por botón, SKU {}.".format(sku))
             return JSONResponse(content={"ok": True})
         # Isa asked this customer something through Fred and the case is still
         # open: her answer belongs to that case, so it goes back to Isa instead
@@ -5712,6 +5851,16 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 pickup_requested=_pickup_requested(message_text, prior_history),
             )
             _deliver_flow_reply(customer_phone, conversation_id, reply)
+            return JSONResponse(content={"ok": True})
+
+        # Fred does not advise and does not sell. Both are decided here, from
+        # the customer's own words alone -- before any retrieval, any catalog
+        # search, any live call and any model round. Doing it later would mean
+        # paying for a product search whose only possible output is a
+        # recommendation Isa does not want Fred to make.
+        scope_reply = _isa_scope_handoff(message_text, core_state)
+        if scope_reply:
+            _deliver_flow_reply(customer_phone, conversation_id, scope_reply)
             return JSONResponse(content={"ok": True})
 
         # Observability starts here, after deterministic shortcuts and before
@@ -6006,7 +6155,14 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     )
                     return JSONResponse(content={"ok": True})
 
-            grounded_reply = _grounded_lash_recommendation(live_candidate_context, catalog_query)
+            # Disconnected, not deleted: this function's whole job is to
+            # recommend a lash product, which is no longer Fred's to do. The
+            # code and its tests stay while the new scope is validated in
+            # production; reconnecting it is one constant.
+            grounded_reply = (
+                _grounded_lash_recommendation(live_candidate_context, catalog_query)
+                if RECOMMENDATIONS_ENABLED else ""
+            )
             if grounded_reply:
                 # The live store already supplied exactly the facts this
                 # recommendation needs. Avoid spending a model call and avoid

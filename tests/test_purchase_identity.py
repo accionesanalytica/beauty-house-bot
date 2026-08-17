@@ -241,9 +241,12 @@ class PurchaseTurnEndToEndTests(unittest.TestCase):
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
     @patch.object(app, "load_history", return_value=[])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    def test_ambiguous_purchase_asks_without_model_button_or_saved_sku(
+    def test_a_purchase_of_a_named_product_goes_to_isa_with_its_context(
         self, history, inbound, send_message, record_message, record_turn
     ):
+        # Scope change: asking WHICH Isabel I was a step towards selling one.
+        # Fred no longer sells, so the whole exchange goes to Isa with what the
+        # customer already said -- she picks the variant with them.
         saved = []
         with patch.object(app, "save_fred_core_state", lambda cid, **kw: saved.append(kw)), \
                 patch.object(app, "search_available_products", _search_returning(ISABEL_PRODUCTS)), \
@@ -259,18 +262,16 @@ class PurchaseTurnEndToEndTests(unittest.TestCase):
             ))
 
         self.assertEqual(response.status_code, 200)
-        # Code decides. The model is never given the chance to pick a variant.
+        delivered = send_message.call_args.args[1]
+        self.assertIn("Isa", delivered)
+        # What the customer already said travels with them.
+        self.assertIn("Isabel I", delivered)
         ask_model.assert_not_called()
         buttons.assert_not_called()
         start_intake.assert_not_called()
-        # Nothing was pinned: no active_sku means no [Comprar] on a guess.
-        self.assertFalse([fields for fields in saved if fields.get("active_sku")])
-
-        delivered = send_message.call_args.args[1]
-        self.assertIn("¿Cuál buscabas?", delivered)
-        self.assertIn("8/10 mm", delivered)
+        self.assertFalse([f for f in saved if f.get("active_sku")])
         for sku in ("ISABEL-8-10", "ISABEL-MIX", "ISABEL-CHOCO"):
-            self.assertNotIn(sku, delivered, "a SKU is internal, never customer copy")
+            self.assertNotIn(sku, delivered)
 
     @patch.object(app, "record_agent_turn")
     @patch.object(app, "record_bot_message")
@@ -278,42 +279,33 @@ class PurchaseTurnEndToEndTests(unittest.TestCase):
     @patch.object(app, "record_inbound_message", return_value=(7, "BOT", False))
     @patch.object(app, "load_history", return_value=[])
     @patch.object(app, "BOT_RESPONSE_MODE", "agent")
-    def test_unambiguous_purchase_pins_the_sku_and_offers_the_buy_button(
+    def test_an_unambiguous_purchase_goes_to_isa_with_no_button_and_no_checkout(
         self, history, inbound, send_message, record_message, record_turn
     ):
-        agent_result = {
-            "reply": "Sí, tenemos NATURAL SHOOW disponible 😊",
-            "tool_calls": [], "usage": {},
-            "decision": {"action": "reply", "reason": "normal_response"},
-        }
+        # Scope change: Fred no longer sells. A purchase Fred could once pin to
+        # a SKU and put behind [Comprar] is now handed to Isa -- and no button,
+        # checkout or payment link may appear on the way.
         saved = []
         with patch.object(app, "save_fred_core_state", lambda cid, **kw: saved.append(kw)), \
-                patch.object(app, "search_available_products", _search_returning(ONE_UNAMBIGUOUS_PRODUCT)), \
-                patch.object(app, "get_stock", lambda sku: {
-                    "found": True, "sku": "NATURAL-1", "status": "in_stock",
-                    "product_name": "SHOOW TOOLS - NATURAL SHOOW",
-                    "variant": "Única", "price": "36000",
-                }), \
+                patch.object(app, "search_available_products", _search_returning(ISABEL_PRODUCTS)), \
+                patch.object(app, "get_stock", lambda sku: {"found": False}), \
                 patch.object(app, "_live_candidate_context", return_value=""), \
                 patch.object(app, "search_similar_products", return_value=""), \
                 patch.object(app, "get_product_selection", return_value=None), \
                 patch.object(app, "send_customer_action_buttons", return_value=True) as buttons, \
-                patch.object(app, "answer", return_value=agent_result):
+                patch.object(app, "_start_sales_intake") as start_intake, \
+                patch.object(app, "answer") as ask_model:
             response = asyncio.run(app.webhook_post(
-                IncomingRequest(self.PHONE, "Quiero comprar natural shoow", "wamid-single")
+                IncomingRequest(self.PHONE, "Quiero comprar 2 Isabel I", "wamid-single")
             ))
 
         self.assertEqual(response.status_code, 200)
-        pinned = [fields for fields in saved if fields.get("active_sku")]
-        self.assertTrue(pinned, "an unambiguous live SKU must be pinned")
-        self.assertEqual(pinned[0]["active_sku"], "NATURAL-1")
-
-        buttons.assert_called_once()
-        offered = buttons.call_args.args[2]
-        self.assertEqual(offered[0]["title"], "Comprar")
-        # The button id carries the real, live-verified SKU: tapping it can
-        # never open a checkout on something the customer did not choose.
-        self.assertEqual(offered[0]["id"], "{}NATURAL-1".format(app.BUY_BUTTON_PREFIX))
+        delivered = send_message.call_args.args[1]
+        self.assertIn("Isa", delivered)
+        buttons.assert_not_called()
+        start_intake.assert_not_called()
+        ask_model.assert_not_called()
+        self.assertFalse([f for f in saved if f.get("active_sku")])
 
 
 if __name__ == "__main__":

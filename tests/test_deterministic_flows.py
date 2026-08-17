@@ -94,7 +94,9 @@ class FredCoreTrackingTests(unittest.TestCase):
     def test_handle_tracking_extracts_and_looks_up_the_order_number(self, get_status):
         get_status.return_value = {
             "found": True, "order_number": 1234, "status": "open",
-            "shipping_status": "shipped", "tracking": "RR123456789AR", "payment_status": "paid",
+            "shipping_status": "shipped", "payment_status": "paid",
+            "fulfillment_status": "DISPATCHED", "shipping_type": "ship",
+            "carrier": "Envío Nube", "tracking": "RR123456789AR",
         }
         with patch.object(app, "save_fred_core_state") as save_state:
             reply = app._fred_core_handle_tracking(7, "5491111111111", "el número es 1234", [])
@@ -137,7 +139,8 @@ class FredCoreTrackingTests(unittest.TestCase):
 
     @patch.object(app, "get_order_status", return_value={
         "found": True, "order_number": 77, "status": "open",
-        "shipping_status": "shipped", "tracking": "RR1AR", "payment_status": "paid",
+        "shipping_status": "shipped", "payment_status": "paid",
+            "fulfillment_status": "DISPATCHED", "shipping_type": "ship", "tracking": "RR1AR",
     })
     def test_found_with_tracking_never_escalates(self, get_status):
         with patch.object(app, "_queue_for_isa") as queue_for_isa, patch.object(app, "save_fred_core_state"):

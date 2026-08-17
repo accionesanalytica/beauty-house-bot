@@ -127,17 +127,21 @@ class LiveDataTurnsTests(unittest.TestCase):
 
 
 class CatalogTurnsTests(unittest.TestCase):
-    def test_wanting_a_product_without_naming_one_requires_the_catalog(self):
-        for message in (
-            "Busco pestañas naturales",
-            "¿Qué modelo me recomendás?",
-            "¿Me pasás el catálogo?",
-        ):
+    def test_describing_a_need_without_naming_a_product_is_advice_for_isa(self):
+        # Scope change: Fred no longer recommends. Searching the catalog for
+        # "unas pestañas naturales" could only ever end in a recommendation,
+        # so the turn goes to Isa instead of paying for a discovery loop.
+        for message in ("Busco pestañas naturales", "¿Qué modelo me recomendás?"):
             with self.subTest(message=message):
-                self.assertEqual(
-                    classify_turn_data_requirement(message)["data_required"],
-                    DATA_CATALOG,
-                )
+                verdict = classify_turn_data_requirement(message)
+                self.assertEqual(verdict["intent"], "advice_request")
+                self.assertEqual(verdict["data_required"], DATA_KNOWLEDGE_ONLY)
+
+    def test_asking_for_the_catalog_itself_is_still_a_catalog_turn(self):
+        self.assertEqual(
+            classify_turn_data_requirement("¿Me pasás el catálogo?")["data_required"],
+            DATA_CATALOG,
+        )
 
     def test_deciding_to_buy_requires_live_data_not_merely_the_catalog(self):
         # A purchase can never be pinned to a SKU without live stock, so

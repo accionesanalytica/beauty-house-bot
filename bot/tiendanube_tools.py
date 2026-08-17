@@ -314,14 +314,34 @@ def get_order_status(order_number: str) -> Dict[str, Any]:
         return {"found": False, "message": "No encontré esa orden."}
 
     order = orders[0]
+
+    # The logistics truth is in fulfillments, not on the order itself.
+    # Measured over 40 real orders: shipping_option, shipping_tracking_number,
+    # shipping_carrier_name and shipping_pickup_type are empty on ALL of them,
+    # so the fields this used to report were always None -- Fred never once
+    # gave a real tracking number. Meanwhile every order carries a
+    # fulfillments[] entry with the state the Tiendanube UI actually shows.
+    #
+    # Observed statuses: UNPACKED, PACKED, DISPATCHED, DELIVERED, each with
+    # shipping.type of "ship" or "pickup". order.shipping_status has only four
+    # coarse values and cannot tell a pickup from a delivery, which is how
+    # "paid and being prepared" got read as "ready to collect".
+    fulfillment = (order.get("fulfillments") or [{}])[0]
+    shipping = fulfillment.get("shipping") or {}
+    tracking_info = fulfillment.get("tracking_info") or {}
+
     return {
         "found": True,
         "order_number": order.get("number"),
         "payment_status": order.get("payment_status"),
         "shipping_status": order.get("shipping_status"),
         "status": order.get("status"),
-        "shipping_method": order.get("shipping_option"),
-        "tracking": order.get("shipping_tracking_number"),
+        # Fulfillment-level truth.
+        "fulfillment_status": (fulfillment.get("status") or "").strip().upper() or None,
+        "shipping_type": (shipping.get("type") or "").strip().lower() or None,
+        "carrier": ((shipping.get("carrier") or {}).get("name") or "").strip() or None,
+        "tracking": (tracking_info.get("code") or "").strip() or None,
+        "tracking_url": (tracking_info.get("url") or "").strip() or None,
         "total": order.get("total"),
     }
 

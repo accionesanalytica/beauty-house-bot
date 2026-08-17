@@ -39,6 +39,13 @@ from tool_guardrails import (
 
 load_dotenv()
 
+# Fred's scope no longer includes recommending or comparing products for a
+# customer -- that goes to Isa. The candidate-presenting tiers of the discovery
+# fallback are switched off here rather than deleted, so the renderers, their
+# tests and the elliptical follow-up path stay intact while the new scope is
+# validated in production. Flipping this back is one constant.
+RECOMMENDATIONS_ENABLED = False
+
 MODEL = "deepseek-chat"
 # Cinco llamadas cubren buscar -> verificar -> seleccionar -> responder. Más
 # rondas repetían un prompt grande, elevaban costo y rara vez mejoraban calidad.
@@ -769,6 +776,7 @@ def classify_graceful_discovery_fallback(
     handoff_request: Optional[Dict[str, Any]],
     candidates: List[Dict[str, Any]],
     has_product_anchor: bool = True,
+    recommendations_enabled: bool = None,
 ) -> str:
     """Which tier applies when the model exhausted the turn without ever
     closing a valid set_turn_decision. Pure — only counts and set membership,
@@ -796,6 +804,15 @@ def classify_graceful_discovery_fallback(
     """
     if not product_discovery_turn or handoff_request:
         return "none"
+    # Fred no longer recommends. The "single" and "multi" tiers existed to
+    # present candidates the tools happened to surface -- which is a
+    # recommendation however carefully it is worded, and choosing between
+    # products for a customer is Isa's job now. What is left is the honest
+    # half: ask what they are looking for.
+    if recommendations_enabled is None:
+        recommendations_enabled = RECOMMENDATIONS_ENABLED
+    if not recommendations_enabled:
+        return "ask"
     # Checked before counting: with no anchor, the number of candidates is
     # irrelevant. One similarity hit is not more trustworthy than three, and
     # showing the single one is precisely the dangerous case (it reads as an
