@@ -36,6 +36,16 @@ from routing_policy import (  # noqa: E402
     classify_turn_data_requirement,
 )
 
+class _Request:
+    def __init__(self, text, message_id="wamid-scope"):
+        self._body = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": "5491111111111", "id": message_id, "text": {"body": text}},
+        ]}}]}]}
+
+    async def json(self):
+        return self._body
+
+
 LEXICON = app.product_lexicon()
 KB = {"governing_topic": "pickups_showroom",
       "knowledge_context": "- [politicas / showroom] Texto aprobado."}
@@ -281,3 +291,124 @@ class WholesaleComesFromKnowledgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PolicyBypassSkipsCatalogAndStoreTests(unittest.TestCase):
+    """The one bypass, and only it.
+
+    A turn an approved topic fully governs cannot be improved by the catalog
+    or the store, so neither is consulted. Everything else keeps every lookup
+    it had -- the bypass is narrow by construction, because every commercial
+    branch is checked before policy_question can be reached.
+    """
+
+    def _run(self, message, topic="pickups_showroom", context="- [x] Texto aprobado."):
+        store, calls = {"mode": "CHAT"}, {"catalog": 0, "live": 0}
+
+        def get_state(conversation_id):
+            base = dict.fromkeys([
+                "active_product_id", "active_product_name", "active_sku",
+                "active_variant", "unit_price", "quantity", "delivery_method",
+                "customer_name", "customer_email", "postal_code",
+                "checkout_step", "order_number",
+            ])
+            base["mode"] = "CHAT"
+            base.update(store)
+            return base
+
+        class Bundle:
+            governing_topic = topic
+            dynamic_requirements = ()
+
+            def __init__(self):
+                self.context = context
+
+        def catalog(*args, **kwargs):
+            calls["catalog"] += 1
+            return "- Producto | product_id: 1"
+
+        def live(*args, **kwargs):
+            calls["live"] += 1
+            return ""
+
+        mocks = {
+            "CONVERSATION_DEBOUNCE_SECONDS": 0, "BOT_RESPONSE_MODE": "agent",
+            "KNOWLEDGE_RAG_ENABLED": True,
+            "get_fred_core_state": get_state,
+            "save_fred_core_state": lambda c, **f: store.update(
+                {k: v for k, v in f.items() if v is not None}),
+            "reset_fred_core_checkout": lambda c: None,
+            "get_active_sales_intake": lambda c: None,
+            "get_product_selection": lambda *a, **k: None,
+            "record_inbound_message": lambda *a, **k: (7, "BOT", False),
+            "record_bot_message": lambda *a, **k: None,
+            "record_agent_turn": lambda **k: None,
+            "load_history": lambda *a, **k: [],
+            "is_latest_customer_message": lambda *a, **k: True,
+            "send_whatsapp_text": lambda p, t: True,
+            "send_customer_action_buttons": lambda *a, **k: True,
+            "embed_text": lambda *a, **k: [0.0] * 768,
+            "search_similar_products": catalog,
+            "_live_candidate_context": live,
+            "retrieve_with_recent_context": lambda m, h, fn: (Bundle(), m, None),
+            "execute_dynamic_requirements": lambda *a, **k: (),
+            "get_order_status": lambda n: {
+                "found": True, "order_number": n, "payment_status": "paid",
+                "fulfillment_status": "UNPACKED", "shipping_type": "ship",
+                "shipping_status": "unpacked", "tracking": None, "carrier": None},
+            "answer": lambda t, **k: {
+                "reply": "(respuesta)", "tool_calls": [], "usage": {},
+                "decision": {"action": "reply", "reason": "normal_response"}},
+        }
+        handles = [patch.object(app, name, value) for name, value in mocks.items()]
+        for handle in handles:
+            handle.start()
+        stream = io.StringIO()
+        try:
+            with redirect_stdout(stream):
+                asyncio.run(app.webhook_post(_Request(message)))
+        finally:
+            for handle in reversed(handles):
+                handle.stop()
+        return calls, stream.getvalue()
+
+    def test_a_showroom_question_touches_neither_catalog_nor_the_store(self):
+        calls, output = self._run("quiero pasar por el showroom")
+        self.assertEqual(calls["catalog"], 0)
+        self.assertEqual(calls["live"], 0)
+        self.assertIn("intent=policy_question", output)
+        self.assertIn("data_required=knowledge_only", output)
+        self.assertIn("skipped_live=true", output)
+        self.assertIn("catalog_ms=0", output)
+        self.assertIn("live_stock_ms=0", output)
+
+    def test_the_bypass_never_applies_to_a_commercial_turn(self):
+        # The five regressions: each names a product, a price, stock or one
+        # specific order, so each must keep its lookups.
+        for message in (
+            "¿Tienen Isabel I Chocolate?",
+            "¿Cuánto sale Isabel I?",
+            "¿Hay stock?",
+            "quiero saber el estado de mi pedido",
+            "pedido 6345",
+        ):
+            with self.subTest(message=message):
+                calls, output = self._run(message)
+                self.assertNotIn("intent=policy_question", output)
+                if "[FredTiming]" in output:
+                    self.assertGreater(
+                        calls["catalog"] + calls["live"], 0,
+                        "un turno comercial no puede saltear catálogo y tienda")
+
+    def test_advice_never_reaches_the_bypass_even_though_it_is_knowledge_only(self):
+        # advice_request is knowledge_only too. It is handed to Isa before any
+        # retrieval, so it never gets as far as this branch -- the bypass is
+        # not "skip work whenever data_required is knowledge_only".
+        calls, output = self._run("¿cuál me recomendás?")
+        self.assertEqual(calls["catalog"], 0)
+        self.assertEqual(calls["live"], 0)
+        self.assertNotIn("[FredTiming]", output)
+
+    def test_without_a_governing_topic_nothing_is_skipped(self):
+        calls, _ = self._run("una consulta cualquiera", topic=None)
+        self.assertGreater(calls["catalog"], 0)

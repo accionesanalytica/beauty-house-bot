@@ -75,7 +75,9 @@ from conversation_quality import apply_conversation_contract
 from durable_worker import DeliveryContext, current_delivery_context
 from message_queue import extract_inbound_messages, ordered_turn_text
 from routing_policy import (
+    DATA_KNOWLEDGE_ONLY,
     INTENT_ADVICE_REQUEST,
+    INTENT_POLICY_QUESTION,
     INTENT_PURCHASE_INTENT,
     _carries_commercial_object,
     _named_catalog_product,
@@ -5881,6 +5883,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
         knowledge_bundle = KnowledgeRetrieval()
         dynamic_check_outcomes = ()
         knowledge_answer_used = False
+        policy_bypass = False
         result = {}
         try:
             # With Knowledge RAG off, preserve the established catalog path.
@@ -5919,10 +5922,10 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 catalog_context = ""
                 knowledge_context = ""
                 if query_embedding is not None:
-                    with _timed(turn_timings, "catalog_ms"):
-                        catalog_context = search_similar_products(
-                            catalog_query, query_embedding=query_embedding
-                        )
+                    # Knowledge runs BEFORE the catalog now. Only once the
+                    # approved answer is in hand can this turn be recognised as
+                    # one the catalog cannot contribute to, and the catalog
+                    # search skipped instead of paid for.
                     def retrieve_knowledge(retrieval_query):
                         return search_knowledge_bundle(
                             retrieval_query,
@@ -5976,6 +5979,41 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     knowledge_context = "\n\n".join(
                         item for item in (dynamic_context, knowledge_bundle.context) if item
                     )
+
+                    # The one bypass, and deliberately the narrowest possible
+                    # one: an approved topic governs the turn AND the message
+                    # names no product, no price, no stock, no quantity and no
+                    # specific order (that is exactly what policy_question +
+                    # knowledge_only means -- every commercial branch is
+                    # checked before it). Such a turn cannot be improved by the
+                    # catalog or the store, so neither is consulted.
+                    #
+                    # This is NOT "skip work whenever data_required is
+                    # knowledge_only": advice is knowledge_only too and never
+                    # reaches here, and any turn carrying a commercial object
+                    # classifies as something else and keeps every lookup.
+                    routing_requirement = classify_turn_data_requirement(
+                        message_text,
+                        governing_topic=knowledge_bundle.governing_topic,
+                        knowledge_context=knowledge_context,
+                        dynamic_requirements=knowledge_bundle.dynamic_requirements,
+                        product_lexicon=product_lexicon(),
+                        product_lexicon_available=product_lexicon_available(),
+                    )
+                    policy_bypass = (
+                        routing_requirement["intent"] == INTENT_POLICY_QUESTION
+                        and routing_requirement["data_required"] == DATA_KNOWLEDGE_ONLY
+                        and bool(knowledge_bundle.governing_topic)
+                    )
+                    if policy_bypass:
+                        print("[FredRouting] bypass: topic={} sin catálogo ni Tiendanube.".format(
+                            knowledge_bundle.governing_topic,
+                        ))
+                    else:
+                        with _timed(turn_timings, "catalog_ms"):
+                            catalog_context = search_similar_products(
+                                catalog_query, query_embedding=query_embedding
+                            )
                 else:
                     # Knowledge is optional. A temporary embedding/provider
                     # outage must still leave Fred with lexical retrieval and
@@ -5983,19 +6021,18 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     with _timed(turn_timings, "catalog_ms"):
                         catalog_context = search_similar_products(catalog_query)
 
-            # What this turn actually needed. Classified here, once Knowledge
-            # has spoken and before the expensive live verification below --
-            # which is exactly where a future cut would go. For now it only
-            # measures: nothing downstream reads this, and the turn proceeds
-            # identically whatever it says.
-            routing_requirement = classify_turn_data_requirement(
-                message_text,
-                governing_topic=knowledge_bundle.governing_topic,
-                knowledge_context=knowledge_context,
-                dynamic_requirements=knowledge_bundle.dynamic_requirements,
-                product_lexicon=product_lexicon(),
-                product_lexicon_available=product_lexicon_available(),
-            )
+            # Classified above when Knowledge ran. With Knowledge off or the
+            # embedding down there is no governing topic, so this classifies
+            # the turn for the logs and can never reach the bypass.
+            if routing_requirement.get("reason") == "not_classified":
+                routing_requirement = classify_turn_data_requirement(
+                    message_text,
+                    governing_topic=knowledge_bundle.governing_topic,
+                    knowledge_context=knowledge_context,
+                    dynamic_requirements=knowledge_bundle.dynamic_requirements,
+                    product_lexicon=product_lexicon(),
+                    product_lexicon_available=product_lexicon_available(),
+                )
 
             # Enriching the query with the active product keeps bare
             # follow-ups ("¿cómo quedan?") on topic, but it must never hide a
@@ -6006,7 +6043,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # _live_product_candidate pick whichever one the message actually
             # names (it requires the name to be in the message).
             merged_own_words = False
-            if catalog_query != message_text:
+            if not policy_bypass and catalog_query != message_text:
                 try:
                     with _timed(turn_timings, "catalog_ms"):
                         own_words_context = search_similar_products(message_text)
@@ -6027,11 +6064,13 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # Up to `limit` sequential get_product_availability calls against
             # Tiendanube, on every agent turn, before the model is ever asked
             # anything. Measuring it is the whole point of live_stock_ms.
-            with _timed(turn_timings, "live_stock_ms"):
-                live_candidate_context = _live_candidate_context(
-                    catalog_context, catalog_query, limit=6 if merged_own_words else 3,
-                    live_calls=turn_live_calls,
-                )
+            live_candidate_context = ""
+            if not policy_bypass:
+                with _timed(turn_timings, "live_stock_ms"):
+                    live_candidate_context = _live_candidate_context(
+                        catalog_context, catalog_query, limit=6 if merged_own_words else 3,
+                        live_calls=turn_live_calls,
+                    )
             if live_candidate_context:
                 catalog_context = "{}\n\n{}".format(catalog_context, live_candidate_context)
             active_product_fact = ""

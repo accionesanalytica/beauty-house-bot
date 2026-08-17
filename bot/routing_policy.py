@@ -483,14 +483,17 @@ def classify_turn_data_requirement(
     if not product_lexicon_available:
         return verdict(INTENT_UNKNOWN, DATA_CATALOG, "product_lexicon_unavailable")
 
-    if governing_topic and (knowledge_context or "").strip():
-        return verdict(
-            INTENT_POLICY_QUESTION, DATA_KNOWLEDGE_ONLY, "governing_topic_answers_turn"
-        )
-
-    # 12. Knowledge found nothing to govern the turn. Conservative default:
-    #     a KB gap must cost a lookup, never a guess.
-    return verdict(INTENT_UNKNOWN, DATA_CATALOG, "no_governing_topic")
+    # 12. Anything left. A governing topic on its own does NOT win here: the
+    #     only branch that may conclude knowledge_only is the guarded one
+    #     above, which first checks that the turn names nothing commercial.
+    #     Reaching this point with a topic means the message carried something
+    #     commercial that no earlier branch recognised -- "pedido 6345" names
+    #     an order without matching any order phrase -- so it keeps its
+    #     lookups, and the reason says which of the two situations it was.
+    return verdict(
+        INTENT_UNKNOWN, DATA_CATALOG,
+        "commercial_signal_unmatched" if governing_topic else "no_governing_topic",
+    )
 
 
 def _order_status_needs_isa(dynamic_requirements: Sequence[Any]) -> Optional[str]:
