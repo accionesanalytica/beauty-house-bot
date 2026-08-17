@@ -556,3 +556,126 @@ class WholesaleConditionsDoNotMixTests(unittest.TestCase):
             if "3, 6 o 12 unidades" in text:
                 with self.subTest(path=path.name):
                     self.assertIn(scoped, text)
+
+
+class TheCurrentMessageDecidesTests(unittest.TestCase):
+    """A stale active_product is context, never evidence.
+
+    Production: a conversation still had "SHOOW TOOLS - ISABEL I" pinned from
+    earlier. The customer wrote "quiero pasar por el showroom" and was handed
+    to Isa as a purchase -- no [Knowledge] line at all -- because "quiero"
+    plus a persisted product looked like buying. A conversation may legitimately
+    carry an old product and change the subject.
+    """
+
+    STALE = {"active_product_name": "SHOOW TOOLS - ISABEL I"}
+
+    def test_a_policy_turn_is_never_a_purchase_however_old_the_product_is(self):
+        for message in (
+            "quiero pasar por el showroom",
+            "quiero saber los horarios",
+            "quiero pasar hoy",
+            "hacen envios?",
+            "como funciona el retiro",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(app._isa_scope_handoff(message, self.STALE), "")
+
+    def test_an_order_turn_is_never_a_purchase_either(self):
+        self.assertEqual(
+            app._isa_scope_handoff("quiero saber el estado de mi pedido", self.STALE), "")
+
+    def test_quiero_alone_is_not_evidence_of_anything(self):
+        self.assertEqual(app._current_turn_purchase_evidence("quiero pasar por el showroom"), "")
+        self.assertEqual(app._current_turn_purchase_evidence("quiero saber los horarios"), "")
+
+    def test_an_immediate_reference_may_use_the_active_product(self):
+        # The other half: "quiero 4" right after talking about Isabel I is a
+        # real purchase, and the product it refers to is the pinned one.
+        for message in ("quiero 4", "me llevo dos"):
+            with self.subTest(message=message):
+                reply = app._isa_scope_handoff(message, self.STALE)
+                self.assertIn("Isa", reply)
+                self.assertIn("ISABEL", reply.upper())
+
+    def test_the_same_reference_without_an_antecedent_asks_instead(self):
+        for message in ("quiero 4", "me llevo dos"):
+            with self.subTest(message=message):
+                reply = app._isa_scope_handoff(message, {})
+                self.assertNotIn("Isa", reply)
+                self.assertIn("?", reply)
+
+    def test_an_explicit_purchase_still_works_with_no_context_at_all(self):
+        self.assertIn("Isa", app._isa_scope_handoff("quiero comprar Isabel I", {}))
+
+    def test_evidence_is_read_from_the_message_and_never_from_state(self):
+        # The function takes no state by construction -- the regression was
+        # possible only because identity was consulted before evidence.
+        import inspect
+
+        signature = inspect.signature(app._current_turn_purchase_evidence)
+        self.assertEqual(list(signature.parameters), ["normalized_message"])
+
+    def test_the_showroom_turn_reaches_knowledge_with_a_stale_product(self):
+        # End to end, the exact production log: [Knowledge] must appear, the
+        # topic must govern, and nothing may be sent to Isa.
+        sent, calls = [], {"catalog": 0, "live": 0}
+
+        def get_state(conversation_id):
+            base = dict.fromkeys([
+                "active_product_id", "active_sku", "active_variant", "unit_price",
+                "quantity", "delivery_method", "customer_name", "customer_email",
+                "postal_code", "checkout_step", "order_number",
+            ])
+            base["mode"] = "CHAT"
+            base["active_product_name"] = "SHOOW TOOLS - ISABEL I"
+            return base
+
+        class Bundle:
+            governing_topic = "pickups_showroom"
+            dynamic_requirements = ()
+            context = "- [politicas / showroom] Texto aprobado."
+
+        mocks = {
+            "CONVERSATION_DEBOUNCE_SECONDS": 0, "BOT_RESPONSE_MODE": "agent",
+            "KNOWLEDGE_RAG_ENABLED": True,
+            "get_fred_core_state": get_state,
+            "save_fred_core_state": lambda c, **f: None,
+            "reset_fred_core_checkout": lambda c: None,
+            "get_active_sales_intake": lambda c: None,
+            "get_product_selection": lambda *a, **k: None,
+            "record_inbound_message": lambda *a, **k: (7, "BOT", False),
+            "record_bot_message": lambda *a, **k: None,
+            "record_agent_turn": lambda **k: None,
+            "load_history": lambda *a, **k: [],
+            "is_latest_customer_message": lambda *a, **k: True,
+            "send_whatsapp_text": lambda p, t: sent.append(t) or True,
+            "embed_text": lambda *a, **k: [0.0] * 768,
+            "search_similar_products": lambda *a, **k: (
+                calls.__setitem__("catalog", calls["catalog"] + 1) or ""),
+            "_live_candidate_context": lambda *a, **k: (
+                calls.__setitem__("live", calls["live"] + 1) or ""),
+            "retrieve_with_recent_context": lambda m, h, fn: (Bundle(), m, None),
+            "execute_dynamic_requirements": lambda *a, **k: (),
+            "answer": lambda t, **k: {
+                "reply": "El showroom atiende con reserva.", "tool_calls": [], "usage": {},
+                "decision": {"action": "reply", "reason": "normal_response"}},
+        }
+        handles = [patch.object(app, name, value) for name, value in mocks.items()]
+        for handle in handles:
+            handle.start()
+        stream = io.StringIO()
+        try:
+            with redirect_stdout(stream):
+                asyncio.run(app.webhook_post(_Request("quiero pasar por el showroom")))
+        finally:
+            for handle in reversed(handles):
+                handle.stop()
+
+        output = stream.getvalue()
+        self.assertIn("[Knowledge]", output)
+        self.assertIn("intent=policy_question", output)
+        self.assertNotIn("[FredScope]", output)
+        self.assertEqual(calls["catalog"], 0)
+        self.assertEqual(calls["live"], 0)
+        self.assertNotIn("cerrar la compra", " ".join(sent))
