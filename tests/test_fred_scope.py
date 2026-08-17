@@ -814,11 +814,25 @@ class TheVisibleAnswerBelongsToThisTurnTests(unittest.TestCase):
         self.assertIn(answer_text, sent[0])
         self.assertIn("recycled_stripped=no", output)
 
-    def test_a_reply_that_merely_resembles_the_previous_one_is_kept(self):
+    def test_commercial_copy_is_dropped_even_when_it_is_not_a_reproduction(self):
+        # Updated to the stronger contract. This used to assert that copy
+        # merely RESEMBLING the previous message survived -- true of the
+        # same-text guard, and wrong: on a policy turn a purchase handoff is
+        # not an authorised component no matter how it got there.
         similar = "Para cerrar la compra te acompaña Isa."
         sent, _, _ = self._turn(
-            "quiero pasar por el showroom", similar, self._contaminated_history())
-        self.assertIn(similar, sent[0])
+            "quiero pasar por el showroom",
+            similar + "\n\nEl showroom atiende con reserva previa.",
+            self._contaminated_history())
+        self.assertNotIn("cerrar la compra", sent[0])
+        self.assertIn("showroom", sent[0].lower())
+
+    def test_the_same_text_guard_still_only_removes_actual_reproductions(self):
+        # The narrower guard keeps its own contract for non-policy turns:
+        # it removes text that IS the previous message and nothing else.
+        history = [{"role": "assistant", "content": "A" * 60}]
+        self.assertEqual(
+            app._reply_belongs_to_this_turn("B" * 60, history), "B" * 60)
 
     def test_active_product_may_stay_in_state(self):
         # Nothing is cleared to make this pass: the pinned product survives the
@@ -840,3 +854,88 @@ class TheVisibleAnswerBelongsToThisTurnTests(unittest.TestCase):
             "quiero pasar por el showroom", self.SALE_COPY, self._contaminated_history())
         self.assertNotIn("cerrar la compra", " ".join(sent))
         self.assertIn("era íntegramente la anterior", output)
+
+
+class OnlyThisTurnsComponentsReachTheCustomerTests(TheVisibleAnswerBelongsToThisTurnTests):
+    """The same-text guard was not enough.
+
+    Production reproduced the previous handoff two characters apart --
+    "¡Genial!" became "Genial!" and a comma vanished -- so the containment
+    check saw nothing and the sale went out attached to a showroom answer.
+    Provenance cannot be recovered from a string, so the rule is about what a
+    component IS: a policy turn's answer is the approved policy and nothing
+    else, whatever route the rest arrived by.
+    """
+
+    NEAR_COPY = (
+        "Genial! Para cerrar la compra (SHOOW TOOLS - ISABEL I) te paso con Isa "
+        "que la coordina directamente. Podés escribirle directamente acá: "
+        "+5491124548738"
+    )
+
+    def test_a_near_copy_is_still_kept_out_of_the_payload(self):
+        sent, _, output = self._turn(
+            "quiero pasar por el showroom",
+            self.NEAR_COPY + "\n\nEl showroom atiende con reserva previa.",
+            self._contaminated_history())
+
+        delivered = sent[0]
+        self.assertNotIn("cerrar la compra", delivered)
+        self.assertNotIn("+5491124548738", delivered)
+        self.assertIn("showroom", delivered.lower())
+        self.assertIn("stage=decision_filter", output)
+        self.assertIn("dropped=yes", output)
+
+    def test_the_component_rule_does_not_need_a_matching_previous_message(self):
+        # No prior assistant message at all: the sale copy is still not a
+        # component of a policy answer, so it never reaches the customer.
+        sent, _, _ = self._turn(
+            "quiero pasar por el showroom",
+            self.NEAR_COPY + "\n\nEl showroom atiende con reserva previa.",
+            [{"role": "user", "content": "hola"}])
+        self.assertNotIn("cerrar la compra", sent[0])
+
+    def test_every_commercial_marker_comes_from_freds_own_copy(self):
+        # Derived from the constants that generate it, so a new handoff
+        # sentence is covered the day it is written rather than the day
+        # someone remembers to add it here.
+        markers = app.commercial_copy_markers()
+        for lead in app._ISA_HANDOFF_LEADS.values():
+            self.assertIn(lead, markers)
+        self.assertIn(app._ISA_HANDOFF_DEFAULT_LEAD, markers)
+        self.assertIn(app._ASK_WHICH_PRODUCT, markers)
+
+    def test_the_policy_answer_itself_survives_untouched(self):
+        answer_text = (
+            "El showroom está cerrado para atención al público; se atiende con "
+            "reserva previa en Vidal 2680."
+        )
+        sent, _, output = self._turn(
+            "quiero pasar por el showroom", answer_text, self._contaminated_history())
+        self.assertIn(answer_text, sent[0])
+        self.assertIn("dropped=no", output)
+
+    def test_a_commercial_turn_is_not_filtered(self):
+        # The filter is scoped to this turn's decision: a turn that IS about
+        # buying keeps its handoff copy.
+        self.assertEqual(
+            app._restrict_output_to_turn_decision(self.NEAR_COPY, policy_turn=False),
+            self.NEAR_COPY,
+        )
+
+    def test_paragraphs_are_dropped_whole_never_rewritten(self):
+        mixed = "Respuesta aprobada.\n\n" + self.NEAR_COPY + "\n\nOtra línea aprobada."
+        result = app._restrict_output_to_turn_decision(mixed, policy_turn=True)
+        self.assertEqual(result, "Respuesta aprobada.\n\nOtra línea aprobada.")
+
+    def test_the_stage_trace_shows_where_the_handoff_entered(self):
+        _, _, output = self._turn(
+            "quiero pasar por el showroom",
+            self.NEAR_COPY + "\n\nEl showroom atiende con reserva previa.",
+            self._contaminated_history())
+        stages = [line for line in output.splitlines()
+                  if line.startswith("[FredOutputStage]")]
+        first = next(line for line in stages if "purchase_handoff=yes" in line)
+        self.assertIn("stage=model", first)
+        # And it is gone by the time anything is sent.
+        self.assertIn("purchase_handoff=no", stages[-1])
