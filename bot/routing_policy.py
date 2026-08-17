@@ -77,6 +77,7 @@ INTENT_EXISTING_ORDER = "existing_order"
 INTENT_PRICE_REQUEST = "price_request"
 INTENT_STOCK_REQUEST = "stock_request"
 INTENT_PURCHASE_INTENT = "purchase_intent"
+INTENT_ADVICE_REQUEST = "advice_request"
 INTENT_PRODUCT_NAMED = "product_named"
 INTENT_VARIANT_ATTRIBUTE = "variant_attribute"
 INTENT_ANAPHORIC_REFERENCE = "anaphoric_reference"
@@ -122,6 +123,19 @@ _PROCEDURE_QUESTION_RE = re.compile(
     r"\bque\s+tengo\s+que\s+hacer\b|\bse\s+puede\b|\bes\s+necesario\b|"
     r"\bcomo\s+funciona\b"
 )
+# An order named by its number: "pedido 6345", "orden #6345". This is the
+# least ambiguous thing a customer can say about an order -- the number IS the
+# identifier -- so it needs no surrounding evidence and no retrieval to work
+# out what it means. It stands alone even when Fred did not just ask for it.
+_ORDER_NUMBER_REFERENCE_RE = re.compile(r"\b(?:pedido|orden)\s*#?\s*(\d{2,})\b")
+
+
+def order_number_reference(normalized_message: str) -> str:
+    """The order number a message names outright, or ""."""
+    match = _ORDER_NUMBER_REFERENCE_RE.search(normalized_message)
+    return match.group(1) if match else ""
+
+
 # Pointing at ONE order that already exists: possessive, or identified by
 # number, or explicitly the one they placed.
 _SPECIFIC_ORDER_REF_RE = re.compile(
@@ -194,6 +208,27 @@ _PURCHASE_INTENT_RE = re.compile(
     r"quiero|quisiera|(?<!que )necesito|dame|mandame|pagar[íi]a|transferencia|"
     r"proceder|avanzar|hacer\s+el\s+pedido)\b"
 )
+# Asking WHICH ONE to get. Fred does not advise: choosing between products for
+# a person is Isa's job, so this is a handoff rather than a search. Recognising
+# it early is also what stops a discovery loop that only ever existed to
+# produce a recommendation nobody wants Fred to make.
+_ADVICE_REQUEST_RE = re.compile(
+    r"\b(recomend\w+|recomiend\w+|suger\w+|asesor\w+|"
+    r"me\s+convien\w+|cual\s+me\s+(?:convien\w+|sirve|queda|va|ayuda)|"
+    r"cual\s+es\s+mejor|cual\s+seria\s+mejor|que\s+me\s+(?:convien\w+|queda|sirve)|"
+    r"no\s+se\s+cual\w*|no\s+se\s+que\s+(?:llevar|elegir|comprar)|"
+    r"ayuda\w*\s+a\s+elegir|me\s+ayudas\s+a\s+elegir|"
+    r"que\s+tono\s+me|para\s+ojos\s+\w+|para\s+lifting|"
+    r"cual\w*\s+son\s+mejor\w*|parecid\w+\s+a)\b"
+)
+# Describing a need instead of naming a product ("unas pestañas naturales").
+# Only counts as advice when no concrete product was named -- see below.
+_VAGUE_PRODUCT_SEARCH_RE = re.compile(
+    r"\b(busco|buscaba|buscando|estoy\s+buscando|quiero\s+(?:un|una|unos|unas)|"
+    r"necesito\s+(?:un|una|unos|unas)|algo\s+(?:para|que|natural|lindo|similar))\b"
+)
+
+
 # A variant axis: the customer is choosing WITHIN a product, which can only be
 # resolved against the real catalog.
 _VARIANT_ATTRIBUTE_RE = re.compile(
@@ -297,6 +332,47 @@ def _named_catalog_product(normalised_message: str, product_lexicon) -> str:
     return ""
 
 
+# A commercial signal needs a commercial OBJECT. "quiero" and "tienen" are the
+# cheapest words in the language: on their own they turned "quiero pasar por el
+# showroom" into purchase_intent and "qué horarios tienen" into a stock
+# request, and both went off to the catalog and the store for a question the
+# approved policy answers on its own.
+#
+# These are the signals that genuinely mean a turn is about merchandise or one
+# order, as opposed to about how the business works.
+_EXPLICIT_PRICE_WORD_RE = re.compile(
+    r"\b(precio[s]?|cotizaci[óo]n|presupuesto|cuanto\s+(?:sale|cuesta|vale)|"
+    r"descuento|lista\s+de\s+precios)\b"
+)
+_EXPLICIT_STOCK_WORD_RE = re.compile(
+    r"\b(stock|disponible[s]?|disponibilidad|agotad\w+|hay\s+de|queda[n]?\s+\w)\b"
+)
+_QUANTITY_OF_SOMETHING_RE = re.compile(r"\b\d+\s+\w{3,}")
+# Verbs that mean "buy" and nothing else. Unlike "quiero" or "tienen", these
+# cannot appear in a policy question, so they are commercial signals on their
+# own -- "quiero comprar dos" must never be answered from a document.
+_UNAMBIGUOUS_PURCHASE_VERB_RE = re.compile(
+    r"\b(comprar|compro|encargar|encargo|me\s+llevo|lo\s+llevo|las?\s+llevo|"
+    r"reservar|apartar)\b"
+)
+
+
+def _carries_commercial_object(normalized_message: str, product_lexicon: Any) -> bool:
+    """Is this turn about merchandise or one specific order, rather than about
+    how the business operates?"""
+    return bool(
+        _named_catalog_product(normalized_message, product_lexicon)
+        or _PRODUCT_CATEGORY_RE.search(normalized_message)
+        or _EXPLICIT_PRICE_WORD_RE.search(normalized_message)
+        or _EXPLICIT_STOCK_WORD_RE.search(normalized_message)
+        or _SPECIFIC_ORDER_REF_RE.search(normalized_message)
+        or _QUANTITY_OF_SOMETHING_RE.search(normalized_message)
+        or _UNAMBIGUOUS_PURCHASE_VERB_RE.search(normalized_message)
+        # Pointing at something shown earlier is pointing at merchandise.
+        or _ANAPHORIC_REFERENCE_RE.search(normalized_message)
+    )
+
+
 def classify_turn_data_requirement(
     message_text: str,
     *,
@@ -339,22 +415,62 @@ def classify_turn_data_requirement(
     #    Collecting is only an order question when it points at a specific
     #    order; "¿cómo puedo retirar un pedido?" asks how pickups work, which
     #    approved policy answers without touching the store.
-    if _EXISTING_ORDER_RE.search(normalised) or _pickup_of_a_specific_order(normalised):
+    if (
+        _EXISTING_ORDER_RE.search(normalised)
+        or _ORDER_NUMBER_REFERENCE_RE.search(normalised)
+        or _pickup_of_a_specific_order(normalised)
+    ):
         return verdict(INTENT_EXISTING_ORDER, DATA_LIVE, "existing_order")
 
-    # 4-5. Commercial facts only the store holds.
+    # 4. Approved policy answers this, and nothing about the turn points at
+    #    merchandise or at one order. Checked BEFORE the commercial branches
+    #    precisely because those branches trigger on words like "quiero" and
+    #    "tienen", which carry no commercial meaning by themselves. Kept
+    #    narrow on purpose: a governing topic alone never wins -- it wins only
+    #    when the message names no product, no price, no stock, no quantity
+    #    and no specific order.
+    #
+    #    Requires the lexicon to be loaded: _carries_commercial_object asks it
+    #    whether a product was named, and a blind check returning "no product"
+    #    is not evidence of anything. Without it this branch would hand a
+    #    Knowledge answer to a turn nobody had checked.
+    if (
+        governing_topic
+        and (knowledge_context or "").strip()
+        and product_lexicon_available
+        and not _carries_commercial_object(normalised, product_lexicon)
+    ):
+        return verdict(
+            INTENT_POLICY_QUESTION, DATA_KNOWLEDGE_ONLY, "governing_topic_answers_turn"
+        )
+
+    # 5-6. Commercial facts only the store holds.
     if _PRICE_REQUEST_RE.search(normalised):
         return verdict(INTENT_PRICE_REQUEST, DATA_LIVE, "price_requested")
     if _STOCK_REQUEST_RE.search(normalised):
         return verdict(INTENT_STOCK_REQUEST, DATA_LIVE, "stock_requested")
 
-    # 6. Deciding to buy: identity must be confirmed live before anything.
+    # 6. Asking WHICH ONE to get. Fred does not advise, so this needs no data
+    #    at all -- it needs Isa. Checked before the purchase and product
+    #    branches so a request for a recommendation never becomes a catalog
+    #    search whose only possible output is a recommendation.
+    named = _named_catalog_product(normalised, product_lexicon)
+    if _ADVICE_REQUEST_RE.search(normalised):
+        return verdict(INTENT_ADVICE_REQUEST, DATA_KNOWLEDGE_ONLY, "advice_request")
+    #    Describing a need without naming anything concrete is the same
+    #    request in other words ("estoy buscando unas pestañas naturales").
+    if not named and _VAGUE_PRODUCT_SEARCH_RE.search(normalised):
+        return verdict(INTENT_ADVICE_REQUEST, DATA_KNOWLEDGE_ONLY, "vague_product_search")
+
+    # 7. Deciding to buy. Fred does not close sales: this is a handoff carrying
+    #    whatever the customer already said, never a checkout.
     if _PURCHASE_INTENT_RE.search(normalised):
         return verdict(INTENT_PURCHASE_INTENT, DATA_LIVE, "purchase_intent")
 
-    # 7. A real product name, taken from the real catalog -- or a product
+    # 8. A real product name, taken from the real catalog -- or a product
     #    category, which is still the customer pointing at merchandise.
-    if _named_catalog_product(normalised, product_lexicon):
+    #    Objective questions about it stay Fred's.
+    if named:
         return verdict(INTENT_PRODUCT_NAMED, DATA_CATALOG, "product_named")
     if _PRODUCT_CATEGORY_RE.search(normalised):
         return verdict(INTENT_PRODUCT_NAMED, DATA_CATALOG, "product_category")
@@ -384,14 +500,17 @@ def classify_turn_data_requirement(
     if not product_lexicon_available:
         return verdict(INTENT_UNKNOWN, DATA_CATALOG, "product_lexicon_unavailable")
 
-    if governing_topic and (knowledge_context or "").strip():
-        return verdict(
-            INTENT_POLICY_QUESTION, DATA_KNOWLEDGE_ONLY, "governing_topic_answers_turn"
-        )
-
-    # 12. Knowledge found nothing to govern the turn. Conservative default:
-    #     a KB gap must cost a lookup, never a guess.
-    return verdict(INTENT_UNKNOWN, DATA_CATALOG, "no_governing_topic")
+    # 12. Anything left. A governing topic on its own does NOT win here: the
+    #     only branch that may conclude knowledge_only is the guarded one
+    #     above, which first checks that the turn names nothing commercial.
+    #     Reaching this point with a topic means the message carried something
+    #     commercial that no earlier branch recognised -- "pedido 6345" names
+    #     an order without matching any order phrase -- so it keeps its
+    #     lookups, and the reason says which of the two situations it was.
+    return verdict(
+        INTENT_UNKNOWN, DATA_CATALOG,
+        "commercial_signal_unmatched" if governing_topic else "no_governing_topic",
+    )
 
 
 def _order_status_needs_isa(dynamic_requirements: Sequence[Any]) -> Optional[str]:
@@ -405,12 +524,22 @@ def _order_status_needs_isa(dynamic_requirements: Sequence[Any]) -> Optional[str
         result = getattr(item, "result", {}) or {}
         if result.get("found") is False:
             return "order_not_found"
-        status_text = _normalise(
-            "{} {}".format(result.get("status") or "", result.get("shipping_status") or "")
-        )
+        # A pickup has no tracking number by design, and most delivered
+        # orders in this store are pickups: measured on 40 real orders, 14 of
+        # 21 DELIVERED had no tracking and every one of those was a pickup.
+        # Treating that as an inconsistency would have sent a large share of
+        # perfectly normal collected orders to Isa as broken data.
+        if str(result.get("shipping_type") or "").lower() == "pickup":
+            continue
+        status_text = _normalise("{} {} {}".format(
+            result.get("status") or "",
+            result.get("shipping_status") or "",
+            result.get("fulfillment_status") or "",
+        ))
         shipped_or_delivered = any(
             keyword in status_text
-            for keyword in ("enviado", "entregado", "despachado", "shipped", "delivered")
+            for keyword in ("enviado", "entregado", "despachado", "shipped",
+                            "delivered", "dispatched")
         )
         if shipped_or_delivered and not result.get("tracking"):
             return "order_status_contradiction"

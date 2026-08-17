@@ -48,15 +48,26 @@ class GetOrderStatusTests(unittest.TestCase):
             tiendanube_tools.get_order_status("1234")
 
     @patch.object(tiendanube_tools, "_get")
-    def test_found_order_maps_every_field_including_tracking(self, get):
+    def test_the_logistics_truth_is_read_from_the_fulfillment(self, get):
+        # Measured against 40 real orders: shipping_option,
+        # shipping_tracking_number and shipping_carrier_name are empty on ALL
+        # of them, so the fields this used to return were always None and Fred
+        # never gave a real tracking number. Everything real lives in
+        # fulfillments[], including whether this is a shipment or a pickup --
+        # a distinction order.shipping_status cannot make.
         get.return_value = [{
             "number": 1234,
             "payment_status": "paid",
             "shipping_status": "shipped",
             "status": "open",
-            "shipping_option": "Correo Argentino",
-            "shipping_tracking_number": "RR123456789AR",
+            "shipping_option": None,
+            "shipping_tracking_number": None,
             "total": "36000.00",
+            "fulfillments": [{
+                "status": "DISPATCHED",
+                "shipping": {"type": "ship", "carrier": {"name": "Envío Nube"}},
+                "tracking_info": {"code": "RR123456789AR", "url": "https://t.example/RR"},
+            }],
         }]
         result = tiendanube_tools.get_order_status("1234")
         self.assertEqual(result, {
@@ -65,10 +76,42 @@ class GetOrderStatusTests(unittest.TestCase):
             "payment_status": "paid",
             "shipping_status": "shipped",
             "status": "open",
-            "shipping_method": "Correo Argentino",
+            "fulfillment_status": "DISPATCHED",
+            "shipping_type": "ship",
+            "carrier": "Envío Nube",
             "tracking": "RR123456789AR",
+            "tracking_url": "https://t.example/RR",
             "total": "36000.00",
         })
+
+    @patch.object(tiendanube_tools, "_get")
+    def test_an_order_without_fulfillments_reports_none_rather_than_guessing(self, get):
+        get.return_value = [{
+            "number": 99, "payment_status": "pending", "shipping_status": "unshipped",
+            "status": "open", "total": "1000.00", "fulfillments": [],
+        }]
+        result = tiendanube_tools.get_order_status("99")
+        self.assertIsNone(result["fulfillment_status"])
+        self.assertIsNone(result["shipping_type"])
+        self.assertIsNone(result["tracking"])
+
+    @patch.object(tiendanube_tools, "_get")
+    def test_an_empty_tracking_code_is_reported_as_absent(self, get):
+        # Tiendanube returns tracking_info {"code": "", "url": ""} while an
+        # order is still being prepared. Empty string is not a tracking number.
+        get.return_value = [{
+            "number": 7, "payment_status": "paid", "shipping_status": "unpacked",
+            "status": "open", "total": "1.00",
+            "fulfillments": [{
+                "status": "UNPACKED",
+                "shipping": {"type": "pickup", "carrier": {"name": ""}},
+                "tracking_info": {"code": "", "url": ""},
+            }],
+        }]
+        result = tiendanube_tools.get_order_status("7")
+        self.assertIsNone(result["tracking"])
+        self.assertIsNone(result["carrier"])
+        self.assertEqual(result["shipping_type"], "pickup")
 
 
 if __name__ == "__main__":

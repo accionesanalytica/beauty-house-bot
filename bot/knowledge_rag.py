@@ -677,17 +677,13 @@ def infer_dynamic_requirements(
                 "calendario aprobado o lo vemos con Isa."
             ),
         )
-    if governing_topic == "commercial_operations" and re.search(
-        r"\b(mayorista|por mayor|reventa|mayoreo)\b", normalised
-    ):
-        add(
-            "wholesale_listing", "unavailable_tool", (),
-            "Informá la regla general y remití a la publicación/presupuesto vigente; no fijes mínimo ni precio.",
-            tool_available=False,
-            customer_fallback=(
-                "El mínimo y el precio mayorista dependen de la publicación o presupuesto vigente."
-            ),
-        )
+    # The wholesale list used to be unavailable, so any mention of "mayorista"
+    # raised an unverifiable requirement telling Fred not to state a minimum or
+    # a price. Isa has since approved the SHOOW TOOLS list (see
+    # knowledge/facts/wholesale-shoow-tools.md), so that requirement now
+    # contradicts approved data -- and, being a dynamic requirement, it also
+    # forced an informational question down the live path. Closing a wholesale
+    # ORDER is still Isa's, which the scope handoff decides before retrieval.
     if governing_topic == "commercial_operations" and re.search(
         r"\b(comision|recargo|descuento|promocion)\b", normalised
     ):

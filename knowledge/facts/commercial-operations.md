@@ -30,6 +30,8 @@ Los encargos formalizados no admiten cancelación o devolución monetaria por ar
 
 Beauty House admite venta mayorista. El mínimo depende de cada producto y habitualmente puede ser 3, 6 o 12 unidades; el valor exacto y la cantidad incluida deben verificarse en la publicación. Hay cajas, docenas y sets. Los productos mayoristas por encargo tienen demora estimada de 7 a 20 días hábiles desde el pago acreditado y procesado; si hay stock, puede coordinarse sin esperar la importación.
 
+Estos mínimos y precios son genéricos y no aplican a las marcas que tienen lista mayorista propia aprobada. Para SHOOW TOOLS rigen exclusivamente las condiciones de su sección específica.
+
 Las marcas mayoristas aprobadas son Shoow Tools, GOT2B, AOA Studio, Kleancolor, Italia Deluxe, Profusion, Beauty Creations, Be Bella, Amor Us, Amuse Cosmetics, It Girl, L.A. Girl, L.A. Colors, The Crème Shop, Rude Cosmetics, Prosa, Romantic Beauty y Moira.
 
 ## Pagos de encargos y mayorista

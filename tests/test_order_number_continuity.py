@@ -249,8 +249,10 @@ class TheWholeConversationTests(unittest.TestCase):
         sent, _, _, _ = self._run(
             ["quiero retirar un pedido", "6295"],
             order_result={
-                "order_number": "6295", "tracking": "AR123456789",
-                "payment_status": "paid", "shipping_status": "shipped",
+                "order_number": "6295", "payment_status": "paid",
+                "shipping_status": "shipped", "fulfillment_status": "DISPATCHED",
+                "shipping_type": "ship", "carrier": "Envío Nube",
+                "tracking": "AR123456789",
             },
         )
         self.assertIn("AR123456789", sent[1])

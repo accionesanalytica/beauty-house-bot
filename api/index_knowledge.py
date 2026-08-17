@@ -35,7 +35,12 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMS = 768
 BATCH_SLEEP = 0.1
+# The DELETE below is scoped to exactly these ids, so a source that is written
+# but not listed here would be INSERTed again on every run instead of being
+# replaced -- one duplicate row per re-index, silently drifting the retrieval.
+# Any new approved source must be added here at the same time as its file.
 KNOWLEDGE_V1_SOURCE_IDS = {
+    "facts-wholesale-shoow-tools-v1",
     "facts-commercial-operations-v1",
     "facts-lashes-products-v1",
     "facts-order-tracking-v1",
@@ -48,6 +53,7 @@ KNOWLEDGE_V1_SOURCE_IDS = {
     "procedure-pickups-v1",
     "procedure-touchup-kit-spray-v1",
 }
+EXPECTED_CHUNKS = 48
 
 
 def embed(client, text):
@@ -82,7 +88,13 @@ def main():
     if not DB_URL or not GEMINI_KEY:
         print("Falta SUPABASE_DB_URL o GEMINI_API_KEY en el entorno.")
         return
-    if source_ids != KNOWLEDGE_V1_SOURCE_IDS or len(chunks) != 42:
+    # Tripwire, not a formality: writing to the live Knowledge base must never
+    # be a surprise, so both the set of sources and the exact chunk count have
+    # to match what someone approved. Bump this deliberately, together with
+    # KNOWLEDGE_V1_SOURCE_IDS, when Isa approves new content.
+    #   42 = Knowledge V1
+    #   +6 = facts-wholesale-shoow-tools-v1 (lista mayorista SHOOW TOOLS)
+    if source_ids != KNOWLEDGE_V1_SOURCE_IDS or len(chunks) != EXPECTED_CHUNKS:
         print(
             "La selección no coincide con Knowledge V1: {} fuentes y {} chunks. "
             "No se escribió nada.".format(len(source_ids), len(chunks))
