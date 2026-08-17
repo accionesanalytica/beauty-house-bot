@@ -76,6 +76,8 @@ from durable_worker import DeliveryContext, current_delivery_context
 from message_queue import extract_inbound_messages, ordered_turn_text
 from routing_policy import (
     DATA_KNOWLEDGE_ONLY,
+    _ANAPHORIC_REFERENCE_RE,
+    _UNAMBIGUOUS_PURCHASE_VERB_RE,
     INTENT_ADVICE_REQUEST,
     INTENT_POLICY_QUESTION,
     INTENT_PURCHASE_INTENT,
@@ -2395,6 +2397,55 @@ def _quantity_in_message(normalized_message: str) -> str:
     return match.group(1) if match else ""
 
 
+# "quiero 4" -- a number with nothing after it only means a quantity when the
+# conversation already has a product for it to attach to.
+_BARE_QUANTITY_RE = re.compile(r"\b(\d{1,3})\b(?!\s*\w)")
+# Wanting a thing that has just been named, as opposed to wanting to do
+# something ("quiero pasar", "quiero saber").
+_WANTING_RE = re.compile(r"\b(quiero|quisiera|necesito|me\s+interesa[n]?)\s+(?!\w*ar\b|\w*er\b|\w*ir\b)")
+
+
+def _bare_quantity_in_message(normalized_message: str) -> str:
+    match = _BARE_QUANTITY_RE.search(normalized_message)
+    return match.group(1) if match else ""
+
+
+def _current_turn_purchase_evidence(normalized_message: str) -> str:
+    """What in THIS message says the customer is buying, if anything.
+
+    Returns "explicit" when the message says so on its own terms, "reference"
+    when it points back at something already on the table, and "" when there
+    is no purchase evidence at all -- which is the case for "quiero pasar por
+    el showroom" and "quiero saber los horarios". "quiero" is not evidence:
+    it is the most common verb in the language and appears in policy
+    questions, order questions and pleasantries alike.
+
+    Deliberately reads only the message. Persisted state is never consulted
+    here, because a product pinned in an earlier turn says nothing about what
+    this turn is about.
+    """
+    if _UNAMBIGUOUS_PURCHASE_VERB_RE.search(normalized_message):
+        return "explicit"
+    if _named_catalog_product(normalized_message, product_lexicon()):
+        # A product named here, with a quantity or a wanting verb next to it.
+        if (
+            _quantity_in_message(normalized_message)
+            or _bare_quantity_in_message(normalized_message)
+            or _WANTING_RE.search(normalized_message)
+        ):
+            return "explicit"
+        return ""
+    # Nothing named, but the message points at something: "quiero 4",
+    # "me llevo dos", "de esas". Only a reference -- it needs an antecedent.
+    if (
+        _quantity_in_message(normalized_message)
+        or _bare_quantity_in_message(normalized_message)
+        or _ANAPHORIC_REFERENCE_RE.search(normalized_message)
+    ):
+        return "reference"
+    return ""
+
+
 def _isa_scope_handoff(message_text: str, core_state: dict) -> str:
     """The two things Fred no longer does, answered without spending anything.
 
@@ -2429,19 +2480,29 @@ def _isa_scope_handoff(message_text: str, core_state: dict) -> str:
     if intent != INTENT_PURCHASE_INTENT:
         return ""
 
+    # THE CURRENT MESSAGE DECIDES. A conversation can legitimately carry an
+    # active product from an hour ago and then change the subject entirely --
+    # "quiero pasar por el showroom" with Isabel I still pinned was handed to
+    # Isa as a purchase, because "quiero" plus a stale active_product looked
+    # like buying. active_product is auxiliary context: it can supply the
+    # IDENTITY of something this turn already refers to, and it is never on
+    # its own evidence that this turn is about buying anything.
+    evidence = _current_turn_purchase_evidence(normalized)
+    if not evidence:
+        return ""
+
+    # Only now, with this turn established as commercial, may context supply
+    # the identity: "me llevo dos" means the product already on the table.
+    # The order matters -- evidence first, identity second. Reversing it is
+    # exactly what turned a showroom question into a sale.
     active_product = (core_state or {}).get("active_product_name") or ""
-    names_a_product = bool(
-        _named_catalog_product(normalized, product_lexicon()) or active_product
-    )
-    if not names_a_product:
-        if not _carries_commercial_object(normalized, product_lexicon()):
-            # A purchase verb with nothing to buy: not a purchase at all.
-            return ""
+    named_here = _named_catalog_product(normalized, product_lexicon())
+    if not (named_here or active_product):
         print("[FredScope] compra sin producto identificado -> se pregunta cuál.")
         return _ASK_WHICH_PRODUCT
 
     # Hand over what the customer already said, so Isa does not re-ask it.
-    quantity = _quantity_in_message(normalized)
+    quantity = _quantity_in_message(normalized) or _bare_quantity_in_message(normalized)
     detail = " ".join(part for part in (
         "{} unidades de".format(quantity) if quantity else "",
         active_product or message_text.strip(),
