@@ -1125,6 +1125,74 @@ def history_without_commercial_handoffs(prior_history: list) -> list:
     return kept
 
 
+def _obligation_already_conveyed(reply: str, disclosure) -> bool:
+    """Did the reply already say what this disclosure requires?
+
+    The disclosure declares its own mandatory content in `required_terms`;
+    everything else in its text is approved phrasing, not a requirement. A
+    term is treated as conveyed when any of its words appears, so a model that
+    says "retiros previamente coordinados con reserva" satisfies "reserva
+    previa" instead of being handed the whole paragraph again.
+
+    Deliberately narrower than it looks: this only decides whether an ALREADY
+    APPENDED block is redundant. It never weakens the enforcement itself, and
+    a disclosure that declares no required_terms is never considered covered.
+    """
+    terms = (disclosure or {}).get("required_terms") or []
+    if not terms:
+        return False
+    normalised = _knowledge_normalise(reply)
+    for term in terms:
+        words = [word for word in _knowledge_normalise(term).split() if len(word) > 2]
+        if not words or not any(word in normalised for word in words):
+            return False
+    return True
+
+
+def drop_redundant_obligations(reply: str, before: str, obligations) -> str:
+    """Keep obligations as a safety net rather than a block that always sticks.
+
+    `enforce_knowledge_obligations` appends the approved disclosure whenever
+    its literal terms are missing, so a model that paraphrased the policy got
+    the policy stated twice -- once in its own words, once verbatim. This
+    removes the appended prose when the answer already conveyed it, and keeps
+    everything else: a genuinely missing disclosure stays, and so does a link,
+    which carries information no paraphrase can substitute.
+
+    Nothing is rewritten. Only whole appended lines are dropped.
+    """
+    if reply == before or not reply.startswith(before.rstrip()):
+        return reply
+    appended = reply[len(before.rstrip()):].strip()
+    if not appended:
+        return reply
+    covered = [
+        item for item in (obligations.required_disclosures if obligations else ())
+        if _obligation_already_conveyed(before, item)
+    ]
+    if not covered:
+        return reply
+    covered_texts = {_knowledge_normalise(str(item.get("text") or "")) for item in covered}
+    kept = [
+        line for line in appended.splitlines()
+        if line.strip() and _knowledge_normalise(line) not in covered_texts
+    ]
+    if len(kept) == len(appended.splitlines()):
+        return reply
+    return "\n\n".join(part for part in (before.rstrip(), "\n".join(kept)) if part).strip()
+
+
+# Asking the customer about an order, in any wording. On a policy turn this
+# answers nothing that was asked -- "¿tenés una orden para retirar?" replies to
+# "¿cómo funciona el retiro?" with a question about a purchase the customer
+# may not even have made.
+def _asks_about_an_order(paragraph: str) -> bool:
+    text = _normalized_text(paragraph)
+    if "?" not in paragraph:
+        return False
+    return bool(re.search(r"\b(orden|ordenes|pedido|pedidos|compra)\b", text))
+
+
 def _restrict_output_to_turn_decision(reply: str, *, policy_turn: bool) -> str:
     """Only components this turn's decision authorises may reach the customer.
 
@@ -1146,7 +1214,15 @@ def _restrict_output_to_turn_decision(reply: str, *, policy_turn: bool) -> str:
     if not policy_turn:
         return reply
     paragraphs = [part for part in str(reply or "").split("\n\n") if part.strip()]
-    kept = [part for part in paragraphs if not _carries_commercial_copy(part)]
+    kept = [
+        part for part in paragraphs
+        # An order number belongs to a question about one order. "¿Tenés una
+        # orden para retirar?" answers nothing anyone asked when the question
+        # was how pickups work, and it invites a conversation this turn is not
+        # having.
+        if not _carries_commercial_copy(part)
+        and not _asks_about_an_order(part)
+    ]
     if len(kept) == len(paragraphs):
         return reply
     return "\n\n".join(kept).strip()
@@ -6551,12 +6627,22 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # model wording, so enforce the same approved disclosures/links
             # after that alignment to ensure none are accidentally lost.
             if knowledge_answer_used and knowledge_bundle.context:
-                reply = enforce_knowledge_obligations(
+                reply_before_obligations = reply
+                enforced = enforce_knowledge_obligations(
                     reply,
                     knowledge_bundle.obligations,
                     verified_dynamic_links=extract_https_urls(catalog_context),
                 )
-                log_output_stage("knowledge_obligations", reply)
+                # Safety net, not a block that always sticks: if the answer
+                # already conveyed the approved disclosure in its own words,
+                # stating it again verbatim just repeats the policy.
+                reply = drop_redundant_obligations(
+                    enforced, reply_before_obligations, knowledge_bundle.obligations,
+                )
+                log_output_stage(
+                    "knowledge_obligations", reply,
+                    deduped="yes" if reply != enforced else "no",
+                )
             if handoff:
                 sale_candidate = None
             # Un fallo de identificación recibe una sola repregunta. Si la
