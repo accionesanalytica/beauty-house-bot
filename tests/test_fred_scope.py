@@ -1062,27 +1062,39 @@ class TheOutputFilterStandsOnItsOwnTests(unittest.TestCase):
 
 
 class ObligationsAreASafetyNetNotABlockTests(TheVisibleAnswerBelongsToThisTurnTests):
-    """The approved policy, once.
+    """Dedup, on the path where two components can still both write.
 
-    The disclosure declares its mandatory content as required_terms
-    ['showroom', 'cerrado', 'reserva previa'], and enforcement demanded those
-    words literally. The model said "retiros previamente coordinados con
-    reserva" -- the same policy, other words -- so the check failed and the
-    whole approved paragraph was appended underneath. The customer read the
-    same thing twice.
+    A policy turn no longer reaches here at all: Knowledge writes that answer
+    alone (see KnowledgeIsTheOnlyWriterOnAPolicyTurnTests), which removed the
+    duplication at its cause. Everywhere else the model still composes the
+    answer and the obligation layer still guarantees the approved content, so
+    the redundancy check keeps mattering -- and is tested where it applies.
     """
 
     PARAPHRASE = (
-        "El showroom está cerrado para atención al público; sólo se realizan "
-        "retiros previamente coordinados con reserva."
+        "Sí, tenemos ese modelo. El showroom está cerrado para atención al "
+        "público; sólo se realizan retiros previamente coordinados con reserva."
     )
 
-    def _showroom_turn(self, model_reply):
-        from knowledge_rag import load_knowledge_chunks, retrieve_local_knowledge
+    def _product_turn(self, model_reply):
+        from knowledge_rag import KnowledgeObligations, KnowledgeRetrieval
 
-        chunks = load_knowledge_chunks(BOT_DIR.parent / "knowledge")
-        retrieval = retrieve_local_knowledge("quiero pasar por el showroom", chunks)
         sent = []
+        obligations = KnowledgeObligations(
+            required_disclosures=(
+                {"text": "El showroom está cerrado; retiros con reserva previa.",
+                 "required_terms": ["showroom", "cerrado", "reserva previa"]},
+            ),
+            required_links=(
+                {"url": "https://calendar.app.google/X",
+                 "link_type": "approved_static_link"},
+            ),
+        )
+        bundle = KnowledgeRetrieval(
+            context="- [politicas / showroom] Texto aprobado.",
+            governing_topic="pickups_showroom",
+            obligations=obligations,
+        )
 
         def get_state(conversation_id):
             base = dict.fromkeys([
@@ -1111,7 +1123,7 @@ class ObligationsAreASafetyNetNotABlockTests(TheVisibleAnswerBelongsToThisTurnTe
             "embed_text": lambda *a, **k: [0.0] * 768,
             "search_similar_products": lambda *a, **k: "",
             "_live_candidate_context": lambda *a, **k: "",
-            "retrieve_with_recent_context": lambda m, h, fn: (retrieval, m, None),
+            "retrieve_with_recent_context": lambda m, h, fn: (bundle, m, None),
             "execute_dynamic_requirements": lambda *a, **k: (),
             "answer": lambda t, **k: {
                 "reply": model_reply, "tool_calls": [], "usage": {},
@@ -1123,37 +1135,29 @@ class ObligationsAreASafetyNetNotABlockTests(TheVisibleAnswerBelongsToThisTurnTe
         stream = io.StringIO()
         try:
             with redirect_stdout(stream):
-                asyncio.run(app.webhook_post(_Request("quiero pasar por el showroom")))
+                asyncio.run(app.webhook_post(_Request("¿Tienen Isabel I Chocolate?")))
         finally:
             for handle in reversed(handles):
                 handle.stop()
-        return sent[0] if sent else "", stream.getvalue()
+        return (sent[0] if sent else ""), stream.getvalue()
 
-    def test_the_policy_is_explained_exactly_once(self):
-        payload, output = self._showroom_turn(self.PARAPHRASE)
+    def test_a_conveyed_disclosure_is_not_appended_again(self):
+        payload, output = self._product_turn(self.PARAPHRASE)
         lowered = payload.lower().replace("está", "esta")
         self.assertEqual(lowered.count("showroom esta cerrado"), 1)
         self.assertIn("deduped=yes", output)
 
-    def test_the_reservation_link_appears_exactly_once(self):
-        payload, _ = self._showroom_turn(self.PARAPHRASE)
+    def test_the_link_still_appears_exactly_once(self):
+        payload, _ = self._product_turn(self.PARAPHRASE)
         self.assertEqual(payload.count("calendar.app.google"), 1)
 
-    def test_no_order_question_survives_a_policy_turn(self):
-        payload, output = self._showroom_turn(
-            self.PARAPHRASE + "\n\n¿Tenés una orden para retirar?")
-        self.assertNotIn("orden para retirar", payload)
-        self.assertIn("dropped=yes", output)
-
     def test_a_missing_disclosure_is_still_appended(self):
-        # The safety net still catches: an answer that says nothing about the
-        # policy gets the approved text, exactly as before.
-        payload, output = self._showroom_turn("¡Hola! Contame en qué te ayudo 😊")
+        payload, output = self._product_turn("Sí, tenemos ese modelo 😊")
         self.assertIn("cerrado", payload.lower())
         self.assertIn("deduped=no", output)
 
     def test_the_model_wording_is_never_rewritten(self):
-        payload, _ = self._showroom_turn(self.PARAPHRASE)
+        payload, _ = self._product_turn(self.PARAPHRASE)
         self.assertIn("previamente coordinados con reserva", payload)
 
 
@@ -1252,3 +1256,165 @@ class CoverageIsLiteralUnlessDeclaredEquivalentTests(unittest.TestCase):
             with self.subTest(disclosure=disclosure):
                 self.assertFalse(
                     app._obligation_already_conveyed("cualquier texto", disclosure))
+
+
+class KnowledgeIsTheOnlyWriterOnAPolicyTurnTests(unittest.TestCase):
+    """One component writes a policy answer, not two.
+
+    The duplication was not a text problem. A policy turn had the model
+    paraphrasing the approved policy AND the obligation layer appending it
+    verbatim, so the customer read it twice. Detecting the overlap afterwards
+    treats the symptom; the cause is that two sources were allowed to answer.
+
+    When Knowledge has a disclosure for the governing topic it now writes the
+    whole visible answer and the model is not called at all. The policy text
+    still lives in the KB -- this only orders what it approved.
+    """
+
+    def _turn(self, message, topic="pickups_showroom", disclosures=None, links=None):
+        from knowledge_rag import KnowledgeObligations, KnowledgeRetrieval
+
+        sent, model_calls, store_calls = [], [], {"catalog": 0, "live": 0}
+        obligations = KnowledgeObligations(
+            required_disclosures=tuple(disclosures if disclosures is not None else (
+                {"text": "El showroom está cerrado; retiros con reserva previa.",
+                 "required_terms": ["showroom", "cerrado", "reserva previa"]},
+            )),
+            required_links=tuple(links if links is not None else (
+                {"url": "https://calendar.app.google/X",
+                 "link_type": "approved_static_link"},
+            )),
+        )
+        bundle = KnowledgeRetrieval(
+            context="- [politicas / showroom] Texto aprobado.",
+            governing_topic=topic,
+            obligations=obligations,
+        )
+
+        def get_state(conversation_id):
+            base = dict.fromkeys([
+                "active_product_id", "active_product_name", "active_sku",
+                "active_variant", "unit_price", "quantity", "delivery_method",
+                "customer_name", "customer_email", "postal_code",
+                "checkout_step", "order_number",
+            ])
+            base["mode"] = "CHAT"
+            return base
+
+        mocks = {
+            "CONVERSATION_DEBOUNCE_SECONDS": 0, "BOT_RESPONSE_MODE": "agent",
+            "KNOWLEDGE_RAG_ENABLED": True,
+            "get_fred_core_state": get_state,
+            "save_fred_core_state": lambda c, **f: None,
+            "reset_fred_core_checkout": lambda c: None,
+            "get_active_sales_intake": lambda c: None,
+            "get_product_selection": lambda *a, **k: None,
+            "record_inbound_message": lambda *a, **k: (7, "BOT", False),
+            "record_bot_message": lambda *a, **k: None,
+            "record_agent_turn": lambda **k: None,
+            "load_history": lambda *a, **k: [],
+            "is_latest_customer_message": lambda *a, **k: True,
+            "send_whatsapp_text": lambda p, t: sent.append(t) or True,
+            "embed_text": lambda *a, **k: [0.0] * 768,
+            "search_similar_products": lambda *a, **k: (
+                store_calls.__setitem__("catalog", store_calls["catalog"] + 1) or ""),
+            "_live_candidate_context": lambda *a, **k: (
+                store_calls.__setitem__("live", store_calls["live"] + 1) or ""),
+            "retrieve_with_recent_context": lambda m, h, fn: (bundle, m, None),
+            "execute_dynamic_requirements": lambda *a, **k: (),
+            "get_order_status": lambda n: {
+                "found": True, "order_number": n, "payment_status": "paid",
+                "fulfillment_status": "UNPACKED", "shipping_type": "ship",
+                "shipping_status": "unpacked", "tracking": None, "carrier": None},
+            "answer": lambda t, **k: model_calls.append(t) or {
+                "reply": "(el modelo no debería haber sido llamado)",
+                "tool_calls": [], "usage": {},
+                "decision": {"action": "reply", "reason": "normal_response"}},
+        }
+        handles = [patch.object(app, name, value) for name, value in mocks.items()]
+        for handle in handles:
+            handle.start()
+        stream = io.StringIO()
+        try:
+            with redirect_stdout(stream):
+                asyncio.run(app.webhook_post(_Request(message)))
+        finally:
+            for handle in reversed(handles):
+                handle.stop()
+        return sent, model_calls, store_calls, stream.getvalue()
+
+    def test_the_showroom_turn_is_answered_by_knowledge_alone(self):
+        sent, model_calls, store_calls, output = self._turn("quiero pasar por el showroom")
+
+        self.assertEqual(model_calls, [], "el modelo no debe ser llamado")
+        self.assertEqual(store_calls["catalog"], 0)
+        self.assertEqual(store_calls["live"], 0)
+        self.assertIn("sources=knowledge", output)
+        self.assertIn("intent=policy_question", output)
+        self.assertIn("data_required=knowledge_only", output)
+        self.assertIn("skipped_live=true", output)
+
+        payload = sent[0]
+        self.assertEqual(payload.lower().count("showroom"), 1)
+        self.assertEqual(payload.count("calendar.app.google"), 1)
+        self.assertNotIn("orden", payload.lower())
+        self.assertNotIn("Isa", payload)
+
+    def test_without_an_approved_disclosure_the_model_still_answers(self):
+        # Fallback stays: a topic Knowledge cannot answer on its own is not
+        # forced into a deterministic reply.
+        _, model_calls, _, output = self._turn(
+            "quiero pasar por el showroom", disclosures=(), links=())
+        self.assertEqual(len(model_calls), 1)
+        self.assertNotIn("sources=knowledge ", output)
+
+    def test_an_order_turn_never_uses_the_static_answer(self):
+        sent, model_calls, _, output = self._turn("pedido 6345")
+        self.assertNotIn("sources=knowledge", output)
+        self.assertNotIn("calendar.app.google", " ".join(sent))
+
+    def test_a_product_question_never_uses_the_static_answer(self):
+        _, model_calls, store_calls, output = self._turn("¿Tienen Isabel I Chocolate?")
+        self.assertNotIn("sources=knowledge", output)
+        self.assertEqual(len(model_calls), 1, "un producto concreto sigue componiéndose")
+
+    def test_a_purchase_still_goes_to_isa(self):
+        sent, model_calls, _, _ = self._turn("quiero comprar 4 Isabel I Chocolate")
+        self.assertEqual(model_calls, [])
+        self.assertIn("Isa", sent[0])
+        self.assertNotIn("calendar.app.google", sent[0])
+
+
+class LatencyBreakdownTests(unittest.TestCase):
+    def test_every_phase_and_the_remainder_are_reported(self):
+        stream = io.StringIO()
+        latency = app.new_turn_latency()
+        latency["knowledge_total_ms"] = 1992.0
+        with redirect_stdout(stream):
+            app.log_turn_latency(latency, started_at=app.time.monotonic() - 5.0)
+        line = stream.getvalue()
+        self.assertIn("[FredLatency]", line)
+        for phase in app._LATENCY_PHASES:
+            self.assertIn(phase + "=", line)
+        self.assertIn("other_ms=", line)
+        self.assertIn("total_ms=", line)
+
+    def test_other_ms_is_exactly_what_the_phases_do_not_explain(self):
+        import re
+
+        stream = io.StringIO()
+        latency = app.new_turn_latency()
+        latency["history_load_ms"] = 500.0
+        latency["knowledge_total_ms"] = 1500.0
+        with redirect_stdout(stream):
+            app.log_turn_latency(latency, started_at=app.time.monotonic() - 3.0)
+        fields = dict(re.findall(r"(\w+)=(\d+)", stream.getvalue()))
+        measured = sum(int(fields[phase]) for phase in app._LATENCY_PHASES)
+        self.assertEqual(
+            int(fields["total_ms"]) - measured, int(fields["other_ms"]))
+
+    def test_it_never_raises_on_a_broken_dict(self):
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            app.log_turn_latency(None, started_at=app.time.monotonic())
+        self.assertIn("[FredLatency]", stream.getvalue())

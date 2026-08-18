@@ -1138,6 +1138,68 @@ _REQUIRED_TERM_EQUIVALENTS = {
 }
 
 
+# The whole turn, on one monotonic clock, starting where the webhook does.
+# [FredTiming] only ever measured the agent turn, which begins several store
+# round-trips in -- so a turn reporting 4.3s of phases could take 11.7s and
+# nothing said where the rest went. other_ms is that gap, made explicit
+# instead of left to subtraction by hand.
+_LATENCY_PHASES = (
+    "state_load_ms", "history_load_ms", "inbound_record_ms",
+    "knowledge_total_ms", "routing_ms", "llm_ms", "catalog_ms", "live_stock_ms",
+    "output_assembly_ms", "conversation_save_ms", "whatsapp_send_ms",
+)
+
+
+def new_turn_latency() -> dict:
+    return {phase: 0.0 for phase in _LATENCY_PHASES}
+
+
+def log_turn_latency(latency: dict, *, started_at: float) -> None:
+    """Every phase plus the unattributed remainder. No PII: durations only."""
+    try:
+        total = (time.monotonic() - started_at) * 1000
+        measured = sum((latency or {}).get(phase, 0.0) for phase in _LATENCY_PHASES)
+        fields = " ".join(
+            "{}={}".format(phase, round((latency or {}).get(phase, 0.0)))
+            for phase in _LATENCY_PHASES
+        )
+        print("[FredLatency] {} other_ms={} total_ms={}".format(
+            fields, round(max(0.0, total - measured)), round(total),
+        ))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR registrando latencia del turno (tipo: {}).".format(type(error).__name__))
+
+
+def approved_policy_answer(obligations) -> str:
+    """The approved answer for this topic, written by Knowledge alone.
+
+    A policy turn had two components writing the same thing: the model
+    paraphrasing the policy, and the obligation layer appending the approved
+    wording underneath. Detecting the overlap afterwards was treating the
+    symptom -- the cause is that two sources were allowed to answer at all.
+
+    So on that path Knowledge writes the whole visible answer: its approved
+    disclosures, then any link it requires. Nothing is composed or reworded
+    here and no policy text lives in this module; this only orders what the
+    KB already approved. Returns "" when the topic has no disclosure to answer
+    with, and the model handles the turn as before.
+    """
+    if not obligations:
+        return ""
+    parts = []
+    for item in obligations.required_disclosures or ():
+        text = str(item.get("text") or "").strip()
+        if text and text not in parts:
+            parts.append(text)
+    if not parts:
+        return ""
+    for item in obligations.required_links or ():
+        url = str(item.get("url") or "").strip()
+        if url and url not in parts:
+            parts.append(url)
+    return "\n\n".join(parts).strip()
+
+
 def _obligation_already_conveyed(reply: str, disclosure) -> bool:
     """Did the reply already say what this disclosure requires?
 
@@ -1290,6 +1352,7 @@ def _reply_belongs_to_this_turn(reply: str, prior_history: list) -> str:
 
 def _log_turn_output(
     reply: str, *, model_used: bool, recycled_stripped: bool, prior_history: list = (),
+    source: str = "",
 ) -> None:
     """Where the text that is about to be sent came from.
 
@@ -1299,7 +1362,7 @@ def _log_turn_output(
     """
     try:
         text = str(reply or "")
-        sources = "+".join(part for part in (
+        sources = source or "+".join(part for part in (
             "model" if model_used else "deterministic",
             "knowledge_obligations" if text.count("\n\n") else "",
         ) if part)
@@ -5839,6 +5902,10 @@ async def webhook_post(request: Request):
 async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = None):
     """Existing Fred turn processor, reusable by the durable worker."""
 
+    # One monotonic clock for the whole turn, started where the turn starts.
+    turn_started = time.monotonic()
+    turn_latency = new_turn_latency()
+
     # Meta envía un array de entries
     if (
         "entry" not in body
@@ -5940,18 +6007,22 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
     # customer turn from appearing twice in its context.
     if BOT_RESPONSE_MODE == "agent" and not persisted_claim:
         try:
-            prior_history = load_history(customer_phone)
+            with _timed(turn_latency, "history_load_ms"):
+                prior_history = load_history(customer_phone)
         except Exception as error:  # noqa: BLE001
             history_available = False
             print(f"ERROR cargando conversacion (tipo: {type(error).__name__})")
 
     if not persisted_claim:
         try:
+            inbound_started = time.monotonic()
             conversation_id, state, duplicate = record_inbound_message(
                 customer_phone=customer_phone,
                 body=message_text,
                 wa_message_id=wa_message_id,
             )
+            turn_latency["inbound_record_ms"] += (
+                time.monotonic() - inbound_started) * 1000
             if duplicate:
                 print("[Conversacion] Mensaje duplicado ignorado.")
                 return JSONResponse(content={"ok": True})
@@ -6021,7 +6092,8 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
         # decide whether this turn executes a deterministic action or goes
         # to CHAT. Nothing below this block may re-derive a competing
         # notion of "what flow are we in" from message text.
-        core_state = get_fred_core_state(conversation_id)
+        with _timed(turn_latency, "state_load_ms"):
+            core_state = get_fred_core_state(conversation_id)
         core_mode = core_state.get("mode") or "CHAT"
         if core_mode == "CHAT" and SALES_INTAKE_ENABLED:
             # Migration safety net (item 9): a conversation may carry a
@@ -6205,6 +6277,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
         knowledge_bundle = KnowledgeRetrieval()
         dynamic_check_outcomes = ()
         knowledge_answer_used = False
+        knowledge_only_answer = False
         policy_bypass = False
         result = {}
         try:
@@ -6529,6 +6602,16 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 _grounded_lash_recommendation(live_candidate_context, catalog_query)
                 if RECOMMENDATIONS_ENABLED else ""
             )
+            # A policy turn Knowledge can answer completely: Knowledge answers
+            # it, alone. No model call to paraphrase an approved text, and
+            # therefore nothing to deduplicate afterwards. Scoped to
+            # policy_bypass, so orders, prices, stock and product questions are
+            # untouched -- those genuinely need composing.
+            if not grounded_reply and policy_bypass:
+                grounded_reply = approved_policy_answer(knowledge_bundle.obligations)
+                if grounded_reply:
+                    knowledge_only_answer = True
+                    print("[FredOutput] respuesta construida por Knowledge, sin modelo.")
             if grounded_reply:
                 # The live store already supplied exactly the facts this
                 # recommendation needs. Avoid spending a model call and avoid
@@ -6815,11 +6898,16 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     "La respuesta reproducía el turno anterior.",
                 )
                 return JSONResponse(content={"ok": True})
+            for _phase in ("knowledge_ms", "catalog_ms", "live_stock_ms", "llm_ms"):
+                turn_latency[
+                    "knowledge_total_ms" if _phase == "knowledge_ms" else _phase
+                ] += turn_timings.get(_phase, 0.0)
             _log_turn_output(
                 reply,
                 model_used=knowledge_answer_used,
                 recycled_stripped=reply != reply_before_guard,
                 prior_history=prior_history,
+                source="knowledge" if knowledge_only_answer else "",
             )
 
             delivered = False
@@ -6845,10 +6933,13 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 delivered = True
                 buttons_added = True
                 print("[Conversacion] Respuesta del agente con botones de acción.")
-            elif send_whatsapp_text(customer_phone, reply):
-                delivered = True
-                record_bot_message(conversation_id, reply)
-                print("[Conversacion] Respuesta del agente guardada.")
+            else:
+                with _timed(turn_latency, "whatsapp_send_ms"):
+                    delivered = send_whatsapp_text(customer_phone, reply)
+                if delivered:
+                    with _timed(turn_latency, "conversation_save_ms"):
+                        record_bot_message(conversation_id, reply)
+                    print("[Conversacion] Respuesta del agente guardada.")
 
             effective_action = (
                 "handoff_to_isa" if handoff
@@ -6859,17 +6950,18 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 handoff.get("reason") if handoff
                 else decision.get("reason", "normal_response")
             )
-            _record_agent_turn_safely(
-                wa_message_id=wa_message_id,
-                conversation_id=conversation_id,
-                result=result,
-                action=effective_action,
-                reason=effective_reason,
-                outcome="replied" if delivered else "send_failed",
-                catalog_context_used=bool(catalog_context),
-                knowledge_context_used=bool(knowledge_context),
-                duration_ms=round((time.monotonic() - agent_turn_started) * 1000),
-            )
+            with _timed(turn_latency, "conversation_save_ms"):
+                _record_agent_turn_safely(
+                    wa_message_id=wa_message_id,
+                    conversation_id=conversation_id,
+                    result=result,
+                    action=effective_action,
+                    reason=effective_reason,
+                    outcome="replied" if delivered else "send_failed",
+                    catalog_context_used=bool(catalog_context),
+                    knowledge_context_used=bool(knowledge_context),
+                    duration_ms=round((time.monotonic() - agent_turn_started) * 1000),
+                )
             # llm_ms is the whole answer() call, so it also contains the tool
             # calls the agent makes inside its own rounds (which are Tiendanube
             # HTTP, not model time). tool_calls is what tells the two apart:
@@ -6883,6 +6975,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 tokens_output=usage.get("completion_tokens", 0) or 0,
             )
             _log_turn_knowledge(**knowledge_health)
+            log_turn_latency(turn_latency, started_at=turn_started)
             _log_turn_routing(routing_requirement, live_calls=turn_live_calls)
             _log_turn_decision(
                 topic=knowledge_bundle.governing_topic,
