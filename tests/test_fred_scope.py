@@ -1194,3 +1194,61 @@ class RedundantObligationUnitTests(unittest.TestCase):
         result = app.drop_redundant_obligations(appended, before, Obligations())
         self.assertNotIn("sólo se realizan retiros con reserva previa", result)
         self.assertIn("https://calendar.app.google/X", result)
+
+
+class CoverageIsLiteralUnlessDeclaredEquivalentTests(unittest.TestCase):
+    """The dedup rule must never swallow an obligation it did not really see.
+
+    An earlier version counted a term as covered when ANY of its words
+    appeared. That is short and badly wrong: "24-72 horas hábiles" would have
+    been satisfied by "unas horas", and "sin IVA" by any passing mention of
+    IVA. Coverage is literal, with a handful of explicitly declared
+    equivalents, and the default when in doubt is to append.
+    """
+
+    def test_a_partial_word_match_never_covers_a_time_window(self):
+        self.assertFalse(app._obligation_already_conveyed(
+            "Puede demorar unas horas.",
+            {"required_terms": ["24-72 horas hábiles"]},
+        ))
+
+    def test_a_partial_word_match_never_covers_a_tax_condition(self):
+        self.assertFalse(app._obligation_already_conveyed(
+            "El IVA se factura aparte.", {"required_terms": ["sin IVA"]}))
+        self.assertFalse(app._obligation_already_conveyed(
+            "Queda sin definir por ahora.", {"required_terms": ["sin IVA"]}))
+
+    def test_the_literal_term_does_cover_it(self):
+        self.assertTrue(app._obligation_already_conveyed(
+            "Los precios son sin IVA.", {"required_terms": ["sin IVA"]}))
+        self.assertTrue(app._obligation_already_conveyed(
+            "Tarda 24-72 horas hábiles.", {"required_terms": ["24-72 horas hábiles"]}))
+
+    def test_only_declared_equivalents_are_accepted(self):
+        # "reserva" is approved as an equivalent of "reserva previa" by the
+        # disclosure that requires it. Nothing else gets that treatment.
+        self.assertTrue(app._obligation_already_conveyed(
+            "Retiros coordinados con reserva.", {"required_terms": ["reserva previa"]}))
+        self.assertFalse(app._obligation_already_conveyed(
+            "Coordinamos el retiro.", {"required_terms": ["reserva previa"]}))
+
+    def test_the_equivalence_table_stays_small_and_explicit(self):
+        # A large table would be the "any word" rule wearing a disguise.
+        self.assertLessEqual(len(app._REQUIRED_TERM_EQUIVALENTS), 5)
+        for term, equivalents in app._REQUIRED_TERM_EQUIVALENTS.items():
+            self.assertTrue(term.strip())
+            self.assertTrue(equivalents)
+
+    def test_a_partly_conveyed_disclosure_is_still_appended(self):
+        # Two of three terms is not coverage: the obligation stays.
+        self.assertFalse(app._obligation_already_conveyed(
+            "El showroom está cerrado.",
+            {"required_terms": ["showroom", "cerrado", "reserva previa"]},
+        ))
+
+    def test_when_in_doubt_the_obligation_is_kept(self):
+        for disclosure in ({}, {"required_terms": []}, {"required_terms": [""]},
+                           {"text": "algo aprobado"}):
+            with self.subTest(disclosure=disclosure):
+                self.assertFalse(
+                    app._obligation_already_conveyed("cualquier texto", disclosure))

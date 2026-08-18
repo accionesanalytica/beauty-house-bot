@@ -1125,14 +1125,27 @@ def history_without_commercial_handoffs(prior_history: list) -> list:
     return kept
 
 
+# Wordings that carry the same approved meaning as a required term. Short and
+# explicit on purpose: anything not listed here must appear literally, so a new
+# obligation is fail-safe the day it is written and nobody has to remember to
+# protect it. Matching on "any word of the term" would have been shorter and
+# badly wrong -- "24-72 horas hábiles" would count as covered by "unas horas",
+# and "sin IVA" by any passing mention of IVA.
+_REQUIRED_TERM_EQUIVALENTS = {
+    # Approved by the same disclosure that requires it: "retiros coordinados
+    # con reserva" is the policy, phrased by a person instead of quoted.
+    "reserva previa": ("reserva",),
+}
+
+
 def _obligation_already_conveyed(reply: str, disclosure) -> bool:
     """Did the reply already say what this disclosure requires?
 
     The disclosure declares its own mandatory content in `required_terms`;
-    everything else in its text is approved phrasing, not a requirement. A
-    term is treated as conveyed when any of its words appears, so a model that
-    says "retiros previamente coordinados con reserva" satisfies "reserva
-    previa" instead of being handed the whole paragraph again.
+    everything else in its text is approved phrasing, not a requirement. Each
+    term must appear literally, or as one of the few equivalents declared
+    above -- when in doubt the answer is "not covered", and the obligation is
+    appended.
 
     Deliberately narrower than it looks: this only decides whether an ALREADY
     APPENDED block is redundant. It never weakens the enforcement itself, and
@@ -1143,9 +1156,16 @@ def _obligation_already_conveyed(reply: str, disclosure) -> bool:
         return False
     normalised = _knowledge_normalise(reply)
     for term in terms:
-        words = [word for word in _knowledge_normalise(term).split() if len(word) > 2]
-        if not words or not any(word in normalised for word in words):
+        key = _knowledge_normalise(term)
+        if not key:
             return False
+        if key in normalised:
+            continue
+        equivalents = _REQUIRED_TERM_EQUIVALENTS.get(key, ())
+        if any(_knowledge_normalise(alternative) in normalised
+               for alternative in equivalents):
+            continue
+        return False
     return True
 
 
