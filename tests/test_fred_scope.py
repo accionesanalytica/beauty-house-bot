@@ -1059,3 +1059,196 @@ class TheOutputFilterStandsOnItsOwnTests(unittest.TestCase):
     def test_its_markers_track_freds_own_copy(self):
         for lead in app._ISA_HANDOFF_LEADS.values():
             self.assertIn(lead, app.commercial_copy_markers())
+
+
+class ObligationsAreASafetyNetNotABlockTests(TheVisibleAnswerBelongsToThisTurnTests):
+    """The approved policy, once.
+
+    The disclosure declares its mandatory content as required_terms
+    ['showroom', 'cerrado', 'reserva previa'], and enforcement demanded those
+    words literally. The model said "retiros previamente coordinados con
+    reserva" -- the same policy, other words -- so the check failed and the
+    whole approved paragraph was appended underneath. The customer read the
+    same thing twice.
+    """
+
+    PARAPHRASE = (
+        "El showroom está cerrado para atención al público; sólo se realizan "
+        "retiros previamente coordinados con reserva."
+    )
+
+    def _showroom_turn(self, model_reply):
+        from knowledge_rag import load_knowledge_chunks, retrieve_local_knowledge
+
+        chunks = load_knowledge_chunks(BOT_DIR.parent / "knowledge")
+        retrieval = retrieve_local_knowledge("quiero pasar por el showroom", chunks)
+        sent = []
+
+        def get_state(conversation_id):
+            base = dict.fromkeys([
+                "active_product_id", "active_product_name", "active_sku",
+                "active_variant", "unit_price", "quantity", "delivery_method",
+                "customer_name", "customer_email", "postal_code",
+                "checkout_step", "order_number",
+            ])
+            base["mode"] = "CHAT"
+            return base
+
+        mocks = {
+            "CONVERSATION_DEBOUNCE_SECONDS": 0, "BOT_RESPONSE_MODE": "agent",
+            "KNOWLEDGE_RAG_ENABLED": True,
+            "get_fred_core_state": get_state,
+            "save_fred_core_state": lambda c, **f: None,
+            "reset_fred_core_checkout": lambda c: None,
+            "get_active_sales_intake": lambda c: None,
+            "get_product_selection": lambda *a, **k: None,
+            "record_inbound_message": lambda *a, **k: (7, "BOT", False),
+            "record_bot_message": lambda *a, **k: None,
+            "record_agent_turn": lambda **k: None,
+            "load_history": lambda *a, **k: [],
+            "is_latest_customer_message": lambda *a, **k: True,
+            "send_whatsapp_text": lambda p, t: sent.append(t) or True,
+            "embed_text": lambda *a, **k: [0.0] * 768,
+            "search_similar_products": lambda *a, **k: "",
+            "_live_candidate_context": lambda *a, **k: "",
+            "retrieve_with_recent_context": lambda m, h, fn: (retrieval, m, None),
+            "execute_dynamic_requirements": lambda *a, **k: (),
+            "answer": lambda t, **k: {
+                "reply": model_reply, "tool_calls": [], "usage": {},
+                "decision": {"action": "reply", "reason": "normal_response"}},
+        }
+        handles = [patch.object(app, name, value) for name, value in mocks.items()]
+        for handle in handles:
+            handle.start()
+        stream = io.StringIO()
+        try:
+            with redirect_stdout(stream):
+                asyncio.run(app.webhook_post(_Request("quiero pasar por el showroom")))
+        finally:
+            for handle in reversed(handles):
+                handle.stop()
+        return sent[0] if sent else "", stream.getvalue()
+
+    def test_the_policy_is_explained_exactly_once(self):
+        payload, output = self._showroom_turn(self.PARAPHRASE)
+        lowered = payload.lower().replace("está", "esta")
+        self.assertEqual(lowered.count("showroom esta cerrado"), 1)
+        self.assertIn("deduped=yes", output)
+
+    def test_the_reservation_link_appears_exactly_once(self):
+        payload, _ = self._showroom_turn(self.PARAPHRASE)
+        self.assertEqual(payload.count("calendar.app.google"), 1)
+
+    def test_no_order_question_survives_a_policy_turn(self):
+        payload, output = self._showroom_turn(
+            self.PARAPHRASE + "\n\n¿Tenés una orden para retirar?")
+        self.assertNotIn("orden para retirar", payload)
+        self.assertIn("dropped=yes", output)
+
+    def test_a_missing_disclosure_is_still_appended(self):
+        # The safety net still catches: an answer that says nothing about the
+        # policy gets the approved text, exactly as before.
+        payload, output = self._showroom_turn("¡Hola! Contame en qué te ayudo 😊")
+        self.assertIn("cerrado", payload.lower())
+        self.assertIn("deduped=no", output)
+
+    def test_the_model_wording_is_never_rewritten(self):
+        payload, _ = self._showroom_turn(self.PARAPHRASE)
+        self.assertIn("previamente coordinados con reserva", payload)
+
+
+class RedundantObligationUnitTests(unittest.TestCase):
+    """The dedup rule on its own, independent of any turn."""
+
+    DISCLOSURE = {
+        "text": "El showroom está cerrado; sólo se realizan retiros con reserva previa.",
+        "required_terms": ["showroom", "cerrado", "reserva previa"],
+    }
+
+    def test_a_paraphrase_counts_as_conveying_the_disclosure(self):
+        self.assertTrue(app._obligation_already_conveyed(
+            "El showroom está cerrado; hacemos retiros coordinados con reserva.",
+            self.DISCLOSURE,
+        ))
+
+    def test_a_reply_missing_a_required_concept_does_not(self):
+        self.assertFalse(app._obligation_already_conveyed(
+            "Podés escribirnos cuando quieras.", self.DISCLOSURE))
+        self.assertFalse(app._obligation_already_conveyed(
+            "El showroom está cerrado.", self.DISCLOSURE))
+
+    def test_a_disclosure_without_required_terms_is_never_assumed_covered(self):
+        # No declared requirement means nothing to check against, so the
+        # safety net stays -- silence is not coverage.
+        self.assertFalse(app._obligation_already_conveyed(
+            "cualquier texto", {"text": "algo aprobado"}))
+
+    def test_a_link_is_kept_even_when_the_prose_is_redundant(self):
+        class Obligations:
+            required_disclosures = (RedundantObligationUnitTests.DISCLOSURE,)
+            required_links = ()
+
+        before = "El showroom está cerrado; retiros coordinados con reserva."
+        appended = before + "\n\n" + RedundantObligationUnitTests.DISCLOSURE["text"] \
+            + "\nhttps://calendar.app.google/X"
+        result = app.drop_redundant_obligations(appended, before, Obligations())
+        self.assertNotIn("sólo se realizan retiros con reserva previa", result)
+        self.assertIn("https://calendar.app.google/X", result)
+
+
+class CoverageIsLiteralUnlessDeclaredEquivalentTests(unittest.TestCase):
+    """The dedup rule must never swallow an obligation it did not really see.
+
+    An earlier version counted a term as covered when ANY of its words
+    appeared. That is short and badly wrong: "24-72 horas hábiles" would have
+    been satisfied by "unas horas", and "sin IVA" by any passing mention of
+    IVA. Coverage is literal, with a handful of explicitly declared
+    equivalents, and the default when in doubt is to append.
+    """
+
+    def test_a_partial_word_match_never_covers_a_time_window(self):
+        self.assertFalse(app._obligation_already_conveyed(
+            "Puede demorar unas horas.",
+            {"required_terms": ["24-72 horas hábiles"]},
+        ))
+
+    def test_a_partial_word_match_never_covers_a_tax_condition(self):
+        self.assertFalse(app._obligation_already_conveyed(
+            "El IVA se factura aparte.", {"required_terms": ["sin IVA"]}))
+        self.assertFalse(app._obligation_already_conveyed(
+            "Queda sin definir por ahora.", {"required_terms": ["sin IVA"]}))
+
+    def test_the_literal_term_does_cover_it(self):
+        self.assertTrue(app._obligation_already_conveyed(
+            "Los precios son sin IVA.", {"required_terms": ["sin IVA"]}))
+        self.assertTrue(app._obligation_already_conveyed(
+            "Tarda 24-72 horas hábiles.", {"required_terms": ["24-72 horas hábiles"]}))
+
+    def test_only_declared_equivalents_are_accepted(self):
+        # "reserva" is approved as an equivalent of "reserva previa" by the
+        # disclosure that requires it. Nothing else gets that treatment.
+        self.assertTrue(app._obligation_already_conveyed(
+            "Retiros coordinados con reserva.", {"required_terms": ["reserva previa"]}))
+        self.assertFalse(app._obligation_already_conveyed(
+            "Coordinamos el retiro.", {"required_terms": ["reserva previa"]}))
+
+    def test_the_equivalence_table_stays_small_and_explicit(self):
+        # A large table would be the "any word" rule wearing a disguise.
+        self.assertLessEqual(len(app._REQUIRED_TERM_EQUIVALENTS), 5)
+        for term, equivalents in app._REQUIRED_TERM_EQUIVALENTS.items():
+            self.assertTrue(term.strip())
+            self.assertTrue(equivalents)
+
+    def test_a_partly_conveyed_disclosure_is_still_appended(self):
+        # Two of three terms is not coverage: the obligation stays.
+        self.assertFalse(app._obligation_already_conveyed(
+            "El showroom está cerrado.",
+            {"required_terms": ["showroom", "cerrado", "reserva previa"]},
+        ))
+
+    def test_when_in_doubt_the_obligation_is_kept(self):
+        for disclosure in ({}, {"required_terms": []}, {"required_terms": [""]},
+                           {"text": "algo aprobado"}):
+            with self.subTest(disclosure=disclosure):
+                self.assertFalse(
+                    app._obligation_already_conveyed("cualquier texto", disclosure))
