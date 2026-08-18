@@ -76,6 +76,7 @@ from durable_worker import DeliveryContext, current_delivery_context
 from message_queue import extract_inbound_messages, ordered_turn_text
 from routing_policy import (
     DATA_KNOWLEDGE_ONLY,
+    INTENT_EXISTING_ORDER,
     _ANAPHORIC_REFERENCE_RE,
     _UNAMBIGUOUS_PURCHASE_VERB_RE,
     INTENT_ADVICE_REQUEST,
@@ -2575,7 +2576,15 @@ def isa_contact_number() -> str:
     """Isa's own WhatsApp, shown to the customer so they write to her directly.
     There is no relay: Fred hands over the contact and steps out."""
     raw = re.sub(r"\D", "", ISA_WHATSAPP_NUMBER or "")
-    return "+{}".format(raw) if raw else ""
+    if not raw:
+        return ""
+    # Grouped the way a person reads a phone number: +54 9 11 2452-8750.
+    # Presentation only, and only here -- the number itself has exactly one
+    # source, the ISA_WHATSAPP_NUMBER environment variable.
+    match = re.fullmatch(r"(54)(9)(\d{2})(\d{4})(\d{4})", raw)
+    if match:
+        return "+{} {} {} {}-{}".format(*match.groups())
+    return "+{}".format(raw)
 
 
 def _isa_direct_contact_reply(lead: str) -> str:
@@ -6225,7 +6234,15 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             )
             _deliver_flow_reply(customer_phone, conversation_id, reply)
             return JSONResponse(content={"ok": True})
-        if strong_tracking_evidence and not order_number:
+        # A number Fred just asked for is checked BEFORE deciding that this
+        # message has none. "6344 el numero de pedido" puts the digits first,
+        # which extract_order_number does not read as an order number -- and
+        # asking again for a number the customer just gave is a loop.
+        answered_with_a_number = (
+            _extract_bare_order_number(message_text)
+            if _fred_just_asked_for_order_number(prior_history) else None
+        )
+        if strong_tracking_evidence and not order_number and not answered_with_a_number:
             save_fred_core_state(conversation_id, mode="TRACKING")
             _deliver_flow_reply(customer_phone, conversation_id, ORDER_NUMBER_PROMPT_TEXT)
             return JSONResponse(content={"ok": True})
@@ -6237,8 +6254,8 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
         # dragged an unrelated damaged-product complaint into an order lookup.
         # This catches the case the TRACKING mode above misses: the model
         # asking for the number in its own words instead of the fixed prompt.
-        bare_order_number = _extract_bare_order_number(message_text)
-        if bare_order_number and _fred_just_asked_for_order_number(prior_history):
+        bare_order_number = answered_with_a_number
+        if bare_order_number:
             print("[FredCore] número de orden en respuesta directa: {}.".format(
                 bare_order_number,
             ))
@@ -6279,6 +6296,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
         knowledge_answer_used = False
         knowledge_only_answer = False
         policy_bypass = False
+        order_turn_without_number = False
         result = {}
         try:
             # With Knowledge RAG off, preserve the established catalog path.
@@ -6400,10 +6418,31 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                         and routing_requirement["data_required"] == DATA_KNOWLEDGE_ONLY
                         and bool(knowledge_bundle.governing_topic)
                     )
+                    # An order question needs the order, not the catalog. This
+                    # turn classified as existing_order and carries no number,
+                    # so the next thing that can help is asking for it --
+                    # searching products or checking stock cannot contribute
+                    # anything to "¿cuándo llega mi pedido?".
+                    # Knowledge declaring that it needs order_status is the
+                    # same situation said differently: this turn is about the
+                    # customer's own order and cannot proceed without its
+                    # number. Either way the catalog has nothing to add.
+                    knowledge_wants_the_order = any(
+                        getattr(item, "fact", "") == "order_status"
+                        for item in (knowledge_bundle.dynamic_requirements or ())
+                    )
+                    order_turn_without_number = (
+                        (routing_requirement["intent"] == INTENT_EXISTING_ORDER
+                         or knowledge_wants_the_order)
+                        and not extract_order_number(message_text)
+                        and not _extract_bare_order_number(message_text)
+                    )
                     if policy_bypass:
                         print("[FredRouting] bypass: topic={} sin catálogo ni Tiendanube.".format(
                             knowledge_bundle.governing_topic,
                         ))
+                    elif order_turn_without_number:
+                        print("[FredRouting] pedido sin número: se pide, sin catálogo ni stock.")
                     else:
                         with _timed(turn_timings, "catalog_ms"):
                             catalog_context = search_similar_products(
@@ -6438,7 +6477,8 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # _live_product_candidate pick whichever one the message actually
             # names (it requires the name to be in the message).
             merged_own_words = False
-            if not policy_bypass and catalog_query != message_text:
+            if not policy_bypass and not order_turn_without_number \
+                    and catalog_query != message_text:
                 try:
                     with _timed(turn_timings, "catalog_ms"):
                         own_words_context = search_similar_products(message_text)
@@ -6460,7 +6500,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # Tiendanube, on every agent turn, before the model is ever asked
             # anything. Measuring it is the whole point of live_stock_ms.
             live_candidate_context = ""
-            if not policy_bypass:
+            if not policy_bypass and not order_turn_without_number:
                 with _timed(turn_timings, "live_stock_ms"):
                     live_candidate_context = _live_candidate_context(
                         catalog_context, catalog_query, limit=6 if merged_own_words else 3,
@@ -6607,6 +6647,11 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # therefore nothing to deduplicate afterwards. Scoped to
             # policy_bypass, so orders, prices, stock and product questions are
             # untouched -- those genuinely need composing.
+            if not grounded_reply and order_turn_without_number:
+                # Deterministic, and it sets TRACKING so the number that comes
+                # back is read as the answer to this question.
+                save_fred_core_state(conversation_id, mode="TRACKING")
+                grounded_reply = ORDER_NUMBER_PROMPT_TEXT
             if not grounded_reply and policy_bypass:
                 grounded_reply = approved_policy_answer(knowledge_bundle.obligations)
                 if grounded_reply:
