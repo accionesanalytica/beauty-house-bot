@@ -1418,3 +1418,216 @@ class LatencyBreakdownTests(unittest.TestCase):
         with redirect_stdout(stream):
             app.log_turn_latency(None, started_at=app.time.monotonic())
         self.assertIn("[FredLatency]", stream.getvalue())
+
+
+class IsaContactHasOneSourceTests(unittest.TestCase):
+    """The number lives in ISA_WHATSAPP_NUMBER and nowhere else."""
+
+    OLD_NUMBER = "5491124548738"
+
+    def test_the_visible_number_is_grouped_for_reading(self):
+        with patch.object(app, "ISA_WHATSAPP_NUMBER", "5491124528750"):
+            self.assertEqual(app.isa_contact_number(), "+54 9 11 2452-8750")
+
+    def test_changing_the_variable_changes_every_message(self):
+        # One source: no reply may carry a number the variable does not hold.
+        with patch.object(app, "ISA_WHATSAPP_NUMBER", "5491100000000"):
+            for reply in (
+                app._isa_direct_contact_reply("Probando."),
+                app._isa_scope_handoff("quiero comprar Isabel I", {}),
+            ):
+                self.assertIn("+54 9 11 0000-0000", reply)
+                self.assertNotIn(self.OLD_NUMBER, reply)
+
+    def test_the_old_number_is_not_written_into_the_source(self):
+        for name in ("app.py", "routing_policy.py", "agent.py"):
+            with self.subTest(module=name):
+                self.assertNotIn(
+                    self.OLD_NUMBER, (BOT_DIR / name).read_text(encoding="utf-8"))
+
+    def test_an_empty_variable_degrades_to_no_number(self):
+        with patch.object(app, "ISA_WHATSAPP_NUMBER", ""):
+            self.assertEqual(app.isa_contact_number(), "")
+
+
+class AnOrderTurnNeverSearchesTheCatalogTests(unittest.TestCase):
+    """"quiero información de mi pedido" was running catalog and product stock.
+
+    The turn classified as an order question, but nothing acted on that: only
+    a narrower "strong tracking" phrase set started the order flow, so this
+    wording fell through to the general agent path and paid for a catalog
+    search and a live product check that cannot answer "¿cuándo llega?".
+    """
+
+    UNPACKED = {
+        "found": True, "payment_status": "paid", "shipping_status": "unpacked",
+        "fulfillment_status": "UNPACKED", "shipping_type": "ship",
+        "tracking": None, "carrier": None,
+    }
+
+    def _conversation(self, messages):
+        from knowledge_rag import DynamicRequirement, KnowledgeRetrieval
+
+        store, sent, history = {"mode": "CHAT"}, [], []
+        calls = {"catalog": 0, "live": 0, "model": 0}
+        bundle = KnowledgeRetrieval(
+            context="- [politicas / pedidos] Plazos aprobados.",
+            governing_topic="order_tracking",
+            dynamic_requirements=(DynamicRequirement(
+                fact="order_status", verifier="get_order_status",
+                status="missing_arguments", missing_arguments=("order_number",),
+            ),),
+        )
+
+        def send(phone, text):
+            sent.append(text)
+            history.append({"role": "assistant", "content": text})
+            return True
+
+        def get_state(conversation_id):
+            base = dict.fromkeys([
+                "active_product_id", "active_product_name", "active_sku",
+                "active_variant", "unit_price", "quantity", "delivery_method",
+                "customer_name", "customer_email", "postal_code",
+                "checkout_step", "order_number",
+            ])
+            base["mode"] = "CHAT"
+            base.update(store)
+            return base
+
+        mocks = {
+            "CONVERSATION_DEBOUNCE_SECONDS": 0, "BOT_RESPONSE_MODE": "agent",
+            "KNOWLEDGE_RAG_ENABLED": True,
+            "get_fred_core_state": get_state,
+            "save_fred_core_state": lambda c, **f: store.update(
+                {k: v for k, v in f.items() if v is not None}),
+            "reset_fred_core_checkout": lambda c: None,
+            "get_active_sales_intake": lambda c: None,
+            "get_product_selection": lambda *a, **k: None,
+            "record_inbound_message": lambda *a, **k: (7, "BOT", False),
+            "record_bot_message": lambda *a, **k: None,
+            "record_agent_turn": lambda **k: None,
+            "load_history": lambda *a, **k: list(history),
+            "is_latest_customer_message": lambda *a, **k: True,
+            "send_whatsapp_text": send,
+            "embed_text": lambda *a, **k: [0.0] * 768,
+            "search_similar_products": lambda *a, **k: (
+                calls.__setitem__("catalog", calls["catalog"] + 1) or ""),
+            "_live_candidate_context": lambda *a, **k: (
+                calls.__setitem__("live", calls["live"] + 1) or ""),
+            "retrieve_with_recent_context": lambda m, h, fn: (bundle, m, None),
+            "execute_dynamic_requirements": lambda *a, **k: (),
+            "get_order_status": lambda n: dict(self.UNPACKED, order_number=n),
+            "answer": lambda t, **k: calls.__setitem__("model", calls["model"] + 1) or {
+                "reply": "(el modelo no debería intervenir)", "tool_calls": [],
+                "usage": {}, "decision": {"action": "reply", "reason": "normal_response"}},
+        }
+        handles = [patch.object(app, name, value) for name, value in mocks.items()]
+        for handle in handles:
+            handle.start()
+        outputs = []
+        try:
+            for index, message in enumerate(messages):
+                stream = io.StringIO()
+                with redirect_stdout(stream):
+                    asyncio.run(app.webhook_post(_Request(message, "wamid-o%d" % index)))
+                history.append({"role": "user", "content": message})
+                outputs.append(stream.getvalue())
+        finally:
+            for handle in reversed(handles):
+                handle.stop()
+        return sent, calls, outputs
+
+    def test_asking_about_an_order_without_a_number_only_asks_for_it(self):
+        sent, calls, _ = self._conversation(
+            ["quiero información de mi pedido, quiero saber cuando llega"])
+        self.assertEqual(calls["catalog"], 0, "un pedido no se busca en el catálogo")
+        self.assertEqual(calls["live"], 0, "un pedido no consulta stock de producto")
+        self.assertIn("orden", sent[0].lower())
+
+    def test_the_number_that_follows_is_looked_up_directly(self):
+        sent, calls, outputs = self._conversation([
+            "quiero información de mi pedido, quiero saber cuando llega",
+            "6344 el numero de pedido",
+        ])
+        self.assertEqual(calls["catalog"], 0)
+        self.assertEqual(calls["live"], 0)
+        self.assertEqual(calls["model"], 0)
+        self.assertIn("[OrderLive]", outputs[1])
+        self.assertIn("order=6344", outputs[1])
+
+    def test_an_unpacked_order_says_it_has_not_shipped_yet(self):
+        sent, _, _ = self._conversation([
+            "quiero información de mi pedido, quiero saber cuando llega",
+            "6344 el numero de pedido",
+        ])
+        reply = sent[-1].lower()
+        self.assertIn("#6344", sent[-1])
+        self.assertIn("preparación", reply)
+        self.assertIn("aún no salió", reply)
+        self.assertIn("24 a 72", reply)
+        self.assertIn("correo", reply)
+        for forbidden in ("ya salió", "listo para retirar", "podés pasar"):
+            self.assertNotIn(forbidden, reply)
+
+    def test_the_customer_is_never_asked_twice_for_the_same_number(self):
+        sent, _, _ = self._conversation([
+            "quiero información de mi pedido, quiero saber cuando llega",
+            "6344 el numero de pedido",
+        ])
+        self.assertNotIn("número de orden", sent[-1].lower())
+
+
+class WholesaleInformationIsAnsweredByKnowledgeTests(unittest.TestCase):
+    """Wholesale conditions are approved content, not live data.
+
+    "cuánto salen las pestañas SHOOW TOOLS mayoristas?" classified as a price
+    request and went to the store for a retail price -- answering a different
+    question, and risking a live failure on something the KB already holds.
+    """
+
+    INFORMATION = (
+        "quiero información de mayorista",
+        "qué marcas trabajan al por mayor?",
+        "qué productos tienen mayoristas?",
+        "cuánto salen las pestañas SHOOW TOOLS mayoristas?",
+        "hacen factura A?",
+    )
+
+    def test_information_requests_are_knowledge_only(self):
+        for message in self.INFORMATION:
+            with self.subTest(message=message):
+                verdict = _verdict(
+                    message, governing_topic="commercial_operations",
+                    knowledge_context="- [politicas / mayorista] Texto aprobado.")
+                self.assertEqual(verdict["data_required"], DATA_KNOWLEDGE_ONLY)
+                self.assertEqual(verdict["intent"], "policy_question")
+
+    def test_wanting_to_place_a_wholesale_order_still_goes_to_isa(self):
+        for message in ("quiero comprar 12 cajas de Foxy",
+                        "me llevo 12 cajas mayoristas"):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    _verdict(message, governing_topic="commercial_operations",
+                             knowledge_context="- [x] aprobado.")["intent"],
+                    "purchase_intent",
+                )
+
+    def test_a_retail_price_question_is_untouched(self):
+        for message, expected in (("cuánto sale Isabel I", "price_request"),
+                                  ("hay stock de Isabel I", "stock_request")):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    _verdict(message, governing_topic="commercial_operations",
+                             knowledge_context="- [x] aprobado.")["intent"],
+                    expected,
+                )
+
+    def test_the_approved_wholesale_facts_are_retrievable(self):
+        from knowledge_rag import load_knowledge_chunks, retrieve_local_knowledge
+
+        chunks = load_knowledge_chunks(BOT_DIR.parent / "knowledge")
+        context = retrieve_local_knowledge(
+            "cuánto salen las pestañas por mayor", chunks).context or ""
+        self.assertIn("18.000", context)
+        self.assertIn("12 cajas", context)

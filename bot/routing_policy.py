@@ -357,6 +357,21 @@ _UNAMBIGUOUS_PURCHASE_VERB_RE = re.compile(
 )
 
 
+# Wholesale conditions are approved content, not live data: the list, the
+# minimums and the prices come from Isa, and the store has nothing to add to
+# them. A wholesale question that only asks for information is therefore a
+# policy question even when it says "cuánto salen" -- asking Tiendanube for a
+# retail price would answer a different question.
+_WHOLESALE_QUESTION_RE = re.compile(r"\b(mayorista[s]?|por\s+mayor|reventa|mayoreo)\b")
+
+
+def _wholesale_information_request(normalized_message: str) -> bool:
+    """Asking ABOUT wholesale, as opposed to placing a wholesale order."""
+    if not _WHOLESALE_QUESTION_RE.search(normalized_message):
+        return False
+    return not _UNAMBIGUOUS_PURCHASE_VERB_RE.search(normalized_message)
+
+
 def _carries_commercial_object(normalized_message: str, product_lexicon: Any) -> bool:
     """Is this turn about merchandise or one specific order, rather than about
     how the business operates?"""
@@ -438,7 +453,12 @@ def classify_turn_data_requirement(
         governing_topic
         and (knowledge_context or "").strip()
         and product_lexicon_available
-        and not _carries_commercial_object(normalised, product_lexicon)
+        and (
+            not _carries_commercial_object(normalised, product_lexicon)
+            # A wholesale enquiry names products and prices and is still
+            # answered entirely by approved content.
+            or _wholesale_information_request(normalised)
+        )
     ):
         return verdict(
             INTENT_POLICY_QUESTION, DATA_KNOWLEDGE_ONLY, "governing_topic_answers_turn"
