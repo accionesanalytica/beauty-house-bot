@@ -1058,6 +1058,100 @@ def _log_turn_knowledge(
         print("ERROR registrando knowledge del turno (tipo: {}).".format(type(error).__name__))
 
 
+def commercial_copy_markers() -> tuple:
+    """Fragments of Fred's OWN customer-facing commercial copy.
+
+    Derived from the constants that generate it rather than written out again,
+    so a new handoff sentence is covered the day it is added. These are the
+    components a policy turn may not contain: the answer to "¿puedo pasar por
+    el showroom?" has no business carrying a sale.
+    """
+    markers = [
+        "Para cerrar la compra",
+        "Podés escribirle directamente acá",
+        _ASK_WHICH_PRODUCT,
+        _ISA_HANDOFF_DEFAULT_LEAD,
+    ]
+    markers.extend(_ISA_HANDOFF_LEADS.values())
+    number = isa_contact_number()
+    if number:
+        markers.append(number)
+    return tuple(marker for marker in markers if marker)
+
+
+def _carries_commercial_copy(text: str) -> bool:
+    return any(marker in (text or "") for marker in commercial_copy_markers())
+
+
+def log_output_stage(stage: str, text: str, **flags) -> None:
+    """One line per pipeline stage, flags only -- never the text itself.
+
+    Enough to say WHERE a fragment entered without putting a customer's
+    message, a phone number or approved prose into the logs.
+    """
+    try:
+        body = str(text or "")
+        extra = " ".join("{}={}".format(key, value) for key, value in sorted(flags.items()))
+        print("[FredOutputStage] stage={} chars={} purchase_handoff={} isa_contact={}{}".format(
+            stage,
+            len(body),
+            "yes" if "Para cerrar la compra" in body else "no",
+            "yes" if "Podés escribirle directamente acá" in body else "no",
+            " " + extra if extra else "",
+        ))
+    except Exception as error:  # noqa: BLE001
+        print("ERROR registrando etapa de salida (tipo: {}).".format(type(error).__name__))
+
+
+def history_without_commercial_handoffs(prior_history: list) -> list:
+    """The conversation minus Fred's own previous sales copy.
+
+    Context engineering, and the first line of defence: the demonstrated root
+    cause was stage=model already carrying the purchase handoff, because the
+    previous assistant turn WAS that handoff and reproducing the most recent
+    answer is a natural completion. The model cannot repeat what it was never
+    shown.
+
+    Only Fred's own commercial copy is removed, and only on a policy turn.
+    Customer messages are always kept -- a short follow-up ("¿y el sábado?")
+    needs them to make sense -- and so is every other thing Fred said. This
+    narrows the prompt; it does not erase the conversation.
+    """
+    kept = []
+    for item in prior_history or []:
+        if item.get("role") == "assistant" and _carries_commercial_copy(item.get("content")):
+            continue
+        kept.append(item)
+    return kept
+
+
+def _restrict_output_to_turn_decision(reply: str, *, policy_turn: bool) -> str:
+    """Only components this turn's decision authorises may reach the customer.
+
+    A policy turn's answer is the approved policy and nothing else. Purchase
+    handoffs, Isa's contact and the "which product?" prompt are components of
+    a commercial turn, and no route into this text -- model, routing layer,
+    obligations, or a reproduction of an earlier answer -- makes them belong
+    here.
+
+    This replaces trusting a same-text check. The previous guard required the
+    reply to CONTAIN the previous message exactly; the model reproduced it two
+    characters apart ("¡Genial!" -> "Genial!", one comma dropped) and the
+    guard saw nothing. Provenance is unknowable from a string, so the rule is
+    about what the component IS, not about where it came from.
+
+    Whole paragraphs are dropped, never edited: rewriting a sentence would
+    make Fred say something nobody approved.
+    """
+    if not policy_turn:
+        return reply
+    paragraphs = [part for part in str(reply or "").split("\n\n") if part.strip()]
+    kept = [part for part in paragraphs if not _carries_commercial_copy(part)]
+    if len(kept) == len(paragraphs):
+        return reply
+    return "\n\n".join(kept).strip()
+
+
 def _previous_assistant_message(prior_history: list) -> str:
     return next(
         (
@@ -1109,7 +1203,6 @@ def _log_turn_output(
     """
     try:
         text = str(reply or "")
-        number = isa_contact_number()
         sources = "+".join(part for part in (
             "model" if model_used else "deterministic",
             "knowledge_obligations" if text.count("\n\n") else "",
@@ -1117,7 +1210,7 @@ def _log_turn_output(
         print("[FredOutput] sources={} chars={} handoff_appended={} recycled_stripped={}".format(
             sources or "none",
             len(text),
-            "yes" if (number and number in text) else "no",
+            "yes" if _carries_commercial_copy(text) else "no",
             "yes" if recycled_stripped else "no",
         ))
     except Exception as error:  # noqa: BLE001
@@ -6353,13 +6446,26 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             else:
                 knowledge_answer_used = True
                 with _timed(turn_timings, "llm_ms"):
+                    # First defence, before the model writes anything: a
+                    # policy turn is not shown Fred's own previous sales copy.
+                    # The output filter downstream stays as the second.
+                    model_history = prior_history
+                    if policy_bypass:
+                        model_history = history_without_commercial_handoffs(prior_history)
+                        if len(model_history) != len(prior_history):
+                            print(
+                                "[FredContext] policy turn: {} mensajes de venta "
+                                "previos fuera del prompt.".format(
+                                    len(prior_history) - len(model_history),
+                                )
+                            )
                     result = answer(
                         message_text,
-                        history=prior_history,
+                        history=model_history,
                         rag_context=rag_context,
                         greeting_required=not any(
                             message.get("role") == "assistant"
-                            for message in prior_history
+                            for message in model_history
                         ),
                         verbose=False,
                     )
@@ -6372,6 +6478,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 )
             )
             reply = (result.get("reply") or "").strip()
+            log_output_stage("model", reply)
             if not reply:
                 raise RuntimeError("El agente no devolvió texto.")
 
@@ -6439,6 +6546,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 routing,
                 dynamic_requirements=dynamic_check_outcomes,
             )
+            log_output_stage("routing_alignment", reply, handoff="yes" if handoff else "no")
             # Obligations are a final-output invariant. Routing may replace
             # model wording, so enforce the same approved disclosures/links
             # after that alignment to ensure none are accidentally lost.
@@ -6448,6 +6556,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                     knowledge_bundle.obligations,
                     verified_dynamic_links=extract_https_urls(catalog_context),
                 )
+                log_output_stage("knowledge_obligations", reply)
             if handoff:
                 sale_candidate = None
             # Un fallo de identificación recibe una sola repregunta. Si la
@@ -6529,6 +6638,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # already final. Deterministic sales-intake copy is left untouched.
             if knowledge_answer_used and not sale_candidate:
                 final_routing = {"decision": decision, "handoff": handoff}
+                log_output_stage("pre_contract", reply)
                 reply = apply_conversation_contract(
                     reply,
                     history=prior_history,
@@ -6574,8 +6684,21 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             # decision. The model writes the final text and can reproduce the
             # previous answer verbatim when it is sitting in its context --
             # a showroom question came back carrying the previous turn's sale.
+            log_output_stage("pre_recycle_guard", reply)
             reply_before_guard = reply
+            # The turn's own decision decides which components are allowed in.
+            policy_turn = routing_requirement.get("intent") == INTENT_POLICY_QUESTION
+            reply = _restrict_output_to_turn_decision(reply, policy_turn=policy_turn)
+            log_output_stage(
+                "decision_filter", reply,
+                policy_turn="yes" if policy_turn else "no",
+                dropped="yes" if reply != reply_before_guard else "no",
+            )
             reply = _reply_belongs_to_this_turn(reply, prior_history)
+            log_output_stage(
+                "recycle_guard", reply,
+                stripped="yes" if reply != reply_before_guard else "no",
+            )
             if not reply:
                 # The whole answer was last turn's answer again, so this turn
                 # produced nothing of its own. Saying so is better than
