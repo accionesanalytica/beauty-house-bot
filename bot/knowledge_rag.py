@@ -192,10 +192,19 @@ def retrieve_with_recent_context(
     message: str,
     history: Sequence[Mapping[str, Any]],
     retriever: Any,
+    allow_history_fallback: bool = True,
 ) -> tuple[KnowledgeRetrieval, str, bool]:
-    """Try the current turn first, then one bounded conversational fallback."""
+    """Try the current turn first, then one bounded conversational fallback.
+
+    The fallback exists for elliptical turns ("¿y en chocolate?"), which
+    cannot be understood alone. It must not run for a message that decides its
+    own topic: widening the query then lets an old conversation supply a topic
+    the customer did not raise, which is how a plain greeting came back with
+    the showroom policy from several turns earlier. The caller decides, since
+    only it knows how the current message reads.
+    """
     retrieval = retriever(message)
-    if retrieval.governing_topic or not history:
+    if retrieval.governing_topic or not history or not allow_history_fallback:
         return retrieval, message, False
     fallback_query = recent_conversation_retrieval_query(message, history)
     if fallback_query == message:

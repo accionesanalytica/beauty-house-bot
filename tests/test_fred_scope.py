@@ -350,7 +350,7 @@ class PolicyBypassSkipsCatalogAndStoreTests(unittest.TestCase):
             "embed_text": lambda *a, **k: [0.0] * 768,
             "search_similar_products": catalog,
             "_live_candidate_context": live,
-            "retrieve_with_recent_context": lambda m, h, fn: (Bundle(), m, None),
+            "retrieve_with_recent_context": lambda m, h, fn, **_: (Bundle(), m, None),
             "execute_dynamic_requirements": lambda *a, **k: (),
             "get_order_status": lambda n: {
                 "found": True, "order_number": n, "payment_status": "paid",
@@ -655,7 +655,7 @@ class TheCurrentMessageDecidesTests(unittest.TestCase):
                 calls.__setitem__("catalog", calls["catalog"] + 1) or ""),
             "_live_candidate_context": lambda *a, **k: (
                 calls.__setitem__("live", calls["live"] + 1) or ""),
-            "retrieve_with_recent_context": lambda m, h, fn: (Bundle(), m, None),
+            "retrieve_with_recent_context": lambda m, h, fn, **_: (Bundle(), m, None),
             "execute_dynamic_requirements": lambda *a, **k: (),
             "answer": lambda t, **k: {
                 "reply": "El showroom atiende con reserva.", "tool_calls": [], "usage": {},
@@ -751,7 +751,7 @@ class TheVisibleAnswerBelongsToThisTurnTests(unittest.TestCase):
             "embed_text": lambda *a, **k: [0.0] * 768,
             "search_similar_products": lambda *a, **k: "",
             "_live_candidate_context": lambda *a, **k: "",
-            "retrieve_with_recent_context": lambda m, h, fn: (bundle, m, None),
+            "retrieve_with_recent_context": lambda m, h, fn, **_: (bundle, m, None),
             "execute_dynamic_requirements": lambda *a, **k: (),
             "answer": answer,
         }
@@ -1123,7 +1123,7 @@ class ObligationsAreASafetyNetNotABlockTests(TheVisibleAnswerBelongsToThisTurnTe
             "embed_text": lambda *a, **k: [0.0] * 768,
             "search_similar_products": lambda *a, **k: "",
             "_live_candidate_context": lambda *a, **k: "",
-            "retrieve_with_recent_context": lambda m, h, fn: (bundle, m, None),
+            "retrieve_with_recent_context": lambda m, h, fn, **_: (bundle, m, None),
             "execute_dynamic_requirements": lambda *a, **k: (),
             "answer": lambda t, **k: {
                 "reply": model_reply, "tool_calls": [], "usage": {},
@@ -1320,7 +1320,7 @@ class KnowledgeIsTheOnlyWriterOnAPolicyTurnTests(unittest.TestCase):
                 store_calls.__setitem__("catalog", store_calls["catalog"] + 1) or ""),
             "_live_candidate_context": lambda *a, **k: (
                 store_calls.__setitem__("live", store_calls["live"] + 1) or ""),
-            "retrieve_with_recent_context": lambda m, h, fn: (bundle, m, None),
+            "retrieve_with_recent_context": lambda m, h, fn, **_: (bundle, m, None),
             "execute_dynamic_requirements": lambda *a, **k: (),
             "get_order_status": lambda n: {
                 "found": True, "order_number": n, "payment_status": "paid",
@@ -1515,7 +1515,7 @@ class AnOrderTurnNeverSearchesTheCatalogTests(unittest.TestCase):
                 calls.__setitem__("catalog", calls["catalog"] + 1) or ""),
             "_live_candidate_context": lambda *a, **k: (
                 calls.__setitem__("live", calls["live"] + 1) or ""),
-            "retrieve_with_recent_context": lambda m, h, fn: (bundle, m, None),
+            "retrieve_with_recent_context": lambda m, h, fn, **_: (bundle, m, None),
             "execute_dynamic_requirements": lambda *a, **k: (),
             "get_order_status": lambda n: dict(self.UNPACKED, order_number=n),
             "answer": lambda t, **k: calls.__setitem__("model", calls["model"] + 1) or {

@@ -91,6 +91,7 @@ from routing_policy import (
     classify_turn_data_requirement,
     legacy_special_sale_context,
     lifting_clarification_reply,
+    message_is_self_sufficient,
     resolve_harness_routing,
     visible_routing_contract,
     _order_status_needs_isa,
@@ -3582,13 +3583,41 @@ def _looks_like_an_interruption_question(text: str) -> bool:
     return bool(re.match(r"^(que|como|cuando|cuanto|cual|porque|para que|antes)\b", normalized))
 
 
+# A greeting, optionally with the pleasantry that normally follows it, and
+# optionally addressed to Fred. "hola que tal" is as self-contained as "hola",
+# and reached retrieval only because the pattern stopped at the first word.
+_GREETING_RE = re.compile(
+    r"(?:hola+|buenas|buen dia|buenas tardes|buenas noches|hello|hey)"
+    r"(?:\s+(?:fred|isa))?"
+    r"(?:\s*[,!]?\s*(?:que tal|que tal\?|como estas|como andas|como va|"
+    r"todo bien|buen dia|buenas))?"
+    r"[!?. ]*"
+)
+# Acknowledgements that close a turn rather than open one.
+_ACKNOWLEDGEMENT_RE = re.compile(
+    r"(?:gracias|muchas gracias|genial gracias|perfecto gracias|ok gracias|"
+    r"mil gracias|te agradezco)[!. ]*"
+)
+# Bare fillers: they carry no question at all, so there is nothing to look up.
+_FILLER_RE = re.compile(r"(?:ok|oka|okey|dale|listo|perfecto|genial|barbaro|buenisimo)[!. ]*")
+
+
 def _simple_customer_reply(text: str) -> str:
-    """Resolve social-only messages locally; no model or catalog lookup needed."""
+    """Resolve social-only messages locally; no model or catalog lookup needed.
+
+    These messages are self-contained: they mean the same thing whatever came
+    before them. Letting one reach retrieval is how "hola que tal" was
+    answered with the showroom policy from three turns earlier -- the current
+    message found no topic of its own, so the conversational fallback went
+    looking through the history and found one.
+    """
     normalized = _normalized_text(text).strip()
-    if re.fullmatch(r"(?:hola|holaa+|buenas|buen dia|buenas tardes|buenas noches|hello)", normalized):
+    if _GREETING_RE.fullmatch(normalized):
         return "¡Hola! 😊 ¿En qué te puedo ayudar?"
-    if re.fullmatch(r"(?:gracias|muchas gracias|genial gracias|perfecto gracias|ok gracias)", normalized):
+    if _ACKNOWLEDGEMENT_RE.fullmatch(normalized):
         return "¡De nada! 😊 Si te surge otra duda, escribime por acá."
+    if _FILLER_RE.fullmatch(normalized):
+        return "¡Dale! 😊 Si necesitás algo más, contame."
     return ""
 
 
@@ -6352,7 +6381,15 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
 
                     with _timed(turn_timings, "knowledge_ms"):
                         knowledge_bundle, knowledge_query, _ = retrieve_with_recent_context(
-                            message_text, prior_history, retrieve_knowledge
+                            message_text,
+                            prior_history,
+                            retrieve_knowledge,
+                            # A message that states its own subject decides
+                            # its own topic. Only a turn that cannot be read
+                            # alone ("quiero 4") may borrow one from history.
+                            allow_history_fallback=not message_is_self_sufficient(
+                                message_text
+                            ),
                         )
                     # Grounding observability: enough to tell from the logs
                     # whether retrieval found the approved answer, without

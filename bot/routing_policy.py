@@ -372,6 +372,73 @@ def _wholesale_information_request(normalized_message: str) -> bool:
     return not _UNAMBIGUOUS_PURCHASE_VERB_RE.search(normalized_message)
 
 
+# --- can this message be read on its own? ------------------------------
+#
+# Retrieval may widen its query into the recent conversation, which is what
+# makes "¿y en chocolate?" answerable. Widening is not free: a turn with no
+# topic of its own then inherits whatever the last turns were about, which is
+# how a plain "hola que tal" came back with the showroom policy from earlier
+# in the conversation.
+#
+# So the question is not "does this message have content" but "does it depend
+# on the previous turn to mean anything". Two very different messages are both
+# self-sufficient: one that names its own subject ("¿hacen envíos?") and one
+# that is complete social courtesy ("hola", "gracias") -- a greeting means the
+# greeting, never the topic it happens to follow.
+
+# Complete on their own and carrying no subject: greetings, courtesy, fillers.
+_SOCIAL_WORDS = frozenset({
+    "hola", "holaa", "holaaa", "buenas", "buen", "buenos", "dia", "dias",
+    "tarde", "tardes", "noche", "noches", "hello", "hey", "fred", "isa",
+    "que", "tal", "como", "estas", "andas", "va", "todo", "bien", "gracias",
+    "porfa", "por", "favor", "please", "dale", "listo", "perfecto", "genial",
+    "barbaro", "buenisimo", "ok", "oka", "okey", "saludos", "abrazo",
+})
+# Meaningless without the previous turn: pointers, bare quantities, and the
+# verbs whose object was named earlier ("quiero 4").
+_CONTEXT_DEPENDENT_WORDS = frozenset({
+    "lo", "la", "los", "las", "le", "les", "eso", "esa", "ese", "esas",
+    "esos", "esta", "este", "estos", "mismo", "misma", "mismos", "mismas",
+    "uno", "una", "unos", "unas", "ambos", "ambas", "otro", "otra", "otros",
+    "otras", "vez", "quiero", "quisiera", "necesito", "dame", "mandame",
+    "llevo", "llevar", "llevaria", "pido", "unidad", "unidades", "par",
+    "pares", "pack", "packs", "cantidad", "cada", "si", "no", "mejor",
+    "despues", "igual", "mas", "menos", "aquel", "aquella",
+})
+# Openers that explicitly continue the previous turn.
+_CONTINUATION_MARKER_RE = re.compile(
+    r"^(?:y|e|entonces|tambien|ademas|otra\s+cosa|y\s+si)\b"
+)
+
+
+def message_is_self_sufficient(message_text: str) -> bool:
+    """Does this turn decide its own meaning, without the conversation?
+
+    True for a message that names its own subject AND for one that is purely
+    social. False only for a genuinely elliptical turn -- "quiero 4", "y el
+    precio?", "esas mismas" -- which is the only case where the history may
+    legitimately complete the query.
+    """
+    normalised = _normalise(message_text)
+    if not normalised:
+        return True
+    if _CONTINUATION_MARKER_RE.match(normalised):
+        return False
+    words = normalised.split()
+    if any(
+        word not in _SOCIAL_WORDS
+        and word not in _CONTEXT_DEPENDENT_WORDS
+        and not word.isdigit()
+        for word in words
+    ):
+        return True  # names something of its own
+    # Everything left is social or dependent. It leans on the previous turn
+    # only if something in it actually points backwards.
+    return not any(
+        word in _CONTEXT_DEPENDENT_WORDS or word.isdigit() for word in words
+    )
+
+
 def _carries_commercial_object(normalized_message: str, product_lexicon: Any) -> bool:
     """Is this turn about merchandise or one specific order, rather than about
     how the business operates?"""
