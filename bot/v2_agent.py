@@ -87,6 +87,18 @@ def _tool_call_record(call: Dict[str, Any], arguments: Dict[str, Any]) -> Dict[s
     return {"name": call.get("function", {}).get("name", ""), "arguments": arguments}
 
 
+def _decision_from_calls(calls: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not calls:
+        return {"action": "reply", "source": "model"}
+    last = calls[-1]
+    if last["name"] == "handoff_to_isa":
+        return {
+            "action": "handoff_to_isa",
+            "reason": last["arguments"].get("reason", "unable_to_verify"),
+        }
+    return {"action": "reply", "source": last["name"]}
+
+
 class FredV2Agent:
     def __init__(
         self,
@@ -132,6 +144,7 @@ class FredV2Agent:
                     "latency_ms": round((time.monotonic() - started) * 1000, 2),
                     "errors": errors,
                     "usage": usage,
+                    "decision": _decision_from_calls(calls),
                 }
 
             messages.append({
@@ -176,6 +189,7 @@ class FredV2Agent:
             "latency_ms": round((time.monotonic() - started) * 1000, 2),
             "errors": errors + ["model_call_limit"],
             "usage": usage,
+            "decision": _decision_from_calls(calls),
         }
 
 
