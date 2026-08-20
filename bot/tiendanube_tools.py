@@ -283,6 +283,7 @@ def get_product_availability(product_id: int) -> Dict[str, Any]:
             "variant": _describe_variant(variant),
             "status": status,
             "quantity": stock,
+            "price": variant.get("price"),
         })
 
     return {

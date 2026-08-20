@@ -1,0 +1,437 @@
+{
+  "generated_at": "2026-08-20T22:33:43Z",
+  "live_model": true,
+  "fixture_data": true,
+  "cases": [
+    {
+      "id": "real-prod-01",
+      "category": "real_production",
+      "message": "ok gracias!",
+      "history": [
+        {
+          "role": "user",
+          "content": "Si es posible puedo pasar por el showroom?"
+        },
+        {
+          "role": "assistant",
+          "content": "Sí, podés coordinar una visita al showroom."
+        }
+      ],
+      "expected": {
+        "tools": [],
+        "strict_tools": true,
+        "handoff": false,
+        "contains_any": [
+          "de nada",
+          "cuando quieras",
+          "gracias",
+          "escribime"
+        ]
+      },
+      "v1": {
+        "response": "¡De nada! Cualquier cosa que necesites, acá estoy. ¡Que tengas lindo día! 😊",
+        "tools": [],
+        "tool_calls": [],
+        "tool_results": [],
+        "llm_calls": 1,
+        "tokens": {
+          "prompt_tokens": 4918,
+          "completion_tokens": 27,
+          "total_tokens": 4945
+        },
+        "latency_ms": 1592.51,
+        "error": [],
+        "handoff": false,
+        "live_data": [],
+        "decision": {
+          "action": "reply"
+        },
+        "status": "PASS",
+        "causes": [],
+        "hallucination_flags": []
+      },
+      "v2": {
+        "response": "¡De nada! Cualquier cosa que necesites, acá estoy. 😊",
+        "tools": [],
+        "tool_calls": [],
+        "tool_results": [],
+        "llm_calls": 1,
+        "tokens": {
+          "prompt_tokens": 1517,
+          "completion_tokens": 19,
+          "total_tokens": 1536
+        },
+        "latency_ms": 1136.91,
+        "error": [],
+        "handoff": false,
+        "live_data": [],
+        "decision": {
+          "action": "reply",
+          "source": "model"
+        },
+        "status": "PASS",
+        "causes": [],
+        "hallucination_flags": []
+      }
+    },
+    {
+      "id": "real-prod-02",
+      "category": "real_production",
+      "message": "con que mas me puedes ayudar?",
+      "history": [],
+      "expected": {
+        "tools": [],
+        "strict_tools": true,
+        "handoff": false,
+        "max_llm_calls": 1,
+        "contains_any": [
+          "showroom",
+          "pedido",
+          "producto",
+          "mayorista",
+          "Isa"
+        ]
+      },
+      "v1": {
+        "response": "¡Hola! 👋 Soy Fred, el asistente de Beauty House. Te puedo ayudar con consultas sobre nuestros productos de pestañas, precios, stock, envíos y pedidos. También con recomendaciones según lo que estés buscando.\n\n¿En qué te doy una mano?",
+        "tools": [
+          "search_knowledge"
+        ],
+        "tool_calls": [
+          {
+            "name": "search_knowledge",
+            "arguments": {
+              "query": "con que mas me puedes ayudar?"
+            }
+          }
+        ],
+        "tool_results": [
+          {
+            "name": "search_knowledge",
+            "result": {
+              "context": "Conocimiento aprobado de Beauty House:\n- El showroom y los retiros se coordinan previamente; los horarios se confirman al coordinar.\n- Puede retirar un tercero o un cadete/moto con coordinación y datos de autorización.\n- Beauty House trabaja ventas mayoristas. La lista y los precios aprobados de SHOOW TOOLS se confirman con Isa.\n- Para Factura A mayorista se debe consultar a Isa con los datos fiscales."
+            }
+          }
+        ],
+        "llm_calls": 1,
+        "tokens": {
+          "prompt_tokens": 5058,
+          "completion_tokens": 64,
+          "total_tokens": 5122
+        },
+        "latency_ms": 1855.06,
+        "error": [],
+        "handoff": false,
+        "live_data": [],
+        "decision": {
+          "action": "reply"
+        },
+        "status": "FAIL",
+        "causes": [
+          "wrong_tool"
+        ],
+        "hallucination_flags": []
+      },
+      "v2": {
+        "response": "¡Hola! 😊 Soy Fred, el asistente de Beauty House. Puedo ayudarte con varias cosas:\n\n- **Consultar el estado de tu pedido** (con el número de pedido)\n- **Verificar si un producto está disponible** y su precio\n- **Consultar políticas** de showroom, retiros, mayorista, etc.\n\n¿En qué te ayudo hoy?",
+        "tools": [],
+        "tool_calls": [],
+        "tool_results": [],
+        "llm_calls": 1,
+        "tokens": {
+          "prompt_tokens": 1493,
+          "completion_tokens": 83,
+          "total_tokens": 1576
+        },
+        "latency_ms": 1941.32,
+        "error": [],
+        "handoff": false,
+        "live_data": [],
+        "decision": {
+          "action": "reply",
+          "source": "model"
+        },
+        "status": "FAIL",
+        "causes": [
+          "hallucination"
+        ],
+        "hallucination_flags": [
+          "unsupported_stock_claim"
+        ]
+      }
+    },
+    {
+      "id": "real-prod-03",
+      "category": "real_production",
+      "message": "cancelar pedido",
+      "history": [],
+      "expected": {
+        "tools": [
+          "handoff_to_isa"
+        ],
+        "strict_tools": true,
+        "forbid": [
+          "search_knowledge",
+          "get_order",
+          "get_product"
+        ],
+        "handoff": true,
+        "handoff_reason": "human_request",
+        "contains_any": [
+          "Isa",
+          "ayud",
+          "cancel"
+        ]
+      },
+      "v1": {
+        "response": "¡Hola! ¿Cómo va?\n\nPara ayudarte con la cancelación, necesito el número de pedido. ¿Me lo pasás así lo reviso?",
+        "tools": [
+          "search_knowledge"
+        ],
+        "tool_calls": [
+          {
+            "name": "search_knowledge",
+            "arguments": {
+              "query": "cancelar pedido"
+            }
+          }
+        ],
+        "tool_results": [
+          {
+            "name": "search_knowledge",
+            "result": {
+              "context": "Conocimiento aprobado de Beauty House:\n- El showroom y los retiros se coordinan previamente; los horarios se confirman al coordinar.\n- Puede retirar un tercero o un cadete/moto con coordinación y datos de autorización.\n- Beauty House trabaja ventas mayoristas. La lista y los precios aprobados de SHOOW TOOLS se confirman con Isa.\n- Para Factura A mayorista se debe consultar a Isa con los datos fiscales."
+            }
+          }
+        ],
+        "llm_calls": 1,
+        "tokens": {
+          "prompt_tokens": 5055,
+          "completion_tokens": 34,
+          "total_tokens": 5089
+        },
+        "latency_ms": 1690.24,
+        "error": [],
+        "handoff": false,
+        "live_data": [],
+        "decision": {
+          "action": "reply"
+        },
+        "status": "FAIL",
+        "causes": [
+          "wrong_tool",
+          "wrong_handoff"
+        ],
+        "hallucination_flags": []
+      },
+      "v2": {
+        "response": "¡Hola! Claro, te ayudo con eso. Para cancelar tu pedido necesito el número del mismo. ¿Me lo pasás? 😊",
+        "tools": [],
+        "tool_calls": [],
+        "tool_results": [],
+        "llm_calls": 1,
+        "tokens": {
+          "prompt_tokens": 1490,
+          "completion_tokens": 35,
+          "total_tokens": 1525
+        },
+        "latency_ms": 1211.95,
+        "error": [],
+        "handoff": false,
+        "live_data": [],
+        "decision": {
+          "action": "reply",
+          "source": "model"
+        },
+        "status": "FAIL",
+        "causes": [
+          "wrong_tool",
+          "wrong_handoff"
+        ],
+        "hallucination_flags": []
+      }
+    },
+    {
+      "id": "real-prod-04",
+      "category": "real_production",
+      "message": "Si es posible puedo pasar por el showroom\npodria hablar con isa directamente?",
+      "history": [],
+      "expected": {
+        "tools": [
+          "handoff_to_isa"
+        ],
+        "strict_tools": true,
+        "forbid": [
+          "search_knowledge",
+          "get_order",
+          "get_product"
+        ],
+        "handoff": true,
+        "handoff_reason": "human_request",
+        "contains_any": [
+          "Isa"
+        ]
+      },
+      "v1": {
+        "response": "¡Hola! Listo, ya quedó avisado. Isa te va a escribir para coordinar el día y horario del showroom. Cualquier otra cosa, acá estoy 😊",
+        "tools": [
+          "search_knowledge",
+          "handoff_to_isa",
+          "set_turn_decision"
+        ],
+        "tool_calls": [
+          {
+            "name": "search_knowledge",
+            "arguments": {
+              "query": "Si es posible puedo pasar por el showroom\npodria hablar con isa directamente?"
+            }
+          },
+          {
+            "name": "handoff_to_isa",
+            "arguments": {
+              "reason": "human_request",
+              "summary": "La clienta quiere pasar por el showroom y hablar directamente con Isa para coordinar."
+            }
+          },
+          {
+            "name": "set_turn_decision",
+            "arguments": {
+              "action": "handoff_to_isa",
+              "reason": "human_request",
+              "summary": "La clienta pide hablar con Isa para coordinar visita al showroom.",
+              "response_mode": "general_response",
+              "match_type": "",
+              "requested_product": "",
+              "matched_product": "",
+              "requested_product_type": "",
+              "matched_product_type": "",
+              "required_checks": []
+            }
+          }
+        ],
+        "tool_results": [
+          {
+            "name": "search_knowledge",
+            "result": {
+              "context": "Conocimiento aprobado de Beauty House:\n- El showroom y los retiros se coordinan previamente; los horarios se confirman al coordinar.\n- Puede retirar un tercero o un cadete/moto con coordinación y datos de autorización.\n- Beauty House trabaja ventas mayoristas. La lista y los precios aprobados de SHOOW TOOLS se confirman con Isa.\n- Para Factura A mayorista se debe consultar a Isa con los datos fiscales."
+            }
+          },
+          {
+            "name": "handoff_to_isa",
+            "result": {
+              "handoff_requested": true,
+              "reason": "human_request",
+              "mode": "live_baseline"
+            }
+          },
+          {
+            "name": "set_turn_decision",
+            "result": {
+              "recorded": true
+            }
+          }
+        ],
+        "llm_calls": 2,
+        "tokens": {
+          "prompt_tokens": 10404,
+          "completion_tokens": 254,
+          "total_tokens": 10658
+        },
+        "latency_ms": 3766.83,
+        "error": [],
+        "handoff": true,
+        "live_data": [],
+        "decision": {
+          "action": "handoff_to_isa"
+        },
+        "status": "FAIL",
+        "causes": [
+          "wrong_tool"
+        ],
+        "hallucination_flags": []
+      },
+      "v2": {
+        "response": "¡Listo! Ya te dejé anotada con Isa para coordinar la visita al showroom. Ella te va a estar escribiendo en breve para acordar día y horario. 😊\n\n¿Necesitás algo más mientras tanto?",
+        "tools": [
+          "handoff_to_isa"
+        ],
+        "tool_calls": [
+          {
+            "name": "handoff_to_isa",
+            "arguments": {
+              "reason": "human_request",
+              "summary": "La clienta quiere pasar por el showroom y hablar directamente con Isa para coordinar la visita."
+            }
+          }
+        ],
+        "tool_results": [
+          {
+            "name": "handoff_to_isa",
+            "result": {
+              "accepted": true,
+              "status": "simulated_success",
+              "would_handoff": true,
+              "side_effect_executed": false,
+              "reason": "human_request",
+              "summary": "La clienta quiere pasar por el showroom y hablar directamente con Isa para coordinar la visita."
+            }
+          }
+        ],
+        "llm_calls": 2,
+        "tokens": {
+          "prompt_tokens": 3191,
+          "completion_tokens": 160,
+          "total_tokens": 3351
+        },
+        "latency_ms": 3244.85,
+        "error": [],
+        "handoff": true,
+        "live_data": [],
+        "decision": {
+          "action": "handoff_to_isa",
+          "reason": "human_request"
+        },
+        "status": "PASS",
+        "causes": [],
+        "hallucination_flags": []
+      }
+    }
+  ],
+  "summary": {
+    "v1": {
+      "pass": 1,
+      "review": 0,
+      "fail": 3,
+      "pass_rate": 0.25,
+      "latency_p50_ms": 1690.24,
+      "latency_p95_ms": 3766.83,
+      "tool_calls_avg": 1.25,
+      "llm_calls_avg": 1.25,
+      "tokens_avg": 6453.5,
+      "causes": {
+        "wrong_tool": 3,
+        "wrong_handoff": 1
+      }
+    },
+    "v2": {
+      "pass": 2,
+      "review": 0,
+      "fail": 2,
+      "pass_rate": 0.5,
+      "latency_p50_ms": 1211.95,
+      "latency_p95_ms": 3244.85,
+      "tool_calls_avg": 0.25,
+      "llm_calls_avg": 1.25,
+      "tokens_avg": 1997,
+      "causes": {
+        "hallucination": 1,
+        "wrong_tool": 1,
+        "wrong_handoff": 1
+      }
+    }
+  },
+  "recommendation": {
+    "decision": "NO-GO",
+    "reason": "V2 conserva fallos bloqueantes o un handoff de evaluación ejecutó side effects; no ejecutar shadow real todavía."
+  }
+}

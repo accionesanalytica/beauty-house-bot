@@ -213,6 +213,9 @@ FRED_BETA_ALLOWED_PHONES = {
 }
 ISA_WHATSAPP_NUMBER = os.getenv("ISA_WHATSAPP_NUMBER", "")
 SALES_INTAKE_ENABLED = os.getenv("SALES_INTAKE_ENABLED", "false").lower() == "true"
+# Observer-only v2. False is intentionally the default; enabling it never
+# changes which agent owns the reply or any operational conversation state.
+FRED_V2_SHADOW_ENABLED = os.getenv("FRED_V2_SHADOW_ENABLED", "false").lower() == "true"
 # The two-button envío/retiro screen is a shortcut, not a requirement: Fred
 # understands "envío"/"retiro" written naturally, and the checkout never
 # depends on the buttons being pressed. Off by default so the flow reads as a
@@ -910,6 +913,7 @@ def send_customer_action_buttons(phone_number: str, text: str, buttons: list) ->
             == normalize_whatsapp_recipient(delivery_context.customer_phone)
         ):
             delivery_context.delivered = True
+        _observe_v2_shadow_delivery(phone_number, text)
         return True
     except Exception as error:  # noqa: BLE001
         print("ERROR enviando botones de acción: {}".format(type(error).__name__))
@@ -971,6 +975,40 @@ def _log_turn_timing(
         print("[FredTiming] {}".format(fields))
     except Exception as error:  # noqa: BLE001
         print("ERROR registrando timing del turno (tipo: {}).".format(type(error).__name__))
+
+
+def _clear_v2_shadow_turn() -> None:
+    if not FRED_V2_SHADOW_ENABLED:
+        return
+    try:
+        from v2_shadow import clear_shadow_turn
+        clear_shadow_turn()
+    except Exception as error:  # noqa: BLE001
+        print("[FredShadow] clear_error={} side_effects=false".format(type(error).__name__))
+
+
+def _begin_v2_shadow_turn(**kwargs) -> bool:
+    """Lazy import keeps disabled shadow at zero v2 execution/imports per turn."""
+    if not FRED_V2_SHADOW_ENABLED:
+        return False
+    try:
+        from v2_shadow import begin_shadow_turn
+        return begin_shadow_turn(**kwargs)
+    except Exception as error:  # noqa: BLE001
+        print("[FredShadow] begin_error={} side_effects=false".format(type(error).__name__))
+        return False
+
+
+def _observe_v2_shadow_delivery(phone_number: str, response: str) -> bool:
+    """Non-blocking and fail-open: sender success never depends on shadow."""
+    if not FRED_V2_SHADOW_ENABLED:
+        return False
+    try:
+        from v2_shadow import observe_v1_delivery
+        return observe_v1_delivery(phone_number, response)
+    except Exception as error:  # noqa: BLE001
+        print("[FredShadow] observe_error={} side_effects=false".format(type(error).__name__))
+        return False
 
 
 # The words that identify a product, versioned with the code (see
@@ -2062,6 +2100,7 @@ def send_whatsapp_text(phone_number: str, text: str) -> bool:
             == normalize_whatsapp_recipient(delivery_context.customer_phone)
         ):
             delivery_context.delivered = True
+        _observe_v2_shadow_delivery(phone_number, text)
         return True
     except Exception as error:  # noqa: BLE001
         print(f"ERROR enviando texto a WhatsApp: {type(error).__name__}")
@@ -2114,6 +2153,9 @@ def send_customer_fulfillment_buttons(phone_number: str) -> bool:
             == normalize_whatsapp_recipient(delivery_context.customer_phone)
         ):
             delivery_context.delivered = True
+        _observe_v2_shadow_delivery(
+            phone_number, "¿Cómo preferís recibir tu compra? [Envío / Retiro]",
+        )
         return True
     except Exception as error:  # noqa: BLE001
         print(f"ERROR enviando botones de entrega: {type(error).__name__}")
@@ -5911,6 +5953,10 @@ async def webhook_post(request: Request):
 async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = None):
     """Existing Fred turn processor, reusable by the durable worker."""
 
+    # A durable worker task can process many claims over its lifetime. Clear
+    # any abandoned observer envelope before parsing a new webhook turn.
+    _clear_v2_shadow_turn()
+
     # One monotonic clock for the whole turn, started where the turn starts.
     turn_started = time.monotonic()
     turn_latency = new_turn_latency()
@@ -6096,6 +6142,18 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
                 _relay_customer_message_to_isa(conversation_id, customer_phone, message_text)
             print(f"[Conversacion] El bot no responde en estado {state}.")
             return JSONResponse(content={"ok": True})
+
+        # Capture immutable inputs now, but do not start v2 yet. The successful
+        # customer sender triggers the bounded background execution only after
+        # v1 has delivered its response. No phone or raw response is printed.
+        _begin_v2_shadow_turn(
+            conversation_id=conversation_id,
+            generation=(persisted_claim or {}).get("generation", 0),
+            customer_phone=customer_phone,
+            source_message_id=wa_message_id or "",
+            message=message_text,
+            history=prior_history,
+        )
 
         # Fred Core: the persisted mode is the ONLY thing consulted to
         # decide whether this turn executes a deterministic action or goes
