@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict
 MAX_QUERY_CHARS = 160
 MAX_SUMMARY_CHARS = 320
 ALLOWED_HANDOFF_REASONS = {
+    "custom_order",
     "human_request",
     "purchase_intent",
     "product_advice",
@@ -51,6 +52,7 @@ def _default_knowledge_search(query: str) -> Dict[str, Any]:
         "governing_topic": retrieval.governing_topic,
         "retrieved_topics": list(retrieval.retrieved_topics),
         "obligations": asdict(retrieval.obligations),
+        "handoff_required": bool(retrieval.obligations.escalation_required),
         "dynamic_requirements": [asdict(item) for item in retrieval.dynamic_requirements],
     }
 
@@ -59,6 +61,30 @@ def _default_get_order(order_number: str) -> Dict[str, Any]:
     from tiendanube_tools import get_order_status
 
     return get_order_status(order_number)
+
+
+def _normalise_order_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Attach the audited customer meaning of Tiendanube fulfillment fields."""
+    if not result.get("found"):
+        return {**result, "status": "not_found", "allowed_next_action": "handoff_to_isa"}
+    # Reuse v1's audited renderer rather than introducing a second status map.
+    from app import _render_order_status_reply
+
+    fulfillment = str(result.get("fulfillment_status") or "").strip().upper()
+    shipping_type = str(result.get("shipping_type") or "").strip().lower()
+    semantics = {
+        "UNPACKED": "in_preparation",
+        "PACKED": "packed_waiting_dispatch" if shipping_type == "ship" else "packed_waiting_pickup_confirmation",
+        "DISPATCHED": "dispatched",
+        "DELIVERED": "delivered",
+    }.get(fulfillment, "in_preparation")
+    return {
+        **result,
+        "status": "found",
+        "fulfillment_semantics": semantics,
+        "customer_safe_reply": _render_order_status_reply(result),
+        "allowed_next_action": "reply_with_customer_safe_reply",
+    }
 
 
 def _default_get_product(query: str) -> Dict[str, Any]:
@@ -75,10 +101,14 @@ def _default_get_product(query: str) -> Dict[str, Any]:
             products.append(live)
     return {
         "found": bool(products),
+        "status": "found" if products else "not_found",
         "query": query,
         "products": products,
         "identity_source": "tiendanube",
         "availability_source": "tiendanube_live",
+        "allowed_next_action": (
+            "reply_from_live_evidence" if products else "handoff_to_isa/custom_order"
+        ),
     }
 
 
@@ -87,7 +117,9 @@ def _default_handoff(payload: Dict[str, Any]) -> Dict[str, Any]:
     # explicit later opt-in so a local harness can never contact Isa.
     return {
         "accepted": True,
-        "mode": "preview",
+        "status": "simulated_success",
+        "would_handoff": True,
+        "side_effect_executed": False,
         "reason": payload["reason"],
         "summary": payload["summary"],
     }
@@ -121,7 +153,9 @@ def live_handoff_adapter(
         )
         return {
             "accepted": True,
-            "mode": "live",
+            "status": "executed",
+            "would_handoff": True,
+            "side_effect_executed": True,
             "notified": bool(notified),
             "reason": payload["reason"],
         }
@@ -148,12 +182,40 @@ class V2ToolAdapters:
     def call(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         if name == "search_knowledge":
             query = _bounded_text(arguments.get("query"), field="query", limit=MAX_QUERY_CHARS)
-            return self._knowledge_search(query)
+            result = self._knowledge_search(query)
+            if "allowed_next_action" not in result:
+                result = {
+                    **result,
+                    "allowed_next_action": (
+                        "handoff_to_isa" if result.get("handoff_required") else "reply"
+                    ),
+                }
+            return result
         if name == "get_order":
-            return self._order_lookup(_validated_order_number(arguments.get("order_number")))
+            return _normalise_order_result(
+                self._order_lookup(_validated_order_number(arguments.get("order_number")))
+            )
         if name == "get_product":
             query = _bounded_text(arguments.get("query"), field="query", limit=MAX_QUERY_CHARS)
-            return self._product_lookup(query)
+            result = self._product_lookup(query)
+            if "status" not in result:
+                result = {
+                    **result,
+                    "status": "found" if result.get("found") else "not_found",
+                    "allowed_next_action": (
+                        "reply_from_live_evidence"
+                        if result.get("found") else "handoff_to_isa/custom_order"
+                    ),
+                }
+            if result.get("status") == "not_found" and "customer_safe_reply" not in result:
+                result = {
+                    **result,
+                    "customer_safe_reply": (
+                        "No aparece publicado en nuestra web. Isa puede revisar si se puede "
+                        "conseguir por encargo."
+                    ),
+                }
+            return result
         if name == "handoff_to_isa":
             reason = _bounded_text(arguments.get("reason"), field="reason", limit=64)
             if reason not in ALLOWED_HANDOFF_REASONS:
@@ -170,7 +232,10 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_knowledge",
-            "description": "Busca políticas y procedimientos aprobados de Beauty House.",
+            "description": (
+                "Busca políticas y procedimientos aprobados de Beauty House. "
+                "Si allowed_next_action=reply, respondé y NO hagas handoff."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
@@ -183,7 +248,10 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_order",
-            "description": "Consulta un pedido real por su número y devuelve fulfillment live.",
+            "description": (
+                "Consulta un pedido real por su número. Devuelve customer_safe_reply, "
+                "la interpretación cerrada y auditada de fulfillment; no reinterpretar PACKED."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"order_number": {"type": "string"}},
@@ -196,7 +264,12 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_product",
-            "description": "Identifica productos reales y consulta variantes/stock live.",
+            "description": (
+                "Sólo para un producto concreto nombrado por la clienta: identifica producto, "
+                "SKU, variantes, stock y precio live. Nunca usar para gustos, necesidades, "
+                "comparaciones o recomendaciones. Si status=not_found, la única acción siguiente "
+                "es handoff_to_isa con reason=custom_order."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
@@ -209,7 +282,12 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "handoff_to_isa",
-            "description": "Deriva a Isa compras, asesoramiento o casos no verificables. No crea checkout.",
+            "description": (
+                "Deriva a Isa. Es OBLIGATORIA para asesoramiento subjetivo (reason=product_advice), "
+                "cualquier solicitud explícita de comprar/llevar una cantidad "
+                "(reason=purchase_intent), aun sin identidad verificada, y producto no encontrado "
+                "(custom_order). Para compra no consultar catálogo ni pedir foto/link. No crea checkout."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

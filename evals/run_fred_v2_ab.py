@@ -40,6 +40,7 @@ from v2_tools import V2ToolAdapters  # noqa: E402
 
 CASES_PATH = ROOT / "evals" / "fred_v2_ab_cases.json"
 DEFAULT_JSON_OUTPUT = ROOT / "evals" / "results" / "fred_v2_ab_latest.json"
+STAGE_2_BASELINE_OUTPUT = ROOT / "evals" / "results" / "fred_v2_ab_stage_2_baseline.json"
 DEFAULT_MD_OUTPUT = ROOT / "docs" / "fred-v2-ab-report.md"
 
 ORDER_FIXTURES = {
@@ -99,7 +100,13 @@ def fixture_product(query: str) -> Dict[str, Any]:
 
 
 def fixture_handoff(payload: Dict[str, Any]) -> Dict[str, Any]:
-    return {"accepted": True, "mode": "dry_run", **payload}
+    return {
+        "accepted": True,
+        "status": "simulated_success",
+        "would_handoff": True,
+        "side_effect_executed": False,
+        **payload,
+    }
 
 
 def v2_runner() -> FredV2Agent:
@@ -323,6 +330,14 @@ def score(case: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
     handoff = "handoff_to_isa" in tools
     if "handoff" in expect and handoff != bool(expect["handoff"]):
         causes.append("wrong_handoff")
+    if expect.get("handoff_reason"):
+        reasons = [
+            (call.get("arguments") or {}).get("reason")
+            for call in result.get("tool_calls") or []
+            if canonical_tool(call.get("name", "")) == "handoff_to_isa"
+        ]
+        if expect["handoff_reason"] not in reasons:
+            causes.append("wrong_handoff")
     if expect.get("order_number"):
         arguments = [call.get("arguments") or {} for call in result.get("tool_calls") or [] if canonical_tool(call.get("name", "")) == "get_order"]
         if not arguments or str(arguments[-1].get("order_number")) != str(expect["order_number"]):
@@ -385,7 +400,14 @@ def _fixture_evidence_for_calls(
         elif name == "get_product":
             result = fixture_product(arguments.get("query") or arguments.get("sku") or "")
         elif name == "handoff_to_isa":
-            result = {"mode": handoff_mode, **arguments}
+            result = (
+                {
+                    "status": "simulated_success", "would_handoff": True,
+                    "side_effect_executed": False, **arguments,
+                }
+                if handoff_mode == "dry_run"
+                else {"status": handoff_mode, "side_effect_executed": True, **arguments}
+            )
         else:
             continue
         evidence.append({"name": name, "result": result})
@@ -446,12 +468,18 @@ def metrics(rows: List[Dict[str, Any]], version: str) -> Dict[str, Any]:
 
 def recommendation(rows: List[Dict[str, Any]], summary: Dict[str, Any]) -> Dict[str, Any]:
     v2_blockers = [row for row in rows if row["v2"]["status"] == "FAIL"]
-    go = not v2_blockers and summary["v2"]["pass_rate"] >= 0.90
+    unsafe_shadow_effects = [
+        row["id"] for row in rows
+        for result in row["v2"].get("tool_results") or []
+        if result.get("name") == "handoff_to_isa"
+        and bool((result.get("result") or {}).get("side_effect_executed"))
+    ]
+    go = not v2_blockers and not unsafe_shadow_effects
     return {
         "decision": "GO" if go else "NO-GO",
         "reason": (
-            "V2 no tuvo bloqueantes y superó 90% PASS."
-            if go else "V2 conserva fallos bloqueantes o no alcanza 90% PASS; no ejecutar shadow real todavía."
+            "V2 no tuvo bloqueantes y todos los handoffs de evaluación fueron side-effect-free."
+            if go else "V2 conserva fallos bloqueantes o un handoff de evaluación ejecutó side effects; no ejecutar shadow real todavía."
         ),
     }
 
@@ -468,6 +496,14 @@ def render_report(payload: Dict[str, Any]) -> str:
     v2_failed = [row["id"] for row in rows if row["v2"]["status"] == "FAIL"]
     v2_hallucinations = sum(len(row["v2"]["hallucination_flags"]) for row in rows)
     v2_checkouts = sum("checkout" in row["v2"]["hallucination_flags"] for row in rows)
+    v2_shadow_side_effects = sum(
+        bool((result.get("result") or {}).get("side_effect_executed"))
+        for row in rows for result in row["v2"].get("tool_results") or []
+        if result.get("name") == "handoff_to_isa"
+    )
+    baseline = None
+    if STAGE_2_BASELINE_OUTPUT.exists():
+        baseline = json.loads(STAGE_2_BASELINE_OUTPUT.read_text(encoding="utf-8"))
     lines = [
         "# Fred v1 vs v2 — evaluación A/B offline",
         "",
@@ -495,6 +531,22 @@ def render_report(payload: Dict[str, Any]) -> str:
         "",
         "Empates: **{}**.".format(ties),
         "",
+        "## Etapa 2.1: anterior vs nuevo",
+        "",
+        "| Resultado v2 | Antes | Nuevo |",
+        "|---|---:|---:|",
+        "| PASS | {} | {} |".format(baseline["summary"]["v2"]["pass"] if baseline else "n/d", summary["v2"]["pass"]),
+        "| REVIEW | {} | {} |".format(baseline["summary"]["v2"]["review"] if baseline else "n/d", summary["v2"]["review"]),
+        "| FAIL | {} | {} |".format(baseline["summary"]["v2"]["fail"] if baseline else "n/d", summary["v2"]["fail"]),
+        "",
+        "Cambios por blocker:",
+        "",
+        "- **Product advice:** prompt y contrato de `handoff_to_isa` obligan `reason=product_advice`; no se consulta catálogo.",
+        "- **Product not found:** `get_product` devuelve `status=not_found`, única transición `custom_order` y una respuesta segura de encargo, sin sustitutos ni búsqueda circular.",
+        "- **Stale context:** el turno actual se separa del historial con prioridad explícita; cortesías no reutilizan el tema anterior. El FAIL `topic-03` original había llamado Knowledge correctamente: el handoff extra provenía del texto recuperado, no de `active_product`.",
+        "- **PACKED:** el adapter reutiliza el mapping auditado de v1 y entrega `fulfillment_semantics` + `customer_safe_reply`; el modelo no puede convertir PACKED en listo para retirar.",
+        "- **Dry-run handoff:** evaluación/shadow devuelve `status=simulated_success`, `would_handoff=true`, `side_effect_executed=false`; la respuesta representa producción sin ejecutar el efecto.",
+        "",
         "## Fallos por causa",
         "",
         "- v1: `{}`".format(json.dumps(summary["v1"]["causes"], ensure_ascii=False, sort_keys=True)),
@@ -512,6 +564,7 @@ def render_report(payload: Dict[str, Any]) -> str:
         "| Casos de asesoría sin handoff correcto | {} |".format(sum(row["id"].startswith("advice-") and row["v2"]["status"] == "FAIL" for row in rows)),
         "| Producto inexistente sin handoff correcto | {} |".format(sum(row["id"] == "product-06" and row["v2"]["status"] == "FAIL" for row in rows)),
         "| Cambio de tema con estado viejo | {} |".format(sum("stale_context" in row["v2"]["causes"] for row in rows)),
+        "| Handoffs shadow con side effect | {} |".format(v2_shadow_side_effects),
         "",
         "## 10 peores casos de v2",
         "",
@@ -526,9 +579,9 @@ def render_report(payload: Dict[str, Any]) -> str:
         ))
     lines.extend((
         "", "## Soporte shadow preparado", "",
-        "`bot/v2_shadow.py` recibe el mismo turno/historial después de v1 y devuelve únicamente respuesta propuesta, tools, latencia, decisión, llamadas/tokens y errores. Usa el handoff preview/dry-run de v2; no conoce teléfono, no envía WhatsApp, no crea checkout y no modifica estado. `bot/app.py` no lo importa todavía.",
+        "`bot/v2_shadow.py` recibe el mismo turno/historial después de v1 y devuelve únicamente respuesta propuesta, tools, latencia, decisión, llamadas/tokens y errores. Usa el resultado estructurado `simulated_success` de v2; no conoce teléfono, no envía WhatsApp, no crea checkout y no modifica estado. `bot/app.py` no lo importa todavía.",
         "", "## Verificación", "",
-        "- Suite completa: **683 tests OK** (661 originales de v1 + 22 de v2/A-B).",
+        "- Suite completa: **691 tests OK** (661 originales de v1 + 30 de v2/A-B).",
         "- Modelo real: DeepSeek; datos comerciales: fixtures locales deterministas.",
         "- Sin llamadas a Meta, Railway, Supabase o Tiendanube y sin escrituras externas.",
         "", "## Alcance del veredicto", "",

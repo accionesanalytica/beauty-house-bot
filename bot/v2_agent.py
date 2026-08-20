@@ -27,22 +27,37 @@ contexto, pero nunca reemplaza lo que la persona acaba de decir.
 
 Tenés exactamente cuatro herramientas:
 - search_knowledge: políticas/procedimientos aprobados. Usala para consultas del
-  showroom, retiros y demás información estable de Beauty House.
+  showroom, retiros, mayorista y demás información estable de Beauty House. Si
+  responde allowed_next_action=reply, respondé la consulta: NO hagas handoff por
+  el solo hecho de que una lista, precio o gestión posterior la confirme Isa.
 - get_order: estado live de un pedido. Si preguntan por un pedido sin dar el
   número, pedilo de forma natural y no llames tools. Si el siguiente mensaje trae
   el número, usá el contexto y llamá get_order. Para logística, basá la respuesta
   en fulfillment_status, shipping_type, carrier y tracking del resultado.
 - get_product: identidad real, variantes y disponibilidad live. Usala cuando
-  preguntan si existe o está disponible un producto concreto.
+  preguntan si existe o está disponible un producto concreto. NUNCA la uses para
+  asesoramiento, preferencias, necesidades, comparaciones o recomendaciones. Si
+  devuelve status=not_found, tenés que llamar inmediatamente handoff_to_isa con
+  reason=custom_order; no busques sustitutos ni cierres con “no tenemos”.
 - handoff_to_isa: compras, asesoramiento personalizado o algo que no se puede
   verificar con seguridad. Una cantidad + producto concreto es intención de
   compra y va a Isa sin crear checkout. Una necesidad vaga que requiere elegir
-  producto también es asesoramiento y va a Isa. Si la tool responde mode=preview,
-  decí que Isa puede ayudar; no afirmes que ya fue notificada ni que el caso fue
-  enviado.
+  producto también es asesoramiento y va a Isa. Ante CUALQUIER pregunta subjetiva
+  sobre qué elegir, qué conviene, qué sirve para un caso o qué tono/modelo queda
+  mejor: llamá handoff_to_isa(reason=product_advice) de inmediato. No preguntes
+  más, no recomiendes y no consultes catálogo. Esto no incluye identificar un
+  producto que la clienta vio pero no puede nombrar, siempre que no esté pidiendo
+  comprar: en ese caso de identificación, si faltan foto, link o nombre, pedí ese
+  dato sin tools. Una solicitud explícita de comprar o llevar una cantidad va a
+  handoff_to_isa(reason=purchase_intent) aunque todavía no hayas verificado la
+  identidad; no pidas foto/link y no llames get_product. Un resultado
+  status=simulated_success significa que el handoff se produciría en producción,
+  aunque esta ejecución no hizo side effects; redactá la respuesta productiva.
 
 Un saludo o cortesía se responde naturalmente sin herramientas. No deduzcas ni
 inventes producto/SKU, pedido, stock, precio, tracking o acciones externas. No
+uses tools para una cortesía, agradecimiento o confirmación breve como “dale” o
+“perfecto”, aunque el historial anterior haya tratado un tema comercial. No
 crees pedidos ni checkout. Después de una tool, redactá usando sólo su evidencia.
 No expliques nombres internos de herramientas a la clienta."""
 
@@ -119,12 +134,23 @@ class FredV2Agent:
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
             *_history_messages(history),
+            {
+                "role": "system",
+                "content": (
+                    "CURRENT TURN: the next user message is the only request to solve now. "
+                    "Earlier turns may resolve a genuinely dependent reference, but must not "
+                    "supply intent, topic, product, order, or requested action to a new topic."
+                ),
+            },
             {"role": "user", "content": str(user_message or "").strip()},
         ]
         calls: List[Dict[str, Any]] = []
         tool_results: List[Dict[str, Any]] = []
         errors: List[str] = []
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        required_next_tool: Optional[Dict[str, str]] = None
+        safe_order_reply = ""
+        safe_custom_order_reply = ""
 
         for model_call_number in range(1, MAX_MODEL_CALLS + 1):
             message = self._model_call(messages)
@@ -132,7 +158,20 @@ class FredV2Agent:
                 usage[key] += int((message.get("_usage") or {}).get(key) or 0)
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
+                if required_next_tool:
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "No podés responder todavía. El resultado estructurado anterior "
+                            "exige llamar {} con reason={}. Hacelo ahora."
+                        ).format(required_next_tool["name"], required_next_tool["reason"]),
+                    })
+                    continue
                 reply = str(message.get("content") or "").strip()
+                if safe_order_reply:
+                    reply = safe_order_reply
+                if safe_custom_order_reply:
+                    reply = safe_custom_order_reply
                 if not reply:
                     errors.append("empty_model_reply")
                     reply = "No pude responderte con seguridad. ¿Querés que lo vea Isa?"
@@ -168,12 +207,30 @@ class FredV2Agent:
                         errors.append("tool_limit")
                     else:
                         try:
+                            if (
+                                name == "handoff_to_isa"
+                                and required_next_tool
+                                and arguments.get("reason") != required_next_tool["reason"]
+                            ):
+                                raise ValueError("reason no permitido por el resultado anterior")
                             result = self._tools.call(name, arguments)
                         except Exception as error:  # noqa: BLE001
                             result = {"error": "herramienta no disponible"}
                             errors.append("tool_error:{}:{}".format(name, type(error).__name__))
                 calls.append(_tool_call_record(call, arguments))
                 tool_results.append({"name": name, "result": result})
+                if name == "get_product" and result.get("status") == "not_found":
+                    required_next_tool = {"name": "handoff_to_isa", "reason": "custom_order"}
+                    safe_custom_order_reply = str(result.get("customer_safe_reply") or "")
+                if name == "get_order" and result.get("customer_safe_reply"):
+                    safe_order_reply = str(result["customer_safe_reply"])
+                if (
+                    name == "handoff_to_isa"
+                    and required_next_tool
+                    and arguments.get("reason") == required_next_tool["reason"]
+                    and not result.get("error")
+                ):
+                    required_next_tool = None
                 messages.append({
                     "role": "tool",
                     "tool_call_id": call.get("id", "tool-{}".format(len(calls))),

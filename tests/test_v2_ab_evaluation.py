@@ -80,6 +80,17 @@ class ABScoringTests(unittest.TestCase):
         }
         self.assertIn("dry_run_handoff_claim", hallucination_flags(result))
 
+    def test_simulated_success_is_scored_as_the_production_response(self):
+        result = {
+            "reply": "Te paso con Isa para que te asesore.",
+            "tool_calls": [{"name": "handoff_to_isa", "arguments": {}}],
+            "tool_results": [{"name": "handoff_to_isa", "result": {
+                "status": "simulated_success", "would_handoff": True,
+                "side_effect_executed": False,
+            }}],
+        }
+        self.assertNotIn("dry_run_handoff_claim", hallucination_flags(result))
+
 
 class ShadowSafetyTests(unittest.TestCase):
     def test_production_webhook_does_not_import_v2(self):
@@ -101,7 +112,10 @@ class ShadowSafetyTests(unittest.TestCase):
             },
             {"content": "Isa puede ayudarte con la compra."},
         ))
-        tools = V2ToolAdapters(handoff=lambda payload: {"mode": "dry_run", **payload})
+        tools = V2ToolAdapters(handoff=lambda payload: {
+            "status": "simulated_success", "would_handoff": True,
+            "side_effect_executed": False, **payload,
+        })
         agent = FredV2Agent(model_call=lambda messages: next(responses), tools=tools)
         record = propose_shadow_turn("quiero cuatro", agent=agent)
         self.assertEqual(ALLOWED_SHADOW_LOG_FIELDS, set(record))

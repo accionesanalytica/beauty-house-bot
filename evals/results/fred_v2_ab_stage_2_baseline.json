@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-20T03:28:00Z",
+  "generated_at": "2026-08-20T02:41:52Z",
   "live_model": true,
   "fixture_data": true,
   "cases": [
@@ -22,7 +22,7 @@
         "tool_results": [],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 0.21,
+        "latency_ms": 0.24,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -34,17 +34,17 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! ¿Cómo andás? ¿En qué te puedo ayudar hoy? 😊",
+        "response": "¡Hola! 👋 ¿En qué te puedo ayudar hoy?",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1488,
-          "completion_tokens": 20,
-          "total_tokens": 1508
+          "prompt_tokens": 936,
+          "completion_tokens": 15,
+          "total_tokens": 951
         },
-        "latency_ms": 1243.81,
+        "latency_ms": 1430.51,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -79,7 +79,7 @@
           "completion_tokens": 19,
           "total_tokens": 4926
         },
-        "latency_ms": 1471.63,
+        "latency_ms": 1591.18,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -97,11 +97,11 @@
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1490,
+          "prompt_tokens": 938,
           "completion_tokens": 20,
-          "total_tokens": 1510
+          "total_tokens": 958
         },
-        "latency_ms": 1183.96,
+        "latency_ms": 1255.52,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -127,17 +127,17 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! 👋 ¿Cómo va? Soy Fred, de Beauty House. ¿En qué te puedo ayudar hoy? ¿Buscás algo de pestañas, tenés alguna duda o querés consultar por un pedido?",
+        "response": "¡Hola! ¿Cómo va? Soy Fred, de Beauty House. ¿En qué te puedo ayudar hoy? 😊",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 4905,
-          "completion_tokens": 50,
-          "total_tokens": 4955
+          "completion_tokens": 26,
+          "total_tokens": 4931
         },
-        "latency_ms": 1739.05,
+        "latency_ms": 1451.23,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -149,17 +149,17 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! 👋 ¿En qué te puedo ayudar hoy?",
+        "response": "¡Hola! 👋 ¿Cómo andás? Soy Fred, el asistente de Beauty House. ¿En qué te puedo ayudar hoy?",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1488,
-          "completion_tokens": 15,
-          "total_tokens": 1503
+          "prompt_tokens": 936,
+          "completion_tokens": 30,
+          "total_tokens": 966
         },
-        "latency_ms": 1331.95,
+        "latency_ms": 1610.94,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -191,7 +191,7 @@
         "tool_results": [],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 0.03,
+        "latency_ms": 0.08,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -203,17 +203,17 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! 👋 ¿En qué te puedo ayudar hoy?",
+        "response": "¡Hola! 👋 ¿Cómo andás? ¿En qué te puedo ayudar hoy?",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1488,
-          "completion_tokens": 15,
-          "total_tokens": 1503
+          "prompt_tokens": 936,
+          "completion_tokens": 20,
+          "total_tokens": 956
         },
-        "latency_ms": 1227.88,
+        "latency_ms": 1197.03,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -249,17 +249,17 @@
         ]
       },
       "v1": {
-        "response": "¡De nada! Cualquier cosa que necesites, acá estoy 😊",
+        "response": "¡De nada! Cualquier cosa me avisás 😊",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 5102,
-          "completion_tokens": 18,
-          "total_tokens": 5120
+          "completion_tokens": 14,
+          "total_tokens": 5116
         },
-        "latency_ms": 1305.63,
+        "latency_ms": 1196.7,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -271,17 +271,17 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡De nada! Cualquier cosa me avisás 😊",
+        "response": "¡De nada! Cualquier cosa que necesites, acá estoy. 😊",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1507,
-          "completion_tokens": 14,
-          "total_tokens": 1521
+          "prompt_tokens": 955,
+          "completion_tokens": 19,
+          "total_tokens": 974
         },
-        "latency_ms": 1401.13,
+        "latency_ms": 1295.68,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -318,17 +318,17 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! Genial 😊\n\nPara coordinar la visita al showroom, ¿me pasás el día y horario que te quedan cómodos? Así lo dejamos agendado.",
+        "response": "¡Hola! Genial 😊 Para coordinar la visita al showroom, ¿me decís qué día y horario te vendría bien? Así lo confirmo con Isa y te aviso.",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 4908,
-          "completion_tokens": 43,
-          "total_tokens": 4951
+          "completion_tokens": 42,
+          "total_tokens": 4950
         },
-        "latency_ms": 1650.49,
+        "latency_ms": 1633.36,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -340,26 +340,49 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Genial! ¿Querés que te pase los horarios y cómo coordinar la visita al showroom?",
-        "tools": [],
-        "tool_calls": [],
-        "tool_results": [],
-        "llm_calls": 1,
+        "response": "¡Perfecto! Te cuento cómo funciona el showroom de Beauty House:\n\n- Las visitas se coordinan previamente, así que avisame qué día y horario te vendría bien y lo confirmamos.\n- Si querés retirar algo, también se coordina con anticipación. Puede retirar un tercero o un cadete/moto con los datos de autorización.\n\n¿Querés coordinar un día en particular o tenés alguna otra consulta? 😊",
+        "tools": [
+          "search_knowledge"
+        ],
+        "tool_calls": [
+          {
+            "name": "search_knowledge",
+            "arguments": {
+              "query": "showroom visitas horarios"
+            }
+          }
+        ],
+        "tool_results": [
+          {
+            "name": "search_knowledge",
+            "result": {
+              "found": true,
+              "context": "Conocimiento aprobado de Beauty House:\n- El showroom y los retiros se coordinan previamente; los horarios se confirman al coordinar.\n- Puede retirar un tercero o un cadete/moto con coordinación y datos de autorización.\n- Beauty House trabaja ventas mayoristas. La lista y los precios aprobados de SHOOW TOOLS se confirman con Isa.\n- Para Factura A mayorista se debe consultar a Isa con los datos fiscales.",
+              "governing_topic": "fixture",
+              "retrieved_topics": [
+                "fixture"
+              ]
+            }
+          }
+        ],
+        "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 1507,
-          "completion_tokens": 25,
-          "total_tokens": 1532
+          "prompt_tokens": 2144,
+          "completion_tokens": 182,
+          "total_tokens": 2326
         },
-        "latency_ms": 1292.39,
+        "latency_ms": 3770.26,
         "error": [],
         "handoff": false,
         "live_data": [],
         "decision": {
           "action": "reply",
-          "source": "model"
+          "source": "search_knowledge"
         },
-        "status": "PASS",
-        "causes": [],
+        "status": "REVIEW",
+        "causes": [
+          "unnecessary_tool"
+        ],
         "hallucination_flags": []
       }
     },
@@ -390,7 +413,7 @@
         ]
       },
       "v1": {
-        "response": "¡Buenas! Para pasar por el showroom, los retiros se coordinan previamente, así que avisame qué día te vendría bien y lo coordinamos. Los horarios se confirman al coordinar. 😊\n\n¿Te sirve así?",
+        "response": "¡Hola! Para pasar por el showroom, los retiros se coordinan previamente y los horarios se confirman al coordinar. Así que avisame qué día te queda bien y lo coordinamos.\n\n¿Querés que te ayude con algo más sobre el producto?",
         "tools": [
           "search_knowledge"
         ],
@@ -413,10 +436,10 @@
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 5063,
-          "completion_tokens": 57,
-          "total_tokens": 5120
+          "completion_tokens": 61,
+          "total_tokens": 5124
         },
-        "latency_ms": 1734.47,
+        "latency_ms": 1966.93,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -428,7 +451,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Para pasar por el showroom se coordina previamente, así que te confirmamos el horario al coordinar. ¿Querés que te pase el contacto para arreglar el retiro?",
+        "response": "Para pasar por el showroom hay que coordinar previamente, así te confirmamos el horario. ¿Querés que te ayude a coordinar el retiro?",
         "tools": [
           "search_knowledge"
         ],
@@ -436,7 +459,7 @@
           {
             "name": "search_knowledge",
             "arguments": {
-              "query": "showroom retiro cómo pasar por el showroom"
+              "query": "showroom retiro cómo pasar"
             }
           }
         ],
@@ -449,18 +472,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3245,
-          "completion_tokens": 96,
-          "total_tokens": 3341
+          "prompt_tokens": 2129,
+          "completion_tokens": 86,
+          "total_tokens": 2215
         },
-        "latency_ms": 3002.83,
+        "latency_ms": 3047.19,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -499,17 +521,17 @@
         ]
       },
       "v1": {
-        "response": "Para revisar el estado de tu pedido necesito el número de orden. ¿Me lo pasás?",
+        "response": "Para poder revisar tu pedido necesito el número de orden. ¿Me lo pasás?",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 4920,
-          "completion_tokens": 22,
-          "total_tokens": 4942
+          "completion_tokens": 20,
+          "total_tokens": 4940
         },
-        "latency_ms": 1479.66,
+        "latency_ms": 1767.94,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -521,17 +543,17 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Necesito el número de tu pedido para consultarlo. ¿Me lo pasás?",
+        "response": "Necesito el número de tu pedido para poder consultarlo. ¿Me lo pasás?",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1519,
-          "completion_tokens": 19,
-          "total_tokens": 1538
+          "prompt_tokens": 967,
+          "completion_tokens": 20,
+          "total_tokens": 987
         },
-        "latency_ms": 1199.59,
+        "latency_ms": 1225.35,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -578,7 +600,7 @@
         ]
       },
       "v1": {
-        "response": "Sí, trabajamos mayorista. La lista y los precios aprobados de SHOOW TOOLS se confirman con Isa, así que si querés avanzar con eso te la conecto. ¿Necesitás algo puntual?",
+        "response": "Sí, trabajamos ventas mayoristas. La lista y los precios aprobados de SHOOW TOOLS se confirman con Isa. ¿Querés que te pase el contacto para coordinar?",
         "tools": [
           "search_knowledge"
         ],
@@ -601,10 +623,10 @@
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 5080,
-          "completion_tokens": 52,
-          "total_tokens": 5132
+          "completion_tokens": 45,
+          "total_tokens": 5125
         },
-        "latency_ms": 1621.6,
+        "latency_ms": 1551.44,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -616,15 +638,23 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Sí, trabajamos mayorista. La lista y los precios se confirman con Isa. ¿Querés que te la pase?",
+        "response": "Te paso con Isa que te va a confirmar la lista y los precios mayoristas. ¡Quedate tranqui que te atiende enseguida! 😊",
         "tools": [
-          "search_knowledge"
+          "search_knowledge",
+          "handoff_to_isa"
         ],
         "tool_calls": [
           {
             "name": "search_knowledge",
             "arguments": {
-              "query": "mayorista"
+              "query": "venta mayorista"
+            }
+          },
+          {
+            "name": "handoff_to_isa",
+            "arguments": {
+              "reason": "purchase_intent",
+              "summary": "Consulta por venta mayorista, quiere lista y precios aprobados."
             }
           }
         ],
@@ -637,28 +667,41 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
+            }
+          },
+          {
+            "name": "handoff_to_isa",
+            "result": {
+              "accepted": true,
+              "mode": "dry_run",
+              "reason": "purchase_intent",
+              "summary": "Consulta por venta mayorista, quiere lista y precios aprobados."
             }
           }
         ],
-        "llm_calls": 2,
+        "llm_calls": 3,
         "tokens": {
-          "prompt_tokens": 3272,
-          "completion_tokens": 78,
-          "total_tokens": 3350
+          "prompt_tokens": 3512,
+          "completion_tokens": 199,
+          "total_tokens": 3711
         },
-        "latency_ms": 2357.36,
+        "latency_ms": 4722.37,
         "error": [],
-        "handoff": false,
+        "handoff": true,
         "live_data": [],
         "decision": {
-          "action": "reply",
-          "source": "search_knowledge"
+          "action": "handoff_to_isa",
+          "reason": "purchase_intent"
         },
-        "status": "PASS",
-        "causes": [],
-        "hallucination_flags": []
+        "status": "FAIL",
+        "causes": [
+          "stale_context",
+          "hallucination"
+        ],
+        "hallucination_flags": [
+          "dry_run_handoff_claim"
+        ]
       }
     },
     {
@@ -686,7 +729,7 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! ¿Cómo va? ¿En qué te ayudo hoy?",
+        "response": "¡Hola! ¿Cómo va? 😊\n\n¿En qué te ayudo hoy?",
         "tools": [
           "search_knowledge"
         ],
@@ -709,10 +752,10 @@
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 5058,
-          "completion_tokens": 16,
-          "total_tokens": 5074
+          "completion_tokens": 19,
+          "total_tokens": 5077
         },
-        "latency_ms": 1436.44,
+        "latency_ms": 1321.15,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -726,17 +769,17 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! ¿Cómo andás? ¿En qué te puedo ayudar? 😊",
+        "response": "¡Hola! ¿Cómo andás? ¿En qué te puedo ayudar hoy? 😊",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1509,
-          "completion_tokens": 19,
-          "total_tokens": 1528
+          "prompt_tokens": 957,
+          "completion_tokens": 20,
+          "total_tokens": 977
         },
-        "latency_ms": 1221.64,
+        "latency_ms": 1519.12,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -777,7 +820,7 @@
         ]
       },
       "v1": {
-        "response": "¡Buenas! Sí, puede retirar otra persona por vos. Solo hay que coordinar previamente y que nos pases los datos de autorización de quien va a retirar. ¿Querés que te cuente cómo coordinar el retiro?",
+        "response": "¡Hola! Sí, puede retirar otra persona por vos. Solo hay que coordinar previamente y que nos pases los datos de autorización de quien va a retirar. ¿Querés que te cuente cómo coordinar el retiro?",
         "tools": [
           "search_knowledge"
         ],
@@ -800,10 +843,10 @@
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 5065,
-          "completion_tokens": 56,
-          "total_tokens": 5121
+          "completion_tokens": 55,
+          "total_tokens": 5120
         },
-        "latency_ms": 1623.49,
+        "latency_ms": 1824.23,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -815,7 +858,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Sí, puede retirar otra persona por vos. Solo hay que coordinar previamente y dejar los datos de autorización. ¿Querés que te ayude a coordinar el retiro?",
+        "response": "Sí, puede retirar otra persona por vos. Solo hay que coordinar previamente y dar los datos de autorización. ¿Querés que te ayude a coordinar el retiro?",
         "tools": [
           "search_knowledge"
         ],
@@ -836,18 +879,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3247,
-          "completion_tokens": 94,
-          "total_tokens": 3341
+          "prompt_tokens": 2153,
+          "completion_tokens": 113,
+          "total_tokens": 2266
         },
-        "latency_ms": 3107.96,
+        "latency_ms": 4317.77,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -873,17 +915,17 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! ¿Cómo va? 😊\n\nPara ver el estado de tu pedido necesito el número de orden. ¿Me lo pasás?",
+        "response": "¡Hola! ¿Cómo va? 😊\n\nPara poder ver el estado de tu pedido necesito el número de orden. ¿Me lo pasás?",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 4910,
-          "completion_tokens": 32,
-          "total_tokens": 4942
+          "completion_tokens": 33,
+          "total_tokens": 4943
         },
-        "latency_ms": 1414.21,
+        "latency_ms": 1438.68,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -895,17 +937,17 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! Claro, decime el número de tu pedido y lo busco al toque. 😊",
+        "response": "¡Hola! Para poder ver dónde está tu pedido, necesito el número del mismo. ¿Me lo pasás? 😊",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1493,
-          "completion_tokens": 25,
-          "total_tokens": 1518
+          "prompt_tokens": 941,
+          "completion_tokens": 29,
+          "total_tokens": 970
         },
-        "latency_ms": 1125.95,
+        "latency_ms": 1190.89,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -950,7 +992,7 @@
           "completion_tokens": 29,
           "total_tokens": 4942
         },
-        "latency_ms": 1640.9,
+        "latency_ms": 1774.5,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -962,17 +1004,17 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Claro! Necesito el número de tu pedido para consultarlo. ¿Me lo pasás?",
+        "response": "¡Claro! Para ver el estado de tu compra necesito el número de pedido. ¿Me lo pasás?",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1512,
-          "completion_tokens": 23,
-          "total_tokens": 1535
+          "prompt_tokens": 960,
+          "completion_tokens": 26,
+          "total_tokens": 986
         },
-        "latency_ms": 1114.49,
+        "latency_ms": 1138.76,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -1010,7 +1052,7 @@
         ]
       },
       "v1": {
-        "response": "Tu pedido 6344 ya fue entregado. 🎉 El pago está confirmado y figura como entregado por Correo Demo.\n\nSi no lo recibiste, avisame y lo vemos con Isa para revisar qué pasó.",
+        "response": "Tu pedido 6344 ya fue entregado, así que deberías tenerlo en casa. El pago está confirmado y el envío figura como completado.\n\nSi no lo recibiste o tenés alguna duda, avisame y lo reviso con Isa.",
         "tools": [
           "get_order"
         ],
@@ -1042,10 +1084,10 @@
         "llm_calls": 2,
         "tokens": {
           "prompt_tokens": 9954,
-          "completion_tokens": 98,
-          "total_tokens": 10052
+          "completion_tokens": 103,
+          "total_tokens": 10057
         },
-        "latency_ms": 2984.61,
+        "latency_ms": 3268.49,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1059,76 +1101,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Tu pedido #6344 figura como entregado. ¡Gracias! 😊",
-        "tools": [
-          "get_order"
-        ],
-        "tool_calls": [
-          {
-            "name": "get_order",
-            "arguments": {
-              "order_number": "6344"
-            }
-          }
-        ],
-        "tool_results": [
-          {
-            "name": "get_order",
-            "result": {
-              "found": true,
-              "order_number": 6344,
-              "payment_status": "paid",
-              "shipping_status": "delivered",
-              "status": "found",
-              "fulfillment_status": "DELIVERED",
-              "shipping_type": "ship",
-              "carrier": "Correo Demo",
-              "tracking": null,
-              "tracking_url": null,
-              "fulfillment_semantics": "delivered",
-              "customer_safe_reply": "Tu pedido #6344 figura como entregado. ¡Gracias! 😊",
-              "allowed_next_action": "reply_with_customer_safe_reply"
-            }
-          }
-        ],
-        "llm_calls": 2,
-        "tokens": {
-          "prompt_tokens": 3205,
-          "completion_tokens": 63,
-          "total_tokens": 3268
-        },
-        "latency_ms": 2365.33,
-        "error": [],
-        "handoff": false,
-        "live_data": [
-          "get_order"
-        ],
-        "decision": {
-          "action": "reply",
-          "source": "get_order"
-        },
-        "status": "PASS",
-        "causes": [],
-        "hallucination_flags": []
-      }
-    },
-    {
-      "id": "order-04",
-      "category": "order",
-      "message": "pedido 6344",
-      "history": [],
-      "expected": {
-        "tools": [
-          "get_order"
-        ],
-        "order_number": "6344",
-        "contains_any": [
-          "entregado",
-          "delivered"
-        ]
-      },
-      "v1": {
-        "response": "¡Hola! Tu pedido 6344 ya fue entregado 📦 Está pagado y marcado como entregado por Correo Demo.\n\n¿Necesitás algo más? Si tenés alguna duda con el envío o el producto, avisame.",
+        "response": "¡Buenas! Tu pedido 6344 ya fue **entregado** 📦. Está marcado como entregado por Correo Demo, así que ya debería estar en tus manos. ¿Necesitás algo más?",
         "tools": [
           "get_order"
         ],
@@ -1159,25 +1132,42 @@
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 9969,
-          "completion_tokens": 118,
-          "total_tokens": 10087
+          "prompt_tokens": 2047,
+          "completion_tokens": 96,
+          "total_tokens": 2143
         },
-        "latency_ms": 3672.39,
+        "latency_ms": 2732.55,
         "error": [],
         "handoff": false,
         "live_data": [
           "get_order"
         ],
         "decision": {
-          "action": "reply"
+          "action": "reply",
+          "source": "get_order"
         },
         "status": "PASS",
         "causes": [],
         "hallucination_flags": []
+      }
+    },
+    {
+      "id": "order-04",
+      "category": "order",
+      "message": "pedido 6344",
+      "history": [],
+      "expected": {
+        "tools": [
+          "get_order"
+        ],
+        "order_number": "6344",
+        "contains_any": [
+          "entregado",
+          "delivered"
+        ]
       },
-      "v2": {
-        "response": "Tu pedido #6344 figura como entregado. ¡Gracias! 😊",
+      "v1": {
+        "response": "¡Hola! Tu pedido 6344 ya está entregado ✅ El pago está confirmado y el envío figura como entregado por Correo Demo.\n\n¿Necesitás algo más?",
         "tools": [
           "get_order"
         ],
@@ -1197,25 +1187,71 @@
               "order_number": 6344,
               "payment_status": "paid",
               "shipping_status": "delivered",
-              "status": "found",
+              "status": "closed",
               "fulfillment_status": "DELIVERED",
               "shipping_type": "ship",
               "carrier": "Correo Demo",
               "tracking": null,
-              "tracking_url": null,
-              "fulfillment_semantics": "delivered",
-              "customer_safe_reply": "Tu pedido #6344 figura como entregado. ¡Gracias! 😊",
-              "allowed_next_action": "reply_with_customer_safe_reply"
+              "tracking_url": null
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3169,
-          "completion_tokens": 84,
-          "total_tokens": 3253
+          "prompt_tokens": 9970,
+          "completion_tokens": 105,
+          "total_tokens": 10075
         },
-        "latency_ms": 2864.6,
+        "latency_ms": 3091.61,
+        "error": [],
+        "handoff": false,
+        "live_data": [
+          "get_order"
+        ],
+        "decision": {
+          "action": "reply"
+        },
+        "status": "PASS",
+        "causes": [],
+        "hallucination_flags": []
+      },
+      "v2": {
+        "response": "¡Hola! Te cuento sobre tu pedido 6344:\n\n✅ **Pagado** y **entregado** — ya está cerrado. El envío se hizo por **Correo Demo** y figura como entregado.\n\n¿Necesitás algo más? 😊",
+        "tools": [
+          "get_order"
+        ],
+        "tool_calls": [
+          {
+            "name": "get_order",
+            "arguments": {
+              "order_number": "6344"
+            }
+          }
+        ],
+        "tool_results": [
+          {
+            "name": "get_order",
+            "result": {
+              "found": true,
+              "order_number": 6344,
+              "payment_status": "paid",
+              "shipping_status": "delivered",
+              "status": "closed",
+              "fulfillment_status": "DELIVERED",
+              "shipping_type": "ship",
+              "carrier": "Correo Demo",
+              "tracking": null,
+              "tracking_url": null
+            }
+          }
+        ],
+        "llm_calls": 2,
+        "tokens": {
+          "prompt_tokens": 2022,
+          "completion_tokens": 118,
+          "total_tokens": 2140
+        },
+        "latency_ms": 3216.54,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1255,7 +1291,7 @@
         ]
       },
       "v1": {
-        "response": "Tu pedido 6344 ya está entregado. El pago está confirmado y figura como cerrado, enviado por Correo Demo.\n\n¿Necesitás algo puntual sobre esa orden?",
+        "response": "Tu orden 6344 ya está entregada y cerrada. El pago está confirmado y el envío figura como entregado por Correo Demo.\n\n¿Necesitás algo puntual sobre ella? Si es un reclamo o un cambio, te conecto con Isa para que lo resuelva.",
         "tools": [
           "search_knowledge",
           "get_order"
@@ -1300,10 +1336,10 @@
         "llm_calls": 2,
         "tokens": {
           "prompt_tokens": 10246,
-          "completion_tokens": 88,
-          "total_tokens": 10334
+          "completion_tokens": 111,
+          "total_tokens": 10357
         },
-        "latency_ms": 2750.36,
+        "latency_ms": 3374.29,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1319,7 +1355,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Tu pedido #6344 figura como entregado. ¡Gracias! 😊",
+        "response": "Tu pedido 6344 ya fue entregado. Está pagado y cerrado, y el envío se hizo por Correo Demo. ¿Necesitás algo más?",
         "tools": [
           "get_order"
         ],
@@ -1339,25 +1375,22 @@
               "order_number": 6344,
               "payment_status": "paid",
               "shipping_status": "delivered",
-              "status": "found",
+              "status": "closed",
               "fulfillment_status": "DELIVERED",
               "shipping_type": "ship",
               "carrier": "Correo Demo",
               "tracking": null,
-              "tracking_url": null,
-              "fulfillment_semantics": "delivered",
-              "customer_safe_reply": "Tu pedido #6344 figura como entregado. ¡Gracias! 😊",
-              "allowed_next_action": "reply_with_customer_safe_reply"
+              "tracking_url": null
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3201,
-          "completion_tokens": 62,
-          "total_tokens": 3263
+          "prompt_tokens": 2043,
+          "completion_tokens": 84,
+          "total_tokens": 2127
         },
-        "latency_ms": 2473.93,
+        "latency_ms": 2643.3,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1388,7 +1421,7 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! Te cuento: tu pedido 6341 está pago ✅ y ya está en preparación (todavía no salió). Como elegiste retiro en el local, no tiene seguimiento de envío.\n\nEn cuanto esté listo para retirar te avisamos. Si necesitás algo más, acá estoy. 😊",
+        "response": "¡Hola! Te cuento: el pedido 6341 ya está pago ✅ y está en preparación (todavía no salió). Como es retiro en el local, no tiene seguimiento de envío.\n\nEn cuanto esté listo para retirar te avisamos. Si necesitás algo más, acá estoy. 😊",
         "tools": [
           "get_order"
         ],
@@ -1420,10 +1453,10 @@
         "llm_calls": 2,
         "tokens": {
           "prompt_tokens": 9972,
-          "completion_tokens": 138,
-          "total_tokens": 10110
+          "completion_tokens": 137,
+          "total_tokens": 10109
         },
-        "latency_ms": 3647.97,
+        "latency_ms": 3600.62,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1437,7 +1470,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Tu pedido #6341 todavía está en preparación y aún no salió. El plazo habitual de preparación es de 24 a 72 horas hábiles desde que se acredita el pago. Te vamos a avisar por correo cuando avance.",
+        "response": "¡Hola! Te cuento cómo viene el pedido 6341:\n\n✅ **Pago:** confirmado\n📦 **Estado:** está en proceso de preparación (todavía no fue despachado)\n\nComo es un **retiro en showroom**, no tiene número de seguimiento. Cuando esté listo para retirar te avisamos. ¿Necesitás algo más? 😊",
         "tools": [
           "get_order"
         ],
@@ -1457,25 +1490,22 @@
               "order_number": 6341,
               "payment_status": "paid",
               "shipping_status": "unpacked",
-              "status": "found",
+              "status": "open",
               "fulfillment_status": "UNPACKED",
               "shipping_type": "pickup",
               "carrier": null,
               "tracking": null,
-              "tracking_url": null,
-              "fulfillment_semantics": "in_preparation",
-              "customer_safe_reply": "Tu pedido #6341 todavía está en preparación y aún no salió. El plazo habitual de preparación es de 24 a 72 horas hábiles desde que se acredita el pago. Te vamos a avisar por correo cuando avance.",
-              "allowed_next_action": "reply_with_customer_safe_reply"
+              "tracking_url": null
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3217,
-          "completion_tokens": 99,
-          "total_tokens": 3316
+          "prompt_tokens": 2020,
+          "completion_tokens": 130,
+          "total_tokens": 2150
         },
-        "latency_ms": 2723.54,
+        "latency_ms": 3311.8,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1506,7 +1536,7 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! Te cuento: tu pedido 6342 está pagado y ya está empacado, listo para retirar en el local. 📦\n\n¿Necesitás algo más?",
+        "response": "¡Hola! Te cuento el estado de tu pedido 6342:\n\n- Pago: confirmado ✅\n- Estado: está empacado, listo para retirar\n- Retiro: es por sucursal (pickup)\n\nComo es retiro en local, no hay seguimiento de envío. Si querés saber desde cuándo está disponible para pasar a buscarlo, avisame y lo consulto con Isa. 😊",
         "tools": [
           "get_order"
         ],
@@ -1537,11 +1567,11 @@
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 9963,
-          "completion_tokens": 102,
-          "total_tokens": 10065
+          "prompt_tokens": 9968,
+          "completion_tokens": 161,
+          "total_tokens": 10129
         },
-        "latency_ms": 3088.37,
+        "latency_ms": 4135.07,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1557,7 +1587,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Tu pedido #6342 ya está empaquetado. Antes de acercarte, esperá la confirmación por correo así no hacés el viaje en vano.",
+        "response": "¡Hola! Te cuento sobre tu pedido 6342:\n\n✅ **Pago confirmado**\n📦 **Estado: empacado** — ya está listo para retirar.\n\nComo elegiste **retiro en el showroom**, no hay envío ni tracking. Cuando pases a buscarlo, solo decinos tu número de pedido y te lo entregamos. 😊\n\n¿Necesitás algo más?",
         "tools": [
           "get_order"
         ],
@@ -1577,25 +1607,22 @@
               "order_number": 6342,
               "payment_status": "paid",
               "shipping_status": "packed",
-              "status": "found",
+              "status": "open",
               "fulfillment_status": "PACKED",
               "shipping_type": "pickup",
               "carrier": null,
               "tracking": null,
-              "tracking_url": null,
-              "fulfillment_semantics": "packed_waiting_pickup_confirmation",
-              "customer_safe_reply": "Tu pedido #6342 ya está empaquetado. Antes de acercarte, esperá la confirmación por correo así no hacés el viaje en vano.",
-              "allowed_next_action": "reply_with_customer_safe_reply"
+              "tracking_url": null
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3201,
-          "completion_tokens": 86,
-          "total_tokens": 3287
+          "prompt_tokens": 2014,
+          "completion_tokens": 137,
+          "total_tokens": 2151
         },
-        "latency_ms": 2829.3,
+        "latency_ms": 3454.56,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1605,11 +1632,14 @@
           "action": "reply",
           "source": "get_order"
         },
-        "status": "REVIEW",
+        "status": "FAIL",
         "causes": [
-          "missing_data"
+          "missing_data",
+          "hallucination"
         ],
-        "hallucination_flags": []
+        "hallucination_flags": [
+          "order_stage_overclaim:PACKED"
+        ]
       }
     },
     {
@@ -1629,7 +1659,7 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! Te cuento cómo va tu pedido 6343 📦\n\nYa está pagado y despachado, viajando con Correo Demo. Tu número de seguimiento es TRK6343 y podés rastrearlo acá: \n\n¿Necesitás algo más?",
+        "response": "¡Hola! Te cuento cómo va tu pedido 6343:\n\nYa está despachado y en camino con Correo Demo. El pago está confirmado ✅\n\nTu número de seguimiento es TRK6343 y podés rastrearlo acá: \n\n¿Necesitás algo más?",
         "tools": [
           "get_order"
         ],
@@ -1661,10 +1691,10 @@
         "llm_calls": 2,
         "tokens": {
           "prompt_tokens": 9972,
-          "completion_tokens": 119,
-          "total_tokens": 10091
+          "completion_tokens": 124,
+          "total_tokens": 10096
         },
-        "latency_ms": 3173.53,
+        "latency_ms": 3712.58,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1678,7 +1708,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Tu pedido #6343 ya fue despachado con Correo Demo. Número de seguimiento: TRK6343. Una vez despachado, la entrega suele demorar entre 1 y 5 días hábiles.",
+        "response": "¡Buenas! Te cuento el estado de tu pedido 6343:\n\n📦 **Ya está despachado** y en camino. El envío va por **Correo Demo**, con número de seguimiento **TRK6343**.\n\nPodés seguir el recorrido acá: https://tracking.example/6343\n\n¿Necesitás algo más? 😊",
         "tools": [
           "get_order"
         ],
@@ -1698,25 +1728,22 @@
               "order_number": 6343,
               "payment_status": "paid",
               "shipping_status": "shipped",
-              "status": "found",
+              "status": "open",
               "fulfillment_status": "DISPATCHED",
               "shipping_type": "ship",
               "carrier": "Correo Demo",
               "tracking": "TRK6343",
-              "tracking_url": "https://tracking.example/6343",
-              "fulfillment_semantics": "dispatched",
-              "customer_safe_reply": "Tu pedido #6343 ya fue despachado con Correo Demo. Número de seguimiento: TRK6343. Una vez despachado, la entrega suele demorar entre 1 y 5 días hábiles.",
-              "allowed_next_action": "reply_with_customer_safe_reply"
+              "tracking_url": "https://tracking.example/6343"
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3225,
-          "completion_tokens": 115,
-          "total_tokens": 3340
+          "prompt_tokens": 2044,
+          "completion_tokens": 139,
+          "total_tokens": 2183
         },
-        "latency_ms": 2877.52,
+        "latency_ms": 3026.21,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1747,7 +1774,7 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! Sí, el pedido 6344 ya fue entregado ✅\n\nEl envío figura como entregado (Correo Demo). Si necesitás el comprobante o tenés alguna duda, avisame y lo vemos.",
+        "response": "¡Hola! Sí, el pedido 6344 ya fue entregado ✅\n\nEl envío figura como entregado por Correo Demo. Si necesitás el comprobante o tenés alguna duda con el paquete, avisame y te ayudo.",
         "tools": [
           "get_order"
         ],
@@ -1779,10 +1806,10 @@
         "llm_calls": 2,
         "tokens": {
           "prompt_tokens": 9971,
-          "completion_tokens": 116,
-          "total_tokens": 10087
+          "completion_tokens": 120,
+          "total_tokens": 10091
         },
-        "latency_ms": 3402.09,
+        "latency_ms": 3549.78,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1796,7 +1823,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Tu pedido #6344 figura como entregado. ¡Gracias! 😊",
+        "response": "¡Sí! El pedido 6344 ya fue entregado. 🎉 Está marcado como entregado por Correo Demo, así que ya debería estar en tus manos. ¿Necesitás algo más?",
         "tools": [
           "get_order"
         ],
@@ -1816,25 +1843,22 @@
               "order_number": 6344,
               "payment_status": "paid",
               "shipping_status": "delivered",
-              "status": "found",
+              "status": "closed",
               "fulfillment_status": "DELIVERED",
               "shipping_type": "ship",
               "carrier": "Correo Demo",
               "tracking": null,
-              "tracking_url": null,
-              "fulfillment_semantics": "delivered",
-              "customer_safe_reply": "Tu pedido #6344 figura como entregado. ¡Gracias! 😊",
-              "allowed_next_action": "reply_with_customer_safe_reply"
+              "tracking_url": null
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3175,
-          "completion_tokens": 71,
-          "total_tokens": 3246
+          "prompt_tokens": 2030,
+          "completion_tokens": 107,
+          "total_tokens": 2137
         },
-        "latency_ms": 2764.2,
+        "latency_ms": 3155.46,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1897,7 +1921,7 @@
         ],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 23.49,
+        "latency_ms": 24.71,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1913,7 +1937,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Tu pedido #6342 ya está empaquetado. Antes de acercarte, esperá la confirmación por correo así no hacés el viaje en vano.",
+        "response": "El pedido 6342 es para **retirar** en el showroom, no para envío. Ya está empacado y listo, así que podés pasar a buscarlo cuando quieras. 😊\n\n¿Necesitás algo más?",
         "tools": [
           "get_order"
         ],
@@ -1933,25 +1957,22 @@
               "order_number": 6342,
               "payment_status": "paid",
               "shipping_status": "packed",
-              "status": "found",
+              "status": "open",
               "fulfillment_status": "PACKED",
               "shipping_type": "pickup",
               "carrier": null,
               "tracking": null,
-              "tracking_url": null,
-              "fulfillment_semantics": "packed_waiting_pickup_confirmation",
-              "customer_safe_reply": "Tu pedido #6342 ya está empaquetado. Antes de acercarte, esperá la confirmación por correo así no hacés el viaje en vano.",
-              "allowed_next_action": "reply_with_customer_safe_reply"
+              "tracking_url": null
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3223,
-          "completion_tokens": 105,
-          "total_tokens": 3328
+          "prompt_tokens": 2048,
+          "completion_tokens": 123,
+          "total_tokens": 2171
         },
-        "latency_ms": 2689.72,
+        "latency_ms": 2854.26,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -1961,10 +1982,8 @@
           "action": "reply",
           "source": "get_order"
         },
-        "status": "REVIEW",
-        "causes": [
-          "missing_data"
-        ],
+        "status": "PASS",
+        "causes": [],
         "hallucination_flags": []
       }
     },
@@ -2037,11 +2056,11 @@
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 26012,
-          "completion_tokens": 390,
-          "total_tokens": 26402
+          "prompt_tokens": 26004,
+          "completion_tokens": 396,
+          "total_tokens": 26400
         },
-        "latency_ms": 8745.87,
+        "latency_ms": 8706.7,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -2058,7 +2077,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Tu pedido #6343 ya fue despachado con Correo Demo. Número de seguimiento: TRK6343. Una vez despachado, la entrega suele demorar entre 1 y 5 días hábiles.",
+        "response": "¡Sí! Tu pedido 6343 ya está despachado 📦\n\n- **Estado:** En camino (despachado)\n- **Transporte:** Correo Demo\n- **Número de seguimiento:** TRK6343\n\nPodés seguir el envío acá: https://tracking.example/6343\n\n¿Necesitás algo más? 😊",
         "tools": [
           "get_order"
         ],
@@ -2078,25 +2097,22 @@
               "order_number": 6343,
               "payment_status": "paid",
               "shipping_status": "shipped",
-              "status": "found",
+              "status": "open",
               "fulfillment_status": "DISPATCHED",
               "shipping_type": "ship",
               "carrier": "Correo Demo",
               "tracking": "TRK6343",
-              "tracking_url": "https://tracking.example/6343",
-              "fulfillment_semantics": "dispatched",
-              "customer_safe_reply": "Tu pedido #6343 ya fue despachado con Correo Demo. Número de seguimiento: TRK6343. Una vez despachado, la entrega suele demorar entre 1 y 5 días hábiles.",
-              "allowed_next_action": "reply_with_customer_safe_reply"
+              "tracking_url": "https://tracking.example/6343"
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3229,
-          "completion_tokens": 104,
-          "total_tokens": 3333
+          "prompt_tokens": 2048,
+          "completion_tokens": 138,
+          "total_tokens": 2186
         },
-        "latency_ms": 2566.55,
+        "latency_ms": 3332.88,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -2145,7 +2161,7 @@
             "arguments": {
               "action": "reply",
               "reason": "normal_response",
-              "summary": "Pedido 6342 pagado y preparado, retiro en local, sin tracking de envío.",
+              "summary": "Consulta de estado del pedido 6342: pagado, empaquetado, retiro en local, sin tracking (es pickup).",
               "response_mode": "general_response",
               "match_type": "",
               "requested_product": "",
@@ -2181,11 +2197,11 @@
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 26149,
-          "completion_tokens": 454,
-          "total_tokens": 26603
+          "prompt_tokens": 26003,
+          "completion_tokens": 442,
+          "total_tokens": 26445
         },
-        "latency_ms": 8926.26,
+        "latency_ms": 10174.12,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -2202,7 +2218,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Tu pedido #6342 ya está empaquetado. Antes de acercarte, esperá la confirmación por correo así no hacés el viaje en vano.",
+        "response": "Tu pedido 6342 está **empacado y listo** ✅. Como lo elegiste como **retiro en el showroom**, no tiene número de seguimiento (no va por envío).\n\nCuando pase a estar disponible para retirar, te avisamos. ¿Necesitás algo más?",
         "tools": [
           "get_order"
         ],
@@ -2222,25 +2238,22 @@
               "order_number": 6342,
               "payment_status": "paid",
               "shipping_status": "packed",
-              "status": "found",
+              "status": "open",
               "fulfillment_status": "PACKED",
               "shipping_type": "pickup",
               "carrier": null,
               "tracking": null,
-              "tracking_url": null,
-              "fulfillment_semantics": "packed_waiting_pickup_confirmation",
-              "customer_safe_reply": "Tu pedido #6342 ya está empaquetado. Antes de acercarte, esperá la confirmación por correo así no hacés el viaje en vano.",
-              "allowed_next_action": "reply_with_customer_safe_reply"
+              "tracking_url": null
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3205,
-          "completion_tokens": 100,
-          "total_tokens": 3305
+          "prompt_tokens": 2029,
+          "completion_tokens": 125,
+          "total_tokens": 2154
         },
-        "latency_ms": 2852.07,
+        "latency_ms": 3384.49,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -2250,10 +2263,8 @@
           "action": "reply",
           "source": "get_order"
         },
-        "status": "REVIEW",
-        "causes": [
-          "missing_data"
-        ],
+        "status": "PASS",
+        "causes": [],
         "hallucination_flags": []
       }
     },
@@ -2283,7 +2294,7 @@
             "arguments": {
               "action": "reply",
               "reason": "normal_response",
-              "summary": "Consulta sobre horarios de atención de la tienda.",
+              "summary": "Consulta sobre horarios de atención del negocio.",
               "response_mode": "general_response",
               "match_type": "",
               "requested_product": "",
@@ -2304,11 +2315,11 @@
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 25861,
-          "completion_tokens": 337,
-          "total_tokens": 26198
+          "prompt_tokens": 25858,
+          "completion_tokens": 364,
+          "total_tokens": 26222
         },
-        "latency_ms": 9487.51,
+        "latency_ms": 9614.14,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -2324,7 +2335,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! 😊 Los horarios del showroom y los retiros se coordinan previamente, así que te confirmamos el horario justo cuando coordinamos la visita o el retiro. ¿Querés pasar por el showroom o necesitás coordinar un retiro?",
+        "response": "¡Hola! 😊 Mirá, en Beauty House los horarios del showroom y los retiros se coordinan previamente, así que se confirman en el momento de coordinar la visita o el retiro.\n\nSi querés pasar por el showroom o coordinar un retiro, avisame y lo vamos organizando. ¿En qué te puedo ayudar?",
         "tools": [
           "search_knowledge"
         ],
@@ -2345,18 +2356,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3195,
-          "completion_tokens": 111,
-          "total_tokens": 3306
+          "prompt_tokens": 2083,
+          "completion_tokens": 129,
+          "total_tokens": 2212
         },
-        "latency_ms": 3176.35,
+        "latency_ms": 3568.89,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -2384,7 +2394,7 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! ¿Cómo va? 😊\n\n¡Buenísimo! Para pasar por el showroom hay que coordinar previamente, así que contame qué día y horario te vendría bien y lo organizamos. ¿Qué te gustaría ver?",
+        "response": "¡Hola! Buenísimo. 😊\n\nPara coordinar el showroom te cuento que los retiros y visitas se coordinan previamente, así que avisame qué día y horario te vendría bien y lo confirmamos. ¿Para qué día lo estás pensando?",
         "tools": [
           "search_knowledge"
         ],
@@ -2407,10 +2417,10 @@
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 5058,
-          "completion_tokens": 55,
-          "total_tokens": 5113
+          "completion_tokens": 62,
+          "total_tokens": 5120
         },
-        "latency_ms": 1943.66,
+        "latency_ms": 1884.68,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -2422,7 +2432,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! Para pasar por el showroom hay que coordinar previamente, así que te confirmo los horarios cuando lo organicemos. ¿Qué día te vendría bien? Así lo coordinamos con Isa. 😊",
+        "response": "¡Hola! Claro, para pasar por el showroom se coordina previamente y los horarios se confirman al coordinar. ¿Querés que te pase con Isa para coordinar la visita? Así te confirma el horario y todo. 😊",
         "tools": [
           "search_knowledge"
         ],
@@ -2430,7 +2440,7 @@
           {
             "name": "search_knowledge",
             "arguments": {
-              "query": "showroom horarios visita Beauty House"
+              "query": "showroom visita horarios"
             }
           }
         ],
@@ -2443,18 +2453,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3225,
-          "completion_tokens": 124,
-          "total_tokens": 3349
+          "prompt_tokens": 2106,
+          "completion_tokens": 128,
+          "total_tokens": 2234
         },
-        "latency_ms": 3277.6,
+        "latency_ms": 2969.39,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -2488,7 +2497,7 @@
         "tool_results": [],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 20.87,
+        "latency_ms": 22.83,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -2503,7 +2512,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! Sí, podés retirar tu compra. 😊\n\nLos retiros se coordinan previamente y los horarios se confirman al coordinar. También puede retirar un tercero o un cadete/moto, siempre con coordinación y los datos de autorización.\n\n¿Querés que te pase con Isa para coordinar el retiro?",
+        "response": "¡Sí, claro! 😊 En Beauty House los retiros se coordinan previamente. Solo necesitás avisarnos con anticipación para confirmarte el horario del showroom.\n\nUn detalle: si va a retirar otra persona o un cadete/moto, también se puede, pero necesitamos coordinar y que nos pases los datos de autorización.\n\n¿Querés coordinar un retiro? Decime qué día te vendría bien y lo vemos.",
         "tools": [
           "search_knowledge"
         ],
@@ -2511,7 +2520,7 @@
           {
             "name": "search_knowledge",
             "arguments": {
-              "query": "retiro de compra en showroom"
+              "query": "retiro de compra showroom"
             }
           }
         ],
@@ -2524,18 +2533,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3228,
-          "completion_tokens": 155,
-          "total_tokens": 3383
+          "prompt_tokens": 2094,
+          "completion_tokens": 154,
+          "total_tokens": 2248
         },
-        "latency_ms": 3155.22,
+        "latency_ms": 3301.48,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -2564,7 +2572,7 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! Sí, puede retirar otra persona por vos. Solo hay que coordinar previamente y que nos pase los datos de autorización de quien va a venir a retirar. ¿Querés que te cuente cómo coordinarlo?",
+        "response": "¡Hola! Sí, puede retirar otra persona por vos. Solo hay que coordinar previamente y que nos pases los datos de autorización de quien va a venir a buscar. ¿Querés que te cuente cómo coordinamos el retiro?",
         "tools": [
           "search_knowledge"
         ],
@@ -2587,10 +2595,10 @@
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 5062,
-          "completion_tokens": 54,
-          "total_tokens": 5116
+          "completion_tokens": 55,
+          "total_tokens": 5117
         },
-        "latency_ms": 1946.69,
+        "latency_ms": 2657.55,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -2602,7 +2610,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Sí, tranqui! Puede retirar otra persona por vos, solo hay que coordinar previamente y dejar los datos de autorización. Cuando tengas el pedido listo, avisame y coordinamos el retiro con el nombre de quien va a pasar. 😊",
+        "response": "¡Sí, tranqui! Puede retirar otra persona por vos, pero hay que coordinar previamente. Solo necesitamos que nos pases los datos de autorización de quien va a venir a buscar el pedido, así lo tenemos registrado y no hay drama en el showroom.\n\n¿Querés que te ayude a coordinar eso?",
         "tools": [
           "search_knowledge"
         ],
@@ -2610,7 +2618,7 @@
           {
             "name": "search_knowledge",
             "arguments": {
-              "query": "retiro por otra persona en showroom"
+              "query": "retiro por otra persona showroom"
             }
           }
         ],
@@ -2623,18 +2631,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3209,
-          "completion_tokens": 113,
-          "total_tokens": 3322
+          "prompt_tokens": 2096,
+          "completion_tokens": 127,
+          "total_tokens": 2223
         },
-        "latency_ms": 2865.64,
+        "latency_ms": 3409.55,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -2663,7 +2670,7 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! Sí, tranqui 😊 Puede retirar un tercero o un cadete/moto, pero hay que coordinar previamente y con los datos de autorización. ¿Querés que te ayude a coordinar el retiro?",
+        "response": "¡Hola! Sí, tranqui. Puede retirar un tercero o un cadete/moto, pero hay que coordinarlo previamente y con los datos de autorización. ¿De qué producto me estás hablando así te confirmo todo?",
         "tools": [
           "search_knowledge"
         ],
@@ -2686,10 +2693,10 @@
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 5066,
-          "completion_tokens": 55,
-          "total_tokens": 5121
+          "completion_tokens": 54,
+          "total_tokens": 5120
         },
-        "latency_ms": 1741.17,
+        "latency_ms": 1968.12,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -2701,7 +2708,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Sí, se puede! Podés mandar un cadete o moto a retirarlo, pero hay que coordinar previamente el retiro y que el cadete venga con los datos de autorización. ¿Querés que te pase los horarios del showroom para coordinar?",
+        "response": "¡Sí, se puede! 😊 Podés mandar un cadete o moto a retirarlo, pero hay que coordinar previamente el horario y que el cadete venga con los datos de autorización. ¿Querés que te ayude a coordinar el retiro?",
         "tools": [
           "search_knowledge"
         ],
@@ -2722,18 +2729,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3229,
-          "completion_tokens": 129,
-          "total_tokens": 3358
+          "prompt_tokens": 2125,
+          "completion_tokens": 136,
+          "total_tokens": 2261
         },
-        "latency_ms": 3277.43,
+        "latency_ms": 3354.96,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -2778,7 +2784,7 @@
             "arguments": {
               "action": "reply",
               "reason": "normal_response",
-              "summary": "Clienta consulta por Isabel I Chocolate; hay stock y precio verificados.",
+              "summary": "Clienta consulta por Isabel I Chocolate; se verificó stock y precio en vivo.",
               "response_mode": "product_discovery",
               "match_type": "exact_match",
               "requested_product": "Isabel I Chocolate",
@@ -2814,11 +2820,11 @@
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 27234,
-          "completion_tokens": 423,
-          "total_tokens": 27657
+          "prompt_tokens": 27240,
+          "completion_tokens": 429,
+          "total_tokens": 27669
         },
-        "latency_ms": 9014.83,
+        "latency_ms": 11634.11,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -2835,7 +2841,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Sí! Tenemos las pestañas de banda **Isabel I** en color **Chocolate**, a **$12.500**. Están en stock con 8 unidades disponibles. ¿Las querés llevar? 😊",
+        "response": "¡Sí! Tenemos las **SHOOW TOOLS - Isabel I** en color **Chocolate** 😊\n\nSon pestañas de banda y están disponibles ahora mismo. El precio es de **$12.500**.\n\n¿Querés que te ayude a comprarlas o necesitás más info?",
         "tools": [
           "get_product"
         ],
@@ -2871,19 +2877,17 @@
                 }
               ],
               "identity_source": "tiendanube_fixture",
-              "availability_source": "tiendanube_live_fixture",
-              "status": "found",
-              "allowed_next_action": "reply_from_live_evidence"
+              "availability_source": "tiendanube_live_fixture"
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3206,
-          "completion_tokens": 94,
-          "total_tokens": 3300
+          "prompt_tokens": 2083,
+          "completion_tokens": 114,
+          "total_tokens": 2197
         },
-        "latency_ms": 2862.31,
+        "latency_ms": 3808.11,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -2930,7 +2934,7 @@
             "arguments": {
               "action": "reply",
               "reason": "normal_response",
-              "summary": "Cliente busca la variante chocolate de Isabel I; se verificó stock y precio.",
+              "summary": "Clienta busca la variante chocolate de Isabel I; stock verificado en 8 unidades, precio 12500.",
               "response_mode": "product_advice",
               "match_type": "",
               "requested_product": "",
@@ -2966,11 +2970,11 @@
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 27004,
-          "completion_tokens": 377,
-          "total_tokens": 27381
+          "prompt_tokens": 26992,
+          "completion_tokens": 387,
+          "total_tokens": 27379
         },
-        "latency_ms": 8803.71,
+        "latency_ms": 9691.89,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -2987,7 +2991,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Sí! La variante **Chocolate** de las pestañas **Isabel I** (de banda) está disponible. 😊\n\n- **Precio:** $12.500\n- **Stock:** disponible (quedan 8)\n\n¿Te la reservo o querés saber algo más?",
+        "response": "¡Sí! La encontré 😊\n\n**SHOOW TOOLS - ISABEL I** (pestañas de banda) en variante **Chocolate** está disponible, con 8 unidades en stock. Sale **$12.500**.\n\n¿Querés que te ayude a comprarla o necesitás algo más?",
         "tools": [
           "get_product"
         ],
@@ -3023,19 +3027,17 @@
                 }
               ],
               "identity_source": "tiendanube_fixture",
-              "availability_source": "tiendanube_live_fixture",
-              "status": "found",
-              "allowed_next_action": "reply_from_live_evidence"
+              "availability_source": "tiendanube_live_fixture"
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3218,
-          "completion_tokens": 121,
-          "total_tokens": 3339
+          "prompt_tokens": 2095,
+          "completion_tokens": 127,
+          "total_tokens": 2222
         },
-        "latency_ms": 3080.82,
+        "latency_ms": 2893.8,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -3090,8 +3092,8 @@
               "requested_product_type": "pestañas de banda",
               "matched_product_type": "pestañas de banda",
               "required_checks": [
-                "live_price",
-                "live_stock"
+                "live_stock",
+                "live_price"
               ]
             }
           }
@@ -3119,10 +3121,10 @@
         "llm_calls": 5,
         "tokens": {
           "prompt_tokens": 27193,
-          "completion_tokens": 425,
-          "total_tokens": 27618
+          "completion_tokens": 414,
+          "total_tokens": 27607
         },
-        "latency_ms": 9005.08,
+        "latency_ms": 9553.47,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -3139,7 +3141,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! 😊 La **Isabel I Chocolate** (pestañas de banda de SHOOW TOOLS) está **$12.500** y hay stock disponible. ¿Te la reservo o necesitás algo más?",
+        "response": "¡Hola! 😊 La **Isabel I Chocolate** de SHOOW TOOLS (pestañas de banda) está **$12.500** y hay stock disponible. ¿Te ayudo con algo más?",
         "tools": [
           "get_product"
         ],
@@ -3175,19 +3177,17 @@
                 }
               ],
               "identity_source": "tiendanube_fixture",
-              "availability_source": "tiendanube_live_fixture",
-              "status": "found",
-              "allowed_next_action": "reply_from_live_evidence"
+              "availability_source": "tiendanube_live_fixture"
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3262,
-          "completion_tokens": 150,
-          "total_tokens": 3412
+          "prompt_tokens": 2098,
+          "completion_tokens": 105,
+          "total_tokens": 2203
         },
-        "latency_ms": 3198.69,
+        "latency_ms": 3078.09,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -3235,7 +3235,7 @@
             "arguments": {
               "action": "reply",
               "reason": "normal_response",
-              "summary": "Consulta de stock de Taylor Black, verificada con get_stock.",
+              "summary": "Consulta de stock de Taylor Black, verificada en stock.",
               "response_mode": "product_advice",
               "match_type": "",
               "requested_product": "",
@@ -3271,11 +3271,11 @@
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 26865,
-          "completion_tokens": 332,
-          "total_tokens": 27197
+          "prompt_tokens": 26861,
+          "completion_tokens": 320,
+          "total_tokens": 27181
         },
-        "latency_ms": 8586.03,
+        "latency_ms": 8593.27,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -3292,7 +3292,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Sí! Las pestañas de banda **Taylor Black** están en stock. Tenemos 3 unidades disponibles a $11.900. ¿Querés llevarlas?",
+        "response": "¡Sí! Tenemos stock de las **SHOOW TOOLS - TAYLOR** en color **Black** (pestañas de banda). Quedan 3 unidades a $11.900.\n\n¿Querés que te ayude a reservarlas o necesitás algo más? 😊",
         "tools": [
           "get_product"
         ],
@@ -3328,19 +3328,17 @@
                 }
               ],
               "identity_source": "tiendanube_fixture",
-              "availability_source": "tiendanube_live_fixture",
-              "status": "found",
-              "allowed_next_action": "reply_from_live_evidence"
+              "availability_source": "tiendanube_live_fixture"
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3195,
-          "completion_tokens": 82,
-          "total_tokens": 3277
+          "prompt_tokens": 2083,
+          "completion_tokens": 121,
+          "total_tokens": 2204
         },
-        "latency_ms": 2859.92,
+        "latency_ms": 3213.37,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -3374,80 +3372,73 @@
       "v1": {
         "response": "¡Hola! Contame un poco más así no te mando cualquier cosa: ¿qué producto estás buscando? Si tenés el nombre como figura en la tienda o el link, con eso lo ubico enseguida 😊",
         "tools": [
-          "set_turn_decision",
-          "get_product"
+          "get_product",
+          "set_turn_decision"
         ],
         "tool_calls": [
+          {
+            "name": "get_product",
+            "arguments": {
+              "product_id": 101
+            }
+          },
           {
             "name": "set_turn_decision",
             "arguments": {
               "action": "reply",
               "reason": "normal_response",
-              "summary": "Clienta pregunta si tenemos el producto Isabel I. Producto identificado sin ambigüedad, respondo con info de disponibilidad y precio.",
+              "summary": "Clienta pregunta si tenemos Isabel I. Producto identificado, disponible en Chocolate y Black a $12.500.",
               "response_mode": "product_advice",
               "match_type": "",
               "requested_product": "",
               "matched_product": "",
               "requested_product_type": "",
               "matched_product_type": "",
-              "required_checks": [
-                "live_stock",
-                "live_price"
-              ]
-            }
-          },
-          {
-            "name": "get_product",
-            "arguments": {
-              "sku": "ISABEL-I-CHOCOLATE"
-            }
-          },
-          {
-            "name": "get_product",
-            "arguments": {
-              "sku": "ISABEL-I-BLACK"
+              "required_checks": []
             }
           }
         ],
         "tool_results": [
           {
+            "name": "get_product",
+            "result": {
+              "found": true,
+              "product_id": 101,
+              "product_name": "SHOOW TOOLS - ISABEL I",
+              "description": "Pestañas de banda.",
+              "product_url": "https://shop.example/isabel-i",
+              "variants": [
+                {
+                  "sku": "ISABEL-I-CHOCOLATE",
+                  "variant": "Chocolate",
+                  "status": "in_stock",
+                  "quantity": 8,
+                  "price": "12500.00"
+                },
+                {
+                  "sku": "ISABEL-I-BLACK",
+                  "variant": "Black",
+                  "status": "in_stock",
+                  "quantity": 5,
+                  "price": "12500.00"
+                }
+              ]
+            }
+          },
+          {
             "name": "set_turn_decision",
             "result": {
               "recorded": true
-            }
-          },
-          {
-            "name": "get_product",
-            "result": {
-              "found": true,
-              "product_name": "SHOOW TOOLS - ISABEL I",
-              "sku": "ISABEL-I-CHOCOLATE",
-              "variant": "Chocolate",
-              "status": "in_stock",
-              "quantity": 8,
-              "price": "12500.00"
-            }
-          },
-          {
-            "name": "get_product",
-            "result": {
-              "found": true,
-              "product_name": "SHOOW TOOLS - ISABEL I",
-              "sku": "ISABEL-I-BLACK",
-              "variant": "Black",
-              "status": "in_stock",
-              "quantity": 5,
-              "price": "12500.00"
             }
           }
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 27818,
-          "completion_tokens": 490,
-          "total_tokens": 28308
+          "prompt_tokens": 27445,
+          "completion_tokens": 383,
+          "total_tokens": 27828
         },
-        "latency_ms": 9143.97,
+        "latency_ms": 9383.58,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -3464,7 +3455,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Sí! Tenemos las **SHOOW TOOLS - Isabel I**, pestañas de banda. 😊\n\nEstán disponibles en:\n- **Chocolate** – $12.500\n- **Black** – $12.500\n\n¿Querés llevarte alguna?",
+        "response": "¡Sí! Tenemos las **SHOOW TOOLS - Isabel I**, son pestañas de banda. 😊\n\nEstán disponibles en dos colores:\n- **Chocolate** — $12.500 (en stock)\n- **Black** — $12.500 (en stock)\n\n¿Querés alguna en particular? Si te interesa comprar, te conecto con Isa para que te asesore.",
         "tools": [
           "get_product"
         ],
@@ -3507,19 +3498,17 @@
                 }
               ],
               "identity_source": "tiendanube_fixture",
-              "availability_source": "tiendanube_live_fixture",
-              "status": "found",
-              "allowed_next_action": "reply_from_live_evidence"
+              "availability_source": "tiendanube_live_fixture"
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3249,
-          "completion_tokens": 114,
-          "total_tokens": 3363
+          "prompt_tokens": 2118,
+          "completion_tokens": 134,
+          "total_tokens": 2252
         },
-        "latency_ms": 2655.48,
+        "latency_ms": 3174.65,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -3545,7 +3534,6 @@
           "handoff_to_isa"
         ],
         "handoff": true,
-        "handoff_reason": "custom_order",
         "contains_any": [
           "Isa",
           "encargo",
@@ -3569,13 +3557,6 @@
           {
             "name": "get_product",
             "arguments": {
-              "query": "pestañas",
-              "limit": 5
-            }
-          },
-          {
-            "name": "get_product",
-            "arguments": {
               "query": "Fantasma",
               "limit": 5
             }
@@ -3583,7 +3564,7 @@
           {
             "name": "get_product",
             "arguments": {
-              "query": "Ultra",
+              "query": "pestañas",
               "limit": 5
             }
           },
@@ -3592,10 +3573,10 @@
             "arguments": {
               "action": "reply",
               "reason": "normal_response",
-              "summary": "Consultó por pestañas Modelo Fantasma Ultra, no está en catálogo. Ofrecí alternativas disponibles.",
+              "summary": "No se encontró el modelo Fantasma Ultra en catálogo. Se ofrecen alternativas disponibles: Isabel I y Taylor.",
               "response_mode": "product_discovery",
               "match_type": "no_match",
-              "requested_product": "pestañas Modelo Fantasma Ultra",
+              "requested_product": "Modelo Fantasma Ultra",
               "matched_product": "",
               "requested_product_type": "pestañas",
               "matched_product_type": "",
@@ -3609,53 +3590,6 @@
           {
             "name": "get_product",
             "result": []
-          },
-          {
-            "name": "get_product",
-            "result": [
-              {
-                "product_id": 101,
-                "name": "SHOOW TOOLS - ISABEL I",
-                "published": true,
-                "variants": [
-                  {
-                    "sku": "ISABEL-I-CHOCOLATE",
-                    "variant": "Chocolate",
-                    "status": "in_stock",
-                    "quantity": 8,
-                    "price": "12500.00"
-                  },
-                  {
-                    "sku": "ISABEL-I-BLACK",
-                    "variant": "Black",
-                    "status": "in_stock",
-                    "quantity": 5,
-                    "price": "12500.00"
-                  }
-                ]
-              },
-              {
-                "product_id": 102,
-                "name": "SHOOW TOOLS - TAYLOR",
-                "published": true,
-                "variants": [
-                  {
-                    "sku": "TAYLOR-BLACK",
-                    "variant": "Black",
-                    "status": "in_stock",
-                    "quantity": 3,
-                    "price": "11900.00"
-                  },
-                  {
-                    "sku": "TAYLOR-CHOCOLATE",
-                    "variant": "Chocolate",
-                    "status": "out_of_stock",
-                    "quantity": 0,
-                    "price": "11900.00"
-                  }
-                ]
-              }
-            ]
           },
           {
             "name": "get_product",
@@ -3717,11 +3651,11 @@
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 28409,
-          "completion_tokens": 863,
-          "total_tokens": 29272
+          "prompt_tokens": 26895,
+          "completion_tokens": 723,
+          "total_tokens": 27618
         },
-        "latency_ms": 11753.55,
+        "latency_ms": 10959.71,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -3740,23 +3674,15 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "No aparece publicado en nuestra web. Isa puede revisar si se puede conseguir por encargo.",
+        "response": "Uy, no encontré nada con ese nombre exacto en nuestro catálogo 😕. ¿Tenés alguna otra referencia o marca de las pestañas que buscás? Así te ayudo a ver si las tenemos o te conecto con Isa para asesorarte mejor.",
         "tools": [
-          "get_product",
-          "handoff_to_isa"
+          "get_product"
         ],
         "tool_calls": [
           {
             "name": "get_product",
             "arguments": {
               "query": "pestañas Modelo Fantasma Ultra"
-            }
-          },
-          {
-            "name": "handoff_to_isa",
-            "arguments": {
-              "reason": "custom_order",
-              "summary": "Cliente consulta por pestañas Modelo Fantasma Ultra, no aparece en tienda. Verificar si se puede conseguir por encargo."
             }
           }
         ],
@@ -3767,42 +3693,31 @@
               "found": false,
               "query": "pestañas Modelo Fantasma Ultra",
               "products": [],
-              "identity_source": "tiendanube",
-              "status": "not_found",
-              "allowed_next_action": "handoff_to_isa/custom_order",
-              "customer_safe_reply": "No aparece publicado en nuestra web. Isa puede revisar si se puede conseguir por encargo."
-            }
-          },
-          {
-            "name": "handoff_to_isa",
-            "result": {
-              "accepted": true,
-              "status": "simulated_success",
-              "would_handoff": true,
-              "side_effect_executed": false,
-              "reason": "custom_order",
-              "summary": "Cliente consulta por pestañas Modelo Fantasma Ultra, no aparece en tienda. Verificar si se puede conseguir por encargo."
+              "identity_source": "tiendanube"
             }
           }
         ],
-        "llm_calls": 3,
+        "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 5004,
-          "completion_tokens": 223,
-          "total_tokens": 5227
+          "prompt_tokens": 1986,
+          "completion_tokens": 108,
+          "total_tokens": 2094
         },
-        "latency_ms": 4696.95,
+        "latency_ms": 3065.22,
         "error": [],
-        "handoff": true,
+        "handoff": false,
         "live_data": [
           "get_product"
         ],
         "decision": {
-          "action": "handoff_to_isa",
-          "reason": "custom_order"
+          "action": "reply",
+          "source": "get_product"
         },
-        "status": "PASS",
-        "causes": [],
+        "status": "FAIL",
+        "causes": [
+          "wrong_tool",
+          "wrong_handoff"
+        ],
         "hallucination_flags": []
       }
     },
@@ -3840,16 +3755,14 @@
           {
             "name": "handoff_to_isa",
             "result": {
-              "status": "live_baseline",
-              "side_effect_executed": true,
-              "reason": "v1_scope",
-              "mode": "live_baseline"
+              "mode": "live_baseline",
+              "reason": "v1_scope"
             }
           }
         ],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 0.31,
+        "latency_ms": 0.42,
         "error": [],
         "handoff": true,
         "live_data": [],
@@ -3861,48 +3774,83 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Dale! Te paso con Isa para que te confirme el pedido de las 4 Isabel I Chocolate. 😊",
+        "response": "¡Listo! 😊 Te paso con **Isa**, que te va a ayudar a concretar la compra de las 4 Isabel I Chocolate. Ella te va a confirmar el total y coordinar el pago y envío. ¿Algo más en lo que te pueda ayudar?",
         "tools": [
+          "get_product",
           "handoff_to_isa"
         ],
         "tool_calls": [
           {
+            "name": "get_product",
+            "arguments": {
+              "query": "Isabel I Chocolate"
+            }
+          },
+          {
             "name": "handoff_to_isa",
             "arguments": {
               "reason": "purchase_intent",
-              "summary": "Cliente quiere comprar 4 unidades de \"Isabel I Chocolate\". Derivo a Isa para gestionar la compra."
+              "summary": "Cliente quiere comprar 4 unidades de Isabel I Chocolate (SHOOW TOOLS, $12.500 c/u, en stock)."
             }
           }
         ],
         "tool_results": [
           {
+            "name": "get_product",
+            "result": {
+              "found": true,
+              "query": "Isabel I Chocolate",
+              "products": [
+                {
+                  "product_id": 101,
+                  "product_name": "SHOOW TOOLS - ISABEL I",
+                  "description": "Pestañas de banda.",
+                  "product_url": "https://shop.example/isabel-i",
+                  "variants": [
+                    {
+                      "sku": "ISABEL-I-CHOCOLATE",
+                      "variant": "Chocolate",
+                      "status": "in_stock",
+                      "quantity": 8,
+                      "price": "12500.00"
+                    }
+                  ]
+                }
+              ],
+              "identity_source": "tiendanube_fixture",
+              "availability_source": "tiendanube_live_fixture"
+            }
+          },
+          {
             "name": "handoff_to_isa",
             "result": {
               "accepted": true,
-              "status": "simulated_success",
-              "would_handoff": true,
-              "side_effect_executed": false,
+              "mode": "dry_run",
               "reason": "purchase_intent",
-              "summary": "Cliente quiere comprar 4 unidades de \"Isabel I Chocolate\". Derivo a Isa para gestionar la compra."
+              "summary": "Cliente quiere comprar 4 unidades de Isabel I Chocolate (SHOOW TOOLS, $12.500 c/u, en stock)."
             }
           }
         ],
-        "llm_calls": 2,
+        "llm_calls": 3,
         "tokens": {
-          "prompt_tokens": 3182,
-          "completion_tokens": 139,
-          "total_tokens": 3321
+          "prompt_tokens": 3471,
+          "completion_tokens": 271,
+          "total_tokens": 3742
         },
-        "latency_ms": 3185.92,
+        "latency_ms": 5333.51,
         "error": [],
         "handoff": true,
-        "live_data": [],
+        "live_data": [
+          "get_product"
+        ],
         "decision": {
           "action": "handoff_to_isa",
           "reason": "purchase_intent"
         },
-        "status": "PASS",
-        "causes": [],
+        "status": "REVIEW",
+        "causes": [
+          "unnecessary_tool"
+        ],
         "hallucination_flags": []
       }
     },
@@ -3946,16 +3894,14 @@
           {
             "name": "handoff_to_isa",
             "result": {
-              "status": "live_baseline",
-              "side_effect_executed": true,
-              "reason": "v1_scope",
-              "mode": "live_baseline"
+              "mode": "live_baseline",
+              "reason": "v1_scope"
             }
           }
         ],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 0.12,
+        "latency_ms": 1.17,
         "error": [],
         "handoff": true,
         "live_data": [],
@@ -3967,7 +3913,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Dale! Te paso con Isa para que te confirme el pedido de las dos Isabel I Chocolate. 😊",
+        "response": "¡Listo! Isa te va a ayudar con la compra de las dos unidades de Isabel I Chocolate. Quedate tranqui que te va a contactar para coordinar todo. 😊",
         "tools": [
           "handoff_to_isa"
         ],
@@ -3985,9 +3931,7 @@
             "name": "handoff_to_isa",
             "result": {
               "accepted": true,
-              "status": "simulated_success",
-              "would_handoff": true,
-              "side_effect_executed": false,
+              "mode": "dry_run",
               "reason": "purchase_intent",
               "summary": "Cliente quiere comprar 2 unidades de Isabel I Chocolate."
             }
@@ -3995,11 +3939,11 @@
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3160,
-          "completion_tokens": 101,
-          "total_tokens": 3261
+          "prompt_tokens": 2065,
+          "completion_tokens": 144,
+          "total_tokens": 2209
         },
-        "latency_ms": 2710.02,
+        "latency_ms": 3185.93,
         "error": [],
         "handoff": true,
         "live_data": [],
@@ -4007,9 +3951,13 @@
           "action": "handoff_to_isa",
           "reason": "purchase_intent"
         },
-        "status": "PASS",
-        "causes": [],
-        "hallucination_flags": []
+        "status": "FAIL",
+        "causes": [
+          "hallucination"
+        ],
+        "hallucination_flags": [
+          "dry_run_handoff_claim"
+        ]
       }
     },
     {
@@ -4046,16 +3994,14 @@
           {
             "name": "handoff_to_isa",
             "result": {
-              "status": "live_baseline",
-              "side_effect_executed": true,
-              "reason": "v1_scope",
-              "mode": "live_baseline"
+              "mode": "live_baseline",
+              "reason": "v1_scope"
             }
           }
         ],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 0.1,
+        "latency_ms": 0.69,
         "error": [],
         "handoff": true,
         "live_data": [],
@@ -4067,48 +4013,83 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Dale! Te paso con Isa para que te tome el pedido de las 3 Taylor Black. Ella te confirma disponibilidad y te arma todo. 😊",
+        "response": "¡Listo! Te paso con **Isa**, que es quien te va a ayudar a concretar la compra de las 3 **Taylor Black** (a $11.900 c/u). Ella te va a guiar con el pago y el envío. 😊\n\n¿Necesitás algo más mientras tanto?",
         "tools": [
+          "get_product",
           "handoff_to_isa"
         ],
         "tool_calls": [
           {
+            "name": "get_product",
+            "arguments": {
+              "query": "Taylor Black"
+            }
+          },
+          {
             "name": "handoff_to_isa",
             "arguments": {
               "reason": "purchase_intent",
-              "summary": "La clienta quiere comprar 3 unidades de Taylor Black."
+              "summary": "Cliente quiere comprar 3 unidades de SHOOW TOOLS - TAYLOR en color Black (SKU TAYLOR-BLACK, $11.900 c/u). Stock disponible: 3."
             }
           }
         ],
         "tool_results": [
           {
+            "name": "get_product",
+            "result": {
+              "found": true,
+              "query": "Taylor Black",
+              "products": [
+                {
+                  "product_id": 102,
+                  "product_name": "SHOOW TOOLS - TAYLOR",
+                  "description": "Pestañas de banda.",
+                  "product_url": "https://shop.example/taylor",
+                  "variants": [
+                    {
+                      "sku": "TAYLOR-BLACK",
+                      "variant": "Black",
+                      "status": "in_stock",
+                      "quantity": 3,
+                      "price": "11900.00"
+                    }
+                  ]
+                }
+              ],
+              "identity_source": "tiendanube_fixture",
+              "availability_source": "tiendanube_live_fixture"
+            }
+          },
+          {
             "name": "handoff_to_isa",
             "result": {
               "accepted": true,
-              "status": "simulated_success",
-              "would_handoff": true,
-              "side_effect_executed": false,
+              "mode": "dry_run",
               "reason": "purchase_intent",
-              "summary": "La clienta quiere comprar 3 unidades de Taylor Black."
+              "summary": "Cliente quiere comprar 3 unidades de SHOOW TOOLS - TAYLOR en color Black (SKU TAYLOR-BLACK, $11.900 c/u). Stock disponible: 3."
             }
           }
         ],
-        "llm_calls": 2,
+        "llm_calls": 3,
         "tokens": {
-          "prompt_tokens": 3134,
-          "completion_tokens": 112,
-          "total_tokens": 3246
+          "prompt_tokens": 3488,
+          "completion_tokens": 299,
+          "total_tokens": 3787
         },
-        "latency_ms": 3084.31,
+        "latency_ms": 5406.02,
         "error": [],
         "handoff": true,
-        "live_data": [],
+        "live_data": [
+          "get_product"
+        ],
         "decision": {
           "action": "handoff_to_isa",
           "reason": "purchase_intent"
         },
-        "status": "PASS",
-        "causes": [],
+        "status": "REVIEW",
+        "causes": [
+          "unnecessary_tool"
+        ],
         "hallucination_flags": []
       }
     },
@@ -4152,16 +4133,14 @@
           {
             "name": "handoff_to_isa",
             "result": {
-              "status": "live_baseline",
-              "side_effect_executed": true,
-              "reason": "v1_scope",
-              "mode": "live_baseline"
+              "mode": "live_baseline",
+              "reason": "v1_scope"
             }
           }
         ],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 0.07,
+        "latency_ms": 0.73,
         "error": [],
         "handoff": true,
         "live_data": [],
@@ -4173,49 +4152,87 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Dale! Te paso con Isa para que te confirme el pedido y el pago. 😊",
+        "response": "¡Listo! Isa te va a poder ayudar con la compra de tu Isabel I en Chocolate. Te va a contactar para coordinar el pago y el envío. 😊 ¿Necesitás algo más?",
         "tools": [
+          "get_product",
           "handoff_to_isa"
         ],
         "tool_calls": [
           {
+            "name": "get_product",
+            "arguments": {
+              "query": "Isabel I Chocolate"
+            }
+          },
+          {
             "name": "handoff_to_isa",
             "arguments": {
               "reason": "purchase_intent",
-              "summary": "Cliente quiere comprar 1 unidad de Isabel I Chocolate."
+              "summary": "Cliente quiere comprar 1 unidad de SHOOW TOOLS Isabel I en Chocolate ($12.500, en stock)."
             }
           }
         ],
         "tool_results": [
           {
+            "name": "get_product",
+            "result": {
+              "found": true,
+              "query": "Isabel I Chocolate",
+              "products": [
+                {
+                  "product_id": 101,
+                  "product_name": "SHOOW TOOLS - ISABEL I",
+                  "description": "Pestañas de banda.",
+                  "product_url": "https://shop.example/isabel-i",
+                  "variants": [
+                    {
+                      "sku": "ISABEL-I-CHOCOLATE",
+                      "variant": "Chocolate",
+                      "status": "in_stock",
+                      "quantity": 8,
+                      "price": "12500.00"
+                    }
+                  ]
+                }
+              ],
+              "identity_source": "tiendanube_fixture",
+              "availability_source": "tiendanube_live_fixture"
+            }
+          },
+          {
             "name": "handoff_to_isa",
             "result": {
               "accepted": true,
-              "status": "simulated_success",
-              "would_handoff": true,
-              "side_effect_executed": false,
+              "mode": "dry_run",
               "reason": "purchase_intent",
-              "summary": "Cliente quiere comprar 1 unidad de Isabel I Chocolate."
+              "summary": "Cliente quiere comprar 1 unidad de SHOOW TOOLS Isabel I en Chocolate ($12.500, en stock)."
             }
           }
         ],
-        "llm_calls": 2,
+        "llm_calls": 3,
         "tokens": {
-          "prompt_tokens": 3156,
-          "completion_tokens": 99,
-          "total_tokens": 3255
+          "prompt_tokens": 3449,
+          "completion_tokens": 218,
+          "total_tokens": 3667
         },
-        "latency_ms": 2853.77,
+        "latency_ms": 4606.12,
         "error": [],
         "handoff": true,
-        "live_data": [],
+        "live_data": [
+          "get_product"
+        ],
         "decision": {
           "action": "handoff_to_isa",
           "reason": "purchase_intent"
         },
-        "status": "PASS",
-        "causes": [],
-        "hallucination_flags": []
+        "status": "FAIL",
+        "causes": [
+          "unnecessary_tool",
+          "hallucination"
+        ],
+        "hallucination_flags": [
+          "dry_run_handoff_claim"
+        ]
       }
     },
     {
@@ -4228,7 +4245,6 @@
           "handoff_to_isa"
         ],
         "handoff": true,
-        "handoff_reason": "product_advice",
         "contains_any": [
           "Isa"
         ]
@@ -4250,71 +4266,48 @@
           {
             "name": "handoff_to_isa",
             "result": {
-              "status": "live_baseline",
-              "side_effect_executed": true,
-              "reason": "v1_scope",
-              "mode": "live_baseline"
+              "mode": "live_baseline",
+              "reason": "v1_scope"
             }
           }
         ],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 0.29,
+        "latency_ms": 3.48,
         "error": [],
         "handoff": true,
         "live_data": [],
         "decision": {
           "action": "handoff_to_isa"
         },
-        "status": "FAIL",
-        "causes": [
-          "wrong_handoff"
-        ],
+        "status": "PASS",
+        "causes": [],
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Listo! Te pasé con Isa para que te asesore sobre la mejor opción de pestañas naturales para vos. Ella te va a consultar en un ratito 💕",
-        "tools": [
-          "handoff_to_isa"
-        ],
-        "tool_calls": [
-          {
-            "name": "handoff_to_isa",
-            "arguments": {
-              "reason": "product_advice",
-              "summary": "La clienta quiere pestañas naturales pero no especifica técnica (lifting, extensiones, etc.). Necesita asesoramiento para elegir la opción que mejor se adapte a lo que busca."
-            }
-          }
-        ],
-        "tool_results": [
-          {
-            "name": "handoff_to_isa",
-            "result": {
-              "accepted": true,
-              "status": "simulated_success",
-              "would_handoff": true,
-              "side_effect_executed": false,
-              "reason": "product_advice",
-              "summary": "La clienta quiere pestañas naturales pero no especifica técnica (lifting, extensiones, etc.). Necesita asesoramiento para elegir la opción que mejor se adapte a lo que busca."
-            }
-          }
-        ],
-        "llm_calls": 2,
+        "response": "¡Hola! 😊 Qué lindo que quieras pestañas naturales. Para poder asesorarte bien, contame un poco más: ¿buscás un servicio de pestañas (como lifting o extensiones) o querés comprar algún producto de pestañas?\n\nSi es un servicio, te paso con Isa que te va a ayudar a elegir lo que mejor se adapte a vos. Si es un producto, decime cuál te interesa y lo busco.",
+        "tools": [],
+        "tool_calls": [],
+        "tool_results": [],
+        "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 3241,
-          "completion_tokens": 196,
-          "total_tokens": 3437
+          "prompt_tokens": 941,
+          "completion_tokens": 104,
+          "total_tokens": 1045
         },
-        "latency_ms": 4156.22,
+        "latency_ms": 2131.62,
         "error": [],
-        "handoff": true,
+        "handoff": false,
         "live_data": [],
         "decision": {
-          "action": "handoff_to_isa",
-          "reason": "product_advice"
+          "action": "reply",
+          "source": "model"
         },
-        "status": "PASS",
-        "causes": [],
+        "status": "FAIL",
+        "causes": [
+          "wrong_tool",
+          "wrong_handoff"
+        ],
         "hallucination_flags": []
       }
     },
@@ -4337,7 +4330,6 @@
           "handoff_to_isa"
         ],
         "handoff": true,
-        "handoff_reason": "product_advice",
         "contains_any": [
           "Isa"
         ]
@@ -4359,30 +4351,26 @@
           {
             "name": "handoff_to_isa",
             "result": {
-              "status": "live_baseline",
-              "side_effect_executed": true,
-              "reason": "v1_scope",
-              "mode": "live_baseline"
+              "mode": "live_baseline",
+              "reason": "v1_scope"
             }
           }
         ],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 0.18,
+        "latency_ms": 0.45,
         "error": [],
         "handoff": true,
         "live_data": [],
         "decision": {
           "action": "handoff_to_isa"
         },
-        "status": "FAIL",
-        "causes": [
-          "wrong_handoff"
-        ],
+        "status": "PASS",
+        "causes": [],
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Listo! Te pasé con Isa, ella te va a recomendar las pestañas ideales según lo que estés buscando. 😊",
+        "response": "Te paso con Isa para que te asesore y elijamos juntas el modelo ideal para vos. 😊 ¿Algo más que necesites mientras tanto?",
         "tools": [
           "handoff_to_isa"
         ],
@@ -4391,7 +4379,7 @@
             "name": "handoff_to_isa",
             "arguments": {
               "reason": "product_advice",
-              "summary": "La clienta está viendo pestañas y pide recomendación de cuál elegir. Necesita asesoramiento personalizado."
+              "summary": "La clienta quiere recomendación de pestañas pero no especifica modelo ni necesidad concreta."
             }
           }
         ],
@@ -4400,21 +4388,19 @@
             "name": "handoff_to_isa",
             "result": {
               "accepted": true,
-              "status": "simulated_success",
-              "would_handoff": true,
-              "side_effect_executed": false,
+              "mode": "dry_run",
               "reason": "product_advice",
-              "summary": "La clienta está viendo pestañas y pide recomendación de cuál elegir. Necesita asesoramiento personalizado."
+              "summary": "La clienta quiere recomendación de pestañas pero no especifica modelo ni necesidad concreta."
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3230,
-          "completion_tokens": 152,
-          "total_tokens": 3382
+          "prompt_tokens": 2107,
+          "completion_tokens": 162,
+          "total_tokens": 2269
         },
-        "latency_ms": 3269.91,
+        "latency_ms": 3890.56,
         "error": [],
         "handoff": true,
         "live_data": [],
@@ -4422,9 +4408,13 @@
           "action": "handoff_to_isa",
           "reason": "product_advice"
         },
-        "status": "PASS",
-        "causes": [],
-        "hallucination_flags": []
+        "status": "FAIL",
+        "causes": [
+          "hallucination"
+        ],
+        "hallucination_flags": [
+          "dry_run_handoff_claim"
+        ]
       }
     },
     {
@@ -4437,7 +4427,6 @@
           "handoff_to_isa"
         ],
         "handoff": true,
-        "handoff_reason": "product_advice",
         "forbid": [
           "get_product"
         ],
@@ -4462,71 +4451,49 @@
           {
             "name": "handoff_to_isa",
             "result": {
-              "status": "live_baseline",
-              "side_effect_executed": true,
-              "reason": "v1_scope",
-              "mode": "live_baseline"
+              "mode": "live_baseline",
+              "reason": "v1_scope"
             }
           }
         ],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 0.11,
+        "latency_ms": 0.28,
         "error": [],
         "handoff": true,
         "live_data": [],
         "decision": {
           "action": "handoff_to_isa"
         },
-        "status": "FAIL",
-        "causes": [
-          "wrong_handoff"
-        ],
+        "status": "PASS",
+        "causes": [],
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! Para eso te va a asesorar Isa, que es la que maneja todo el tema de pestañas y lifting. Te va a recomendar la mejor opción según tu caso. ¿Le dejo tu consulta? 😊",
-        "tools": [
-          "handoff_to_isa"
-        ],
-        "tool_calls": [
-          {
-            "name": "handoff_to_isa",
-            "arguments": {
-              "reason": "product_advice",
-              "summary": "La clienta pregunta qué pestañas le sirven para lifting. Es una consulta de asesoramiento subjetivo sobre qué producto elegir para su caso."
-            }
-          }
-        ],
-        "tool_results": [
-          {
-            "name": "handoff_to_isa",
-            "result": {
-              "accepted": true,
-              "status": "simulated_success",
-              "would_handoff": true,
-              "side_effect_executed": false,
-              "reason": "product_advice",
-              "summary": "La clienta pregunta qué pestañas le sirven para lifting. Es una consulta de asesoramiento subjetivo sobre qué producto elegir para su caso."
-            }
-          }
-        ],
-        "llm_calls": 2,
+        "response": "¡Hola! Para asesorarte bien sobre qué pestañas te convienen para lifting, necesito saber un poquito más. ¿Tenés alguna marca o tipo en particular en mente, o querés que te recomiende según tu caso?\n\nSi me contás qué buscás, te puedo orientar mejor. 😊",
+        "tools": [],
+        "tool_calls": [],
+        "tool_results": [],
+        "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 3180,
-          "completion_tokens": 150,
-          "total_tokens": 3330
+          "prompt_tokens": 944,
+          "completion_tokens": 70,
+          "total_tokens": 1014
         },
-        "latency_ms": 3659.7,
+        "latency_ms": 1719.14,
         "error": [],
-        "handoff": true,
+        "handoff": false,
         "live_data": [],
         "decision": {
-          "action": "handoff_to_isa",
-          "reason": "product_advice"
+          "action": "reply",
+          "source": "model"
         },
-        "status": "PASS",
-        "causes": [],
+        "status": "FAIL",
+        "causes": [
+          "wrong_tool",
+          "wrong_handoff",
+          "missing_data"
+        ],
         "hallucination_flags": []
       }
     },
@@ -4544,7 +4511,7 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! Sí, trabajamos ventas mayoristas. 😊\n\nPara la lista de productos y los precios mayoristas aprobados de SHOOW TOOLS, te paso con Isa que te confirma todo. ¿Querés que la contacte?",
+        "response": "¡Hola! ¿Cómo va? 😊\n\nSí, trabajamos ventas mayoristas. La lista y los precios aprobados de SHOOW TOOLS se confirman con Isa, así que si te interesa, te paso con ella para que te arme la cotización.\n\n¿Querés que la contacte?",
         "tools": [
           "search_knowledge"
         ],
@@ -4567,10 +4534,10 @@
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 5057,
-          "completion_tokens": 55,
-          "total_tokens": 5112
+          "completion_tokens": 71,
+          "total_tokens": 5128
         },
-        "latency_ms": 1562.08,
+        "latency_ms": 1978.15,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -4582,7 +4549,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Sí! Trabajamos venta mayorista. La lista y los precios aprobados se confirman con Isa, así que si querés te la paso con ella. ¿Necesitás algo puntual?",
+        "response": "¡Sí! Trabajamos ventas mayoristas. 😊\n\nPara la lista de productos y precios mayoristas de SHOOW TOOLS, eso se confirma directamente con Isa. ¿Querés que te pase con ella para coordinar?",
         "tools": [
           "search_knowledge"
         ],
@@ -4590,7 +4557,7 @@
           {
             "name": "search_knowledge",
             "arguments": {
-              "query": "mayorista"
+              "query": "venta mayorista"
             }
           }
         ],
@@ -4603,18 +4570,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3194,
-          "completion_tokens": 95,
-          "total_tokens": 3289
+          "prompt_tokens": 2099,
+          "completion_tokens": 118,
+          "total_tokens": 2217
         },
-        "latency_ms": 3176.22,
+        "latency_ms": 3065.11,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -4659,7 +4625,7 @@
             "arguments": {
               "action": "reply",
               "reason": "normal_response",
-              "summary": "Consulta sobre marcas disponibles para mayorista. La lista y precios de SHOOW TOOLS se confirman con Isa.",
+              "summary": "Consulta sobre marcas disponibles para mayorista. La lista y precios aprobados de SHOOW TOOLS se confirman con Isa.",
               "response_mode": "policy_answer",
               "match_type": "",
               "requested_product": "",
@@ -4686,11 +4652,11 @@
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 26661,
-          "completion_tokens": 435,
-          "total_tokens": 27096
+          "prompt_tokens": 26670,
+          "completion_tokens": 414,
+          "total_tokens": 27084
         },
-        "latency_ms": 10342.0,
+        "latency_ms": 10938.23,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -4705,7 +4671,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! Mirá, en Beauty House trabajamos ventas mayoristas, pero la lista de marcas y los precios aprobados se confirman con Isa. Si querés, te la paso con ella para que te dé el detalle completo. ¿Te parece?",
+        "response": "¡Hola! 😊 Trabajamos ventas mayoristas, pero la lista de marcas y los precios aprobados se confirman con Isa, que es quien maneja ese tema.\n\n¿Querés que te pase con ella para que te arme el detalle?",
         "tools": [
           "search_knowledge"
         ],
@@ -4713,7 +4679,7 @@
           {
             "name": "search_knowledge",
             "arguments": {
-              "query": "marcas mayorista Beauty House"
+              "query": "marcas mayorista venta por mayor"
             }
           }
         ],
@@ -4726,18 +4692,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3202,
-          "completion_tokens": 110,
-          "total_tokens": 3312
+          "prompt_tokens": 2101,
+          "completion_tokens": 124,
+          "total_tokens": 2225
         },
-        "latency_ms": 2869.69,
+        "latency_ms": 3239.03,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -4765,10 +4730,9 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! ¿Cómo va? 😊\n\nMirá, la lista y los precios mayoristas de SHOOW TOOLS los maneja Isa directamente. Ya la dejé al tanto para que te pase la información completa. Te va a escribir en breve con los detalles. ¿Algo más en lo que te pueda ayudar mientras tanto?",
+        "response": "¡Hola! ¿Querés que le avise a Isa para que te pase la lista y los precios mayoristas de SHOOW TOOLS?",
         "tools": [
           "search_knowledge",
-          "handoff_to_isa",
           "set_turn_decision"
         ],
         "tool_calls": [
@@ -4779,18 +4743,11 @@
             }
           },
           {
-            "name": "handoff_to_isa",
-            "arguments": {
-              "reason": "special_sale_request",
-              "summary": "La clienta pide información mayorista de SHOOW TOOLS (lista y precios aprobados). Se confirman con Isa."
-            }
-          },
-          {
             "name": "set_turn_decision",
             "arguments": {
               "action": "handoff_to_isa",
               "reason": "special_sale_request",
-              "summary": "Consulta mayorista de SHOOW TOOLS; lista y precios se confirman con Isa.",
+              "summary": "Clienta pide información mayorista de SHOOW TOOLS; lista y precios aprobados se confirman con Isa.",
               "response_mode": "policy_answer",
               "match_type": "",
               "requested_product": "",
@@ -4809,14 +4766,6 @@
             }
           },
           {
-            "name": "handoff_to_isa",
-            "result": {
-              "handoff_requested": true,
-              "reason": "special_sale_request",
-              "mode": "live_baseline"
-            }
-          },
-          {
             "name": "set_turn_decision",
             "result": {
               "recorded": true
@@ -4825,16 +4774,16 @@
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 10434,
-          "completion_tokens": 332,
-          "total_tokens": 10766
+          "prompt_tokens": 10329,
+          "completion_tokens": 219,
+          "total_tokens": 10548
         },
-        "latency_ms": 4587.36,
+        "latency_ms": 3850.92,
         "error": [],
-        "handoff": true,
+        "handoff": false,
         "live_data": [],
         "decision": {
-          "action": "handoff_to_isa"
+          "action": "reply"
         },
         "status": "REVIEW",
         "causes": [
@@ -4843,15 +4792,22 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! 😊 Te cuento que en Beauty House trabajamos ventas mayoristas y SHOOW TOOLS está dentro de las marcas que manejamos. La lista de precios y las condiciones mayoristas aprobadas se confirman directamente con Isa.\n\n¿Querés que te pase con ella para coordinar la lista y los precios?",
+        "response": "¡Hola! Te cuento sobre SHOOW TOOLS 😊\n\nEn Beauty House trabajamos ventas mayoristas, pero la lista y los precios mayoristas aprobados de SHOOW TOOLS se confirman con Isa. También, si necesitás Factura A mayorista, hay que consultarle a Isa con tus datos fiscales.\n\nTe paso lo que tengo a mano de la línea (precios minoristas de referencia):\n- **SHOOW TOOLS - ISABEL I** (pestañas de banda): Chocolate y Black, $12.500\n- **SHOOW TOOLS - TAYLOR** (pestañas de banda): Black $11.900, Chocolate sin stock por ahora\n\n¿Querés que te conecte con Isa para coordinar la compra mayorista y los precios?",
         "tools": [
-          "search_knowledge"
+          "search_knowledge",
+          "get_product"
         ],
         "tool_calls": [
           {
             "name": "search_knowledge",
             "arguments": {
               "query": "mayorista SHOOW TOOLS"
+            }
+          },
+          {
+            "name": "get_product",
+            "arguments": {
+              "query": "SHOOW TOOLS"
             }
           }
         ],
@@ -4864,27 +4820,85 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
+              ]
+            }
+          },
+          {
+            "name": "get_product",
+            "result": {
+              "found": true,
+              "query": "SHOOW TOOLS",
+              "products": [
+                {
+                  "product_id": 101,
+                  "product_name": "SHOOW TOOLS - ISABEL I",
+                  "description": "Pestañas de banda.",
+                  "product_url": "https://shop.example/isabel-i",
+                  "variants": [
+                    {
+                      "sku": "ISABEL-I-CHOCOLATE",
+                      "variant": "Chocolate",
+                      "status": "in_stock",
+                      "quantity": 8,
+                      "price": "12500.00"
+                    },
+                    {
+                      "sku": "ISABEL-I-BLACK",
+                      "variant": "Black",
+                      "status": "in_stock",
+                      "quantity": 5,
+                      "price": "12500.00"
+                    }
+                  ]
+                },
+                {
+                  "product_id": 102,
+                  "product_name": "SHOOW TOOLS - TAYLOR",
+                  "description": "Pestañas de banda.",
+                  "product_url": "https://shop.example/taylor",
+                  "variants": [
+                    {
+                      "sku": "TAYLOR-BLACK",
+                      "variant": "Black",
+                      "status": "in_stock",
+                      "quantity": 3,
+                      "price": "11900.00"
+                    },
+                    {
+                      "sku": "TAYLOR-CHOCOLATE",
+                      "variant": "Chocolate",
+                      "status": "out_of_stock",
+                      "quantity": 0,
+                      "price": "11900.00"
+                    }
+                  ]
+                }
               ],
-              "allowed_next_action": "reply"
+              "identity_source": "tiendanube_fixture",
+              "availability_source": "tiendanube_live_fixture"
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3219,
-          "completion_tokens": 141,
-          "total_tokens": 3360
+          "prompt_tokens": 2464,
+          "completion_tokens": 270,
+          "total_tokens": 2734
         },
-        "latency_ms": 3192.31,
+        "latency_ms": 4815.13,
         "error": [],
         "handoff": false,
-        "live_data": [],
+        "live_data": [
+          "get_product"
+        ],
         "decision": {
           "action": "reply",
-          "source": "search_knowledge"
+          "source": "get_product"
         },
-        "status": "PASS",
-        "causes": [],
+        "status": "REVIEW",
+        "causes": [
+          "unnecessary_tool"
+        ],
         "hallucination_flags": []
       }
     },
@@ -4904,39 +4918,15 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! ¿Cómo va? 😊\n\nLos precios mayoristas aprobados de SHOOW TOOLS se confirman con Isa, así que le paso tu consulta para que te arme la lista con los precios vigentes. Enseguida te responde.",
+        "response": "¡Hola! ¿Cómo va?\n\nLos precios mayoristas aprobados de SHOOW TOOLS se confirman directamente con Isa, porque son una lista aprobada aparte. ¿Querés que te la pase con ella?",
         "tools": [
-          "search_knowledge",
-          "handoff_to_isa",
-          "set_turn_decision"
+          "search_knowledge"
         ],
         "tool_calls": [
           {
             "name": "search_knowledge",
             "arguments": {
               "query": "cuáles son los precios mayoristas aprobados de SHOOW TOOLS?"
-            }
-          },
-          {
-            "name": "handoff_to_isa",
-            "arguments": {
-              "reason": "special_sale_request",
-              "summary": "Clienta consulta por precios mayoristas aprobados de SHOOW TOOLS. La lista y precios se confirman con Isa."
-            }
-          },
-          {
-            "name": "set_turn_decision",
-            "arguments": {
-              "action": "handoff_to_isa",
-              "reason": "special_sale_request",
-              "summary": "Consulta por precios mayoristas de SHOOW TOOLS; se deriva a Isa.",
-              "response_mode": "policy_answer",
-              "match_type": "",
-              "requested_product": "",
-              "matched_product": "",
-              "requested_product_type": "",
-              "matched_product_type": "",
-              "required_checks": []
             }
           }
         ],
@@ -4946,43 +4936,27 @@
             "result": {
               "context": "Conocimiento aprobado de Beauty House:\n- El showroom y los retiros se coordinan previamente; los horarios se confirman al coordinar.\n- Puede retirar un tercero o un cadete/moto con coordinación y datos de autorización.\n- Beauty House trabaja ventas mayoristas. La lista y los precios aprobados de SHOOW TOOLS se confirman con Isa.\n- Para Factura A mayorista se debe consultar a Isa con los datos fiscales."
             }
-          },
-          {
-            "name": "handoff_to_isa",
-            "result": {
-              "handoff_requested": true,
-              "reason": "special_sale_request",
-              "mode": "live_baseline"
-            }
-          },
-          {
-            "name": "set_turn_decision",
-            "result": {
-              "recorded": true
-            }
           }
         ],
-        "llm_calls": 2,
+        "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 10450,
-          "completion_tokens": 321,
-          "total_tokens": 10771
+          "prompt_tokens": 5069,
+          "completion_tokens": 51,
+          "total_tokens": 5120
         },
-        "latency_ms": 4423.57,
+        "latency_ms": 1902.65,
         "error": [],
-        "handoff": true,
+        "handoff": false,
         "live_data": [],
         "decision": {
-          "action": "handoff_to_isa"
+          "action": "reply"
         },
-        "status": "REVIEW",
-        "causes": [
-          "unnecessary_tool"
-        ],
+        "status": "PASS",
+        "causes": [],
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! La lista de precios mayoristas de SHOOW TOOLS se confirma directamente con Isa. ¿Querés que te la pase con ella?",
+        "response": "¡Hola! 😊 Los precios mayoristas de SHOOW TOOLS se confirman directamente con Isa, que es quien maneja la lista y los precios aprobados. ¿Querés que te pase con ella para que te asesore?",
         "tools": [
           "search_knowledge"
         ],
@@ -5003,18 +4977,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3223,
-          "completion_tokens": 87,
-          "total_tokens": 3310
+          "prompt_tokens": 2122,
+          "completion_tokens": 120,
+          "total_tokens": 2242
         },
-        "latency_ms": 3154.83,
+        "latency_ms": 3748.2,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -5042,7 +5015,7 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! ¿Cómo va? 😊\n\nSí, trabajamos ventas mayoristas y para la Factura A se consulta con Isa, que te va a pedir los datos fiscales. ¿Querés que te pase con ella para coordinar eso?",
+        "response": "¡Hola! ¿Cómo va?\n\nSí, trabajamos ventas mayoristas y para la Factura A se consulta con Isa, que necesita los datos fiscales para armarla. ¿Querés que te pase con ella para coordinar?",
         "tools": [
           "search_knowledge"
         ],
@@ -5065,10 +5038,10 @@
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 5063,
-          "completion_tokens": 58,
-          "total_tokens": 5121
+          "completion_tokens": 53,
+          "total_tokens": 5116
         },
-        "latency_ms": 1744.35,
+        "latency_ms": 2027.61,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -5080,7 +5053,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Sí, en compras mayoristas se puede emitir Factura A, pero se coordina con Isa porque necesita los datos fiscales. ¿Querés que te la pase con tus datos?",
+        "response": "¡Hola! Sí, trabajamos ventas mayoristas y se puede emitir Factura A, pero eso se coordina con Isa. Necesitás pasarle tus datos fiscales (razón social, CUIT, etc.) para que te confirme la lista y los precios aprobados.\n\n¿Querés que te la derive para que te asesore? 😊",
         "tools": [
           "search_knowledge"
         ],
@@ -5101,18 +5074,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3229,
-          "completion_tokens": 113,
-          "total_tokens": 3342
+          "prompt_tokens": 2107,
+          "completion_tokens": 142,
+          "total_tokens": 2249
         },
-        "latency_ms": 3185.33,
+        "latency_ms": 4096.24,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -5149,10 +5121,9 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! Para la compra mayorista de SHOOW TOOLS te paso con Isa, que es quien maneja la lista y los precios aprobados. Ella te va a armar la cotización apenas pueda. ¿Algo más en lo que te ayude mientras tanto? 😊",
+        "response": "¿Me contás qué productos y cantidades te interesan? Así le paso todo a Isa y te confirma la lista y los precios aprobados.",
         "tools": [
           "search_knowledge",
-          "handoff_to_isa",
           "set_turn_decision"
         ],
         "tool_calls": [
@@ -5163,18 +5134,11 @@
             }
           },
           {
-            "name": "handoff_to_isa",
-            "arguments": {
-              "reason": "special_sale_request",
-              "summary": "Clienta quiere hacer una compra mayorista de SHOOW TOOLS. Se deriva a Isa para cotización y lista de precios aprobados."
-            }
-          },
-          {
             "name": "set_turn_decision",
             "arguments": {
               "action": "handoff_to_isa",
               "reason": "special_sale_request",
-              "summary": "Compra mayorista de SHOOW TOOLS derivada a Isa para cotización.",
+              "summary": "Cliente quiere compra mayorista de SHOOW TOOLS. Se deriva a Isa para lista y precios aprobados.",
               "response_mode": "general_response",
               "match_type": "",
               "requested_product": "",
@@ -5193,14 +5157,6 @@
             }
           },
           {
-            "name": "handoff_to_isa",
-            "result": {
-              "handoff_requested": true,
-              "reason": "special_sale_request",
-              "mode": "live_baseline"
-            }
-          },
-          {
             "name": "set_turn_decision",
             "result": {
               "recorded": true
@@ -5209,76 +5165,57 @@
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 10426,
-          "completion_tokens": 308,
-          "total_tokens": 10734
+          "prompt_tokens": 10351,
+          "completion_tokens": 237,
+          "total_tokens": 10588
         },
-        "latency_ms": 4076.25,
+        "latency_ms": 4763.34,
         "error": [],
-        "handoff": true,
+        "handoff": false,
         "live_data": [],
         "decision": {
-          "action": "handoff_to_isa"
+          "action": "reply"
         },
-        "status": "REVIEW",
+        "status": "FAIL",
         "causes": [
-          "unnecessary_tool"
+          "wrong_tool",
+          "unnecessary_tool",
+          "wrong_handoff"
         ],
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Listo! Te dejé con Isa para que te pase la lista y los precios mayoristas de SHOOW TOOLS. Ella te va a confirmar todo por acá. 😊",
+        "response": "Listo, te paso con Isa que te va a asesorar con la compra mayorista de SHOOW TOOLS. Ella te va a dar una mano con todo el tema. 😊",
         "tools": [
-          "search_knowledge",
           "handoff_to_isa"
         ],
         "tool_calls": [
           {
-            "name": "search_knowledge",
-            "arguments": {
-              "query": "SHOOW TOOLS mayorista compra condiciones"
-            }
-          },
-          {
             "name": "handoff_to_isa",
             "arguments": {
               "reason": "purchase_intent",
-              "summary": "Cliente quiere hacer una compra mayorista de SHOOW TOOLS. Necesita lista y precios aprobados."
+              "summary": "Cliente quiere hacer una compra mayorista de SHOOW TOOLS."
             }
           }
         ],
         "tool_results": [
           {
-            "name": "search_knowledge",
-            "result": {
-              "found": true,
-              "context": "Conocimiento aprobado de Beauty House:\n- El showroom y los retiros se coordinan previamente; los horarios se confirman al coordinar.\n- Puede retirar un tercero o un cadete/moto con coordinación y datos de autorización.\n- Beauty House trabaja ventas mayoristas. La lista y los precios aprobados de SHOOW TOOLS se confirman con Isa.\n- Para Factura A mayorista se debe consultar a Isa con los datos fiscales.",
-              "governing_topic": "fixture",
-              "retrieved_topics": [
-                "fixture"
-              ],
-              "allowed_next_action": "reply"
-            }
-          },
-          {
             "name": "handoff_to_isa",
             "result": {
               "accepted": true,
-              "status": "simulated_success",
-              "would_handoff": true,
-              "side_effect_executed": false,
+              "mode": "dry_run",
               "reason": "purchase_intent",
-              "summary": "Cliente quiere hacer una compra mayorista de SHOOW TOOLS. Necesita lista y precios aprobados."
+              "summary": "Cliente quiere hacer una compra mayorista de SHOOW TOOLS."
             }
           }
         ],
-        "llm_calls": 3,
+        "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 5202,
-          "completion_tokens": 232,
-          "total_tokens": 5434
+          "prompt_tokens": 2093,
+          "completion_tokens": 152,
+          "total_tokens": 2245
         },
-        "latency_ms": 4499.75,
+        "latency_ms": 3771.39,
         "error": [],
         "handoff": true,
         "live_data": [],
@@ -5286,11 +5223,13 @@
           "action": "handoff_to_isa",
           "reason": "purchase_intent"
         },
-        "status": "REVIEW",
+        "status": "FAIL",
         "causes": [
-          "unnecessary_tool"
+          "hallucination"
         ],
-        "hallucination_flags": []
+        "hallucination_flags": [
+          "dry_run_handoff_claim"
+        ]
       }
     },
     {
@@ -5325,16 +5264,14 @@
           {
             "name": "handoff_to_isa",
             "result": {
-              "status": "live_baseline",
-              "side_effect_executed": true,
-              "reason": "v1_scope",
-              "mode": "live_baseline"
+              "mode": "live_baseline",
+              "reason": "v1_scope"
             }
           }
         ],
         "llm_calls": 0,
         "tokens": {},
-        "latency_ms": 0.06,
+        "latency_ms": 0.26,
         "error": [],
         "handoff": true,
         "live_data": [],
@@ -5349,17 +5286,17 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Necesito un poco más de contexto para ayudarte. ¿Qué producto querés llevar? ¿Me decís cuál es? 😊",
+        "response": "¡Hola! 😊 ¿4 de qué producto estás buscando? Contame cuál es y te ayudo con eso.",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1490,
-          "completion_tokens": 30,
-          "total_tokens": 1520
+          "prompt_tokens": 938,
+          "completion_tokens": 28,
+          "total_tokens": 966
         },
-        "latency_ms": 1337.3,
+        "latency_ms": 1285.44,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -5388,17 +5325,17 @@
         ]
       },
       "v1": {
-        "response": "¡Hola! ¿Cómo va? 😊\n\nPerdón, se me cortó el hilo: ¿a qué \"esas\" te referís? ¿Las pestañas que estábamos viendo o algo puntual que te quedó pendiente? Contame y te ayudo.",
+        "response": "¡Hola! ¿Cómo va? 😊\n\n¿A qué te referís con \"esas\"? ¿Estás hablando de unas pestañas que vimos antes o de algún producto puntual? Contame un poquito más así te ayudo bien.",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 4905,
-          "completion_tokens": 63,
-          "total_tokens": 4968
+          "completion_tokens": 55,
+          "total_tokens": 4960
         },
-        "latency_ms": 1743.46,
+        "latency_ms": 1718.35,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -5410,17 +5347,17 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Hola! 😊 ¿A qué te referís con \"esas\"? ¿Me podés dar un poco más de contexto para ayudarte mejor?",
+        "response": "¡Hola! 😊 ¿En qué te puedo ayudar hoy?",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1488,
-          "completion_tokens": 32,
-          "total_tokens": 1520
+          "prompt_tokens": 936,
+          "completion_tokens": 15,
+          "total_tokens": 951
         },
-        "latency_ms": 1435.71,
+        "latency_ms": 1281.49,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -5428,8 +5365,10 @@
           "action": "reply",
           "source": "model"
         },
-        "status": "PASS",
-        "causes": [],
+        "status": "REVIEW",
+        "causes": [
+          "missing_data"
+        ],
         "hallucination_flags": []
       }
     },
@@ -5474,7 +5413,7 @@
             "arguments": {
               "action": "reply",
               "reason": "normal_response",
-              "summary": "Clienta eligió la variante Chocolate de Isabel I; stock verificado.",
+              "summary": "Clienta eligió la variante Chocolate de Isabel I. Stock verificado: 8 unidades, $12.500.",
               "response_mode": "product_advice",
               "match_type": "",
               "requested_product": "",
@@ -5510,11 +5449,11 @@
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 26879,
-          "completion_tokens": 317,
-          "total_tokens": 27196
+          "prompt_tokens": 26897,
+          "completion_tokens": 325,
+          "total_tokens": 27222
         },
-        "latency_ms": 8730.29,
+        "latency_ms": 8481.61,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -5531,7 +5470,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Sí! La Isabel I en Chocolate está disponible, tenemos stock. ¿Querés que te la reserve o necesitás algo más? 😊",
+        "response": "¡Sí! La Isabel I en Chocolate está disponible. 😊\n\n- **Precio:** $12.500\n- **Stock:** hay unidades disponibles\n\n¿Te la reservo o querés que te pase algo más?",
         "tools": [
           "get_product"
         ],
@@ -5567,19 +5506,17 @@
                 }
               ],
               "identity_source": "tiendanube_fixture",
-              "availability_source": "tiendanube_live_fixture",
-              "status": "found",
-              "allowed_next_action": "reply_from_live_evidence"
+              "availability_source": "tiendanube_live_fixture"
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3242,
-          "completion_tokens": 78,
-          "total_tokens": 3320
+          "prompt_tokens": 2119,
+          "completion_tokens": 95,
+          "total_tokens": 2214
         },
-        "latency_ms": 3351.52,
+        "latency_ms": 3064.25,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -5635,9 +5572,9 @@
             "arguments": {
               "action": "reply",
               "reason": "normal_response",
-              "summary": "Precio de Isabel I Chocolate consultado y verificado en stock.",
+              "summary": "Precio y stock de Isabel I Chocolate verificados.",
               "response_mode": "product_advice",
-              "match_type": "",
+              "match_type": "exact_match",
               "requested_product": "Isabel I Chocolate",
               "matched_product": "SHOOW TOOLS - ISABEL I",
               "requested_product_type": "pestañas de banda",
@@ -5671,11 +5608,11 @@
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 27435,
-          "completion_tokens": 431,
-          "total_tokens": 27866
+          "prompt_tokens": 27351,
+          "completion_tokens": 421,
+          "total_tokens": 27772
         },
-        "latency_ms": 10442.64,
+        "latency_ms": 9843.46,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -5692,7 +5629,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "La Isabel I en tono Chocolate está $12.500, y hay stock disponible. ¿Te la reservo?",
+        "response": "Las pestañas de banda Isabel I en color Chocolate están $12.500 y hay stock disponible. ¿Te ayudo con algo más?",
         "tools": [
           "get_product"
         ],
@@ -5728,19 +5665,17 @@
                 }
               ],
               "identity_source": "tiendanube_fixture",
-              "availability_source": "tiendanube_live_fixture",
-              "status": "found",
-              "allowed_next_action": "reply_from_live_evidence"
+              "availability_source": "tiendanube_live_fixture"
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3250,
-          "completion_tokens": 82,
-          "total_tokens": 3332
+          "prompt_tokens": 2130,
+          "completion_tokens": 90,
+          "total_tokens": 2220
         },
-        "latency_ms": 2818.19,
+        "latency_ms": 3115.95,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -5778,7 +5713,7 @@
         ]
       },
       "v1": {
-        "response": "Te dejo con Isa que te va a ayudar a ubicar el pedido 😊 ¡Quedate tranquila!",
+        "response": "Listo, te dejo con Isa para que te ayude a ubicar el pedido. ¡Gracias por tu paciencia! 😊",
         "tools": [
           "handoff_to_isa",
           "set_turn_decision"
@@ -5788,7 +5723,7 @@
             "name": "handoff_to_isa",
             "arguments": {
               "reason": "human_request",
-              "summary": "Clienta quiere saber dónde está su pedido pero no tiene el número a mano. Se deriva a Isa para seguimiento."
+              "summary": "La clienta quiere saber dónde está su pedido pero no tiene el número de orden a mano. Se deriva a Isa para que lo busque por sus datos."
             }
           },
           {
@@ -5796,7 +5731,7 @@
             "arguments": {
               "action": "handoff_to_isa",
               "reason": "human_request",
-              "summary": "Seguimiento de pedido sin número de orden; se deriva a Isa.",
+              "summary": "Cliente sin número de pedido quiere saber estado de su envío; se deriva a Isa.",
               "response_mode": "general_response",
               "match_type": "",
               "requested_product": "",
@@ -5825,11 +5760,11 @@
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 10098,
-          "completion_tokens": 250,
-          "total_tokens": 10348
+          "prompt_tokens": 10103,
+          "completion_tokens": 269,
+          "total_tokens": 10372
         },
-        "latency_ms": 4048.64,
+        "latency_ms": 4051.38,
         "error": [],
         "handoff": true,
         "live_data": [],
@@ -5844,17 +5779,17 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Sin el número no puedo consultar el estado. Cuando lo tengas, me lo pasás y lo busco al toque. 😊",
+        "response": "No hay drama. Cuando lo tengas, me lo pasás y te lo busco al toque. 😊\n\n¿Te puedo ayudar con algo más mientras tanto?",
         "tools": [],
         "tool_calls": [],
         "tool_results": [],
         "llm_calls": 1,
         "tokens": {
-          "prompt_tokens": 1511,
-          "completion_tokens": 30,
-          "total_tokens": 1541
+          "prompt_tokens": 959,
+          "completion_tokens": 36,
+          "total_tokens": 995
         },
-        "latency_ms": 1557.02,
+        "latency_ms": 1429.52,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -5892,7 +5827,7 @@
         ]
       },
       "v1": {
-        "response": "Sí, puede retirar un tercero o un cadete/moto, pero siempre con coordinación previa y los datos de autorización.",
+        "response": "Puede retirar un tercero o un cadete/moto, pero siempre con coordinación previa y los datos de autorización.",
         "tools": [
           "search_knowledge"
         ],
@@ -5915,10 +5850,10 @@
         "llm_calls": 1,
         "tokens": {
           "prompt_tokens": 5061,
-          "completion_tokens": 31,
-          "total_tokens": 5092
+          "completion_tokens": 30,
+          "total_tokens": 5091
         },
-        "latency_ms": 1429.09,
+        "latency_ms": 1382.91,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -5930,7 +5865,7 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "Sí, puede retirar otra persona o un cadete/moto, pero hay que coordinar previamente y dejar los datos de autorización.",
+        "response": "Sí, puede retirar otra persona o un cadete/moto, pero hay que coordinar previamente y dejar los datos de autorización. ¿Querés que te ayude a coordinar?",
         "tools": [
           "search_knowledge"
         ],
@@ -5951,18 +5886,17 @@
               "governing_topic": "fixture",
               "retrieved_topics": [
                 "fixture"
-              ],
-              "allowed_next_action": "reply"
+              ]
             }
           }
         ],
         "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 3249,
-          "completion_tokens": 94,
-          "total_tokens": 3343
+          "prompt_tokens": 2144,
+          "completion_tokens": 113,
+          "total_tokens": 2257
         },
-        "latency_ms": 3245.45,
+        "latency_ms": 3004.33,
         "error": [],
         "handoff": false,
         "live_data": [],
@@ -6025,7 +5959,7 @@
             "arguments": {
               "action": "reply",
               "reason": "normal_response",
-              "summary": "Clienta busca pestañas marrones sin recordar nombre. Se ofrecen dos modelos en chocolate, uno disponible y otro agotado.",
+              "summary": "Clienta busca pestañas marrones sin recordar nombre. Se ofrecen candidatas verificadas: Isabel I Chocolate (stock) y Taylor Chocolate (agotada).",
               "response_mode": "product_discovery",
               "match_type": "close_alternative",
               "requested_product": "pestañas marrones",
@@ -6142,11 +6076,11 @@
         ],
         "llm_calls": 5,
         "tokens": {
-          "prompt_tokens": 28299,
-          "completion_tokens": 660,
-          "total_tokens": 28959
+          "prompt_tokens": 28279,
+          "completion_tokens": 652,
+          "total_tokens": 28931
         },
-        "latency_ms": 9841.48,
+        "latency_ms": 11372.59,
         "error": [],
         "handoff": false,
         "live_data": [
@@ -6162,67 +6096,141 @@
         "hallucination_flags": []
       },
       "v2": {
-        "response": "¡Ah, marrones! Para identificarlas bien necesito que me pases una foto o el link de donde las viste. ¿Las tenés a mano?",
-        "tools": [],
-        "tool_calls": [],
-        "tool_results": [],
-        "llm_calls": 1,
+        "response": "¡Sí! Tenemos pestañas marrones (chocolate) en el catálogo:\n\n- **SHOOW TOOLS - ISABEL I** en Chocolate — $12.500, hay stock ✅\n- **SHOOW TOOLS - TAYLOR** en Chocolate — $11.900, pero está agotada 😕\n\n¿Te referías a alguna de estas? Si querés, te paso más detalle de la ISABEL I que está disponible.",
+        "tools": [
+          "get_product"
+        ],
+        "tool_calls": [
+          {
+            "name": "get_product",
+            "arguments": {
+              "query": "pestañas marrones"
+            }
+          }
+        ],
+        "tool_results": [
+          {
+            "name": "get_product",
+            "result": {
+              "found": true,
+              "query": "pestañas marrones",
+              "products": [
+                {
+                  "product_id": 101,
+                  "product_name": "SHOOW TOOLS - ISABEL I",
+                  "description": "Pestañas de banda.",
+                  "product_url": "https://shop.example/isabel-i",
+                  "variants": [
+                    {
+                      "sku": "ISABEL-I-CHOCOLATE",
+                      "variant": "Chocolate",
+                      "status": "in_stock",
+                      "quantity": 8,
+                      "price": "12500.00"
+                    },
+                    {
+                      "sku": "ISABEL-I-BLACK",
+                      "variant": "Black",
+                      "status": "in_stock",
+                      "quantity": 5,
+                      "price": "12500.00"
+                    }
+                  ]
+                },
+                {
+                  "product_id": 102,
+                  "product_name": "SHOOW TOOLS - TAYLOR",
+                  "description": "Pestañas de banda.",
+                  "product_url": "https://shop.example/taylor",
+                  "variants": [
+                    {
+                      "sku": "TAYLOR-BLACK",
+                      "variant": "Black",
+                      "status": "in_stock",
+                      "quantity": 3,
+                      "price": "11900.00"
+                    },
+                    {
+                      "sku": "TAYLOR-CHOCOLATE",
+                      "variant": "Chocolate",
+                      "status": "out_of_stock",
+                      "quantity": 0,
+                      "price": "11900.00"
+                    }
+                  ]
+                }
+              ],
+              "identity_source": "tiendanube_fixture",
+              "availability_source": "tiendanube_live_fixture"
+            }
+          }
+        ],
+        "llm_calls": 2,
         "tokens": {
-          "prompt_tokens": 1514,
-          "completion_tokens": 35,
-          "total_tokens": 1549
+          "prompt_tokens": 2322,
+          "completion_tokens": 169,
+          "total_tokens": 2491
         },
-        "latency_ms": 1534.34,
+        "latency_ms": 3806.27,
         "error": [],
         "handoff": false,
-        "live_data": [],
+        "live_data": [
+          "get_product"
+        ],
         "decision": {
           "action": "reply",
-          "source": "model"
+          "source": "get_product"
         },
-        "status": "PASS",
-        "causes": [],
+        "status": "REVIEW",
+        "causes": [
+          "unnecessary_tool",
+          "missing_data"
+        ],
         "hallucination_flags": []
       }
     }
   ],
   "summary": {
     "v1": {
-      "pass": 28,
-      "review": 18,
-      "fail": 8,
-      "pass_rate": 0.5185,
-      "latency_p50_ms": 1743.46,
-      "latency_p95_ms": 10342.0,
-      "tool_calls_avg": 1.259,
-      "llm_calls_avg": 1.944,
-      "tokens_avg": 10408.63,
+      "pass": 32,
+      "review": 16,
+      "fail": 6,
+      "pass_rate": 0.5926,
+      "latency_p50_ms": 1966.93,
+      "latency_p95_ms": 10959.71,
+      "tool_calls_avg": 1.148,
+      "llm_calls_avg": 1.926,
+      "tokens_avg": 10254.56,
       "causes": {
         "stale_context": 1,
-        "unnecessary_tool": 19,
+        "unnecessary_tool": 18,
         "missing_data": 16,
-        "wrong_tool": 3,
-        "wrong_handoff": 5
+        "wrong_tool": 4,
+        "wrong_handoff": 3
       }
     },
     "v2": {
-      "pass": 50,
-      "review": 4,
-      "fail": 0,
-      "pass_rate": 0.9259,
-      "latency_p50_ms": 2853.77,
-      "latency_p95_ms": 4156.22,
-      "tool_calls_avg": 0.778,
-      "llm_calls_avg": 1.778,
-      "tokens_avg": 2929.76,
+      "pass": 39,
+      "review": 6,
+      "fail": 9,
+      "pass_rate": 0.7222,
+      "latency_p50_ms": 3115.95,
+      "latency_p95_ms": 4815.13,
+      "tool_calls_avg": 0.833,
+      "llm_calls_avg": 1.815,
+      "tokens_avg": 2016.19,
       "causes": {
-        "missing_data": 3,
-        "unnecessary_tool": 1
+        "unnecessary_tool": 6,
+        "stale_context": 1,
+        "hallucination": 6,
+        "missing_data": 4,
+        "wrong_tool": 3,
+        "wrong_handoff": 3
       }
     }
   },
   "recommendation": {
-    "decision": "GO",
-    "reason": "V2 no tuvo bloqueantes y todos los handoffs de evaluación fueron side-effect-free."
+    "decision": "NO-GO",
+    "reason": "V2 conserva fallos bloqueantes o no alcanza 90% PASS; no ejecutar shadow real todavía."
   }
 }

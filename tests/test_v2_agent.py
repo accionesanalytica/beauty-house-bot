@@ -132,6 +132,17 @@ class FredV2VerticalSliceTests(unittest.TestCase):
         self.assertEqual("pickup", tool_evidence["shipping_type"])
         self.assertEqual("get_order", result["tool_results"][0]["name"])
 
+    def test_packed_pickup_reply_is_fixed_by_adapter_not_model(self):
+        result, _ = self.run_script([
+            model_tool("get_order", {"order_number": "6342"}),
+            {"content": "Ya está listo para retirar."},
+        ], "pedido 6342")
+        self.assertIn("empaquetado", result["reply"].lower())
+        self.assertIn("confirmación", result["reply"].lower())
+        self.assertNotIn("listo para retirar", result["reply"].lower())
+        evidence = result["tool_results"][0]["result"]
+        self.assertEqual("packed_waiting_pickup_confirmation", evidence["fulfillment_semantics"])
+
     def test_specific_product_uses_get_product(self):
         result, _ = self.run_script([
             model_tool("get_product", {"query": "Isabel I Chocolate"}),
@@ -161,6 +172,69 @@ class FredV2VerticalSliceTests(unittest.TestCase):
         ], "quiero unas pestañas naturales")
         self.assertEqual("product_advice", result["tool_calls"][0]["arguments"]["reason"])
 
+    def test_not_found_structurally_requires_custom_order_handoff(self):
+        tools = V2ToolAdapters(
+            product_lookup=lambda query: {"found": False, "products": [], "query": query},
+            handoff=lambda payload: {
+                "status": "simulated_success", "would_handoff": True,
+                "side_effect_executed": False, **payload,
+            },
+        )
+        model = ScriptedModel([
+            model_tool("get_product", {"query": "Modelo Fantasma Ultra"}),
+            {"content": "No aparece publicado."},
+            model_tool("handoff_to_isa", {
+                "reason": "custom_order", "summary": "Producto no encontrado; revisar encargo.",
+            }),
+            {"content": "No aparece en la web; Isa puede revisar si se consigue por encargo."},
+        ])
+        result = FredV2Agent(model_call=model, tools=tools).answer(
+            "tienen las pestañas Modelo Fantasma Ultra?",
+        )
+        self.assertEqual(["get_product", "handoff_to_isa"], [
+            call["name"] for call in result["tool_calls"]
+        ])
+        self.assertEqual("custom_order", result["tool_calls"][-1]["arguments"]["reason"])
+        self.assertTrue(result["tool_results"][-1]["result"]["would_handoff"])
+        self.assertFalse(result["tool_results"][-1]["result"]["side_effect_executed"])
+        self.assertIn("encargo", result["reply"].lower())
+        self.assertNotIn("similar", result["reply"].lower())
+
+    def test_current_turn_is_explicitly_separated_from_old_context(self):
+        result, model = self.run_script(
+            [{"content": "¡Hola de nuevo! ¿En qué te ayudo?"}],
+            "hola", history=[
+                {"role": "user", "content": "¿Tienen Isabel I?"},
+                {"role": "assistant", "content": "Sí, figura publicada."},
+            ],
+        )
+        sent = model.seen[0]
+        self.assertEqual("system", sent[-2]["role"])
+        self.assertIn("CURRENT TURN", sent[-2]["content"])
+        self.assertEqual({"role": "user", "content": "hola"}, sent[-1])
+        self.assertEqual([], result["tool_calls"])
+
+    def test_existing_visual_identification_case_requests_evidence_without_tools(self):
+        result, _ = self.run_script(
+            [{"content": "¿Tenés una foto, link o sabés el nombre del modelo?"}],
+            "eran como marrones", history=[
+                {"role": "user", "content": "Vi unas pestañas pero no recuerdo el nombre"},
+                {"role": "assistant", "content": "¿Tenés una foto o link?"},
+            ],
+        )
+        self.assertEqual([], result["tool_calls"])
+        self.assertIn("foto", result["reply"].lower())
+
+    def test_existing_social_acknowledgement_does_not_reuse_showroom_topic(self):
+        result, _ = self.run_script(
+            [{"content": "¡Dale, perfecto! 😊"}],
+            "dale perfecto", history=[
+                {"role": "user", "content": "¿Puedo pasar por el showroom?"},
+                {"role": "assistant", "content": "Sí, coordinando previamente."},
+            ],
+        )
+        self.assertEqual([], result["tool_calls"])
+
 
 class ClosedToolContractTests(unittest.TestCase):
     def test_only_four_tools_are_exposed(self):
@@ -184,6 +258,24 @@ class ClosedToolContractTests(unittest.TestCase):
             conversation_context=[],
         )
         self.assertTrue(callable(adapter))
+
+    def test_default_handoff_is_structured_simulation_without_side_effect(self):
+        result = V2ToolAdapters().call("handoff_to_isa", {
+            "reason": "product_advice", "summary": "Necesita recomendación.",
+        })
+        self.assertEqual("simulated_success", result["status"])
+        self.assertTrue(result["would_handoff"])
+        self.assertFalse(result["side_effect_executed"])
+
+    def test_packed_shipping_is_normalised_as_waiting_dispatch(self):
+        tools = V2ToolAdapters(order_lookup=lambda number: {
+            "found": True, "order_number": number, "fulfillment_status": "PACKED",
+            "shipping_type": "ship", "tracking": None, "carrier": None,
+        })
+        result = tools.call("get_order", {"order_number": "6342"})
+        self.assertEqual("packed_waiting_dispatch", result["fulfillment_semantics"])
+        self.assertIn("empaquetado", result["customer_safe_reply"].lower())
+        self.assertNotIn("listo para retirar", result["customer_safe_reply"].lower())
 
 
 class ABHarnessTests(unittest.TestCase):

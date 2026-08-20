@@ -36,16 +36,16 @@
   {"id":"product-03","category":"product","history":[],"message":"cuánto sale Isabel I Chocolate?","expect":{"tools":["get_product"],"contains_any":["12500","12.500"]}},
   {"id":"product-04","category":"product","history":[],"message":"hay stock de Taylor Black?","expect":{"tools":["get_product"],"contains_any":["stock","disponible","Taylor"]}},
   {"id":"product-05","category":"product","history":[],"message":"tenés Isabel I?","expect":{"tools":["get_product"],"contains_any":["variante","Chocolate","Black","cuál"]}},
-  {"id":"product-06","category":"product","history":[],"message":"tienen las pestañas Modelo Fantasma Ultra?","expect":{"tools":["get_product","handoff_to_isa"],"handoff":true,"contains_any":["Isa","encargo","no encontr"]}},
+  {"id":"product-06","category":"product","history":[],"message":"tienen las pestañas Modelo Fantasma Ultra?","expect":{"tools":["get_product","handoff_to_isa"],"handoff":true,"handoff_reason":"custom_order","contains_any":["Isa","encargo","no encontr"]}},
 
   {"id":"purchase-01","category":"purchase","history":[],"message":"quiero 4 Isabel I Chocolate","expect":{"tools":["handoff_to_isa"],"handoff":true,"forbid":["get_product"],"contains_any":["Isa"]}},
   {"id":"purchase-02","category":"purchase","history":[{"role":"user","content":"¿Tienen Isabel I Chocolate?"},{"role":"assistant","content":"Sí, está disponible."}],"message":"me llevo dos","expect":{"tools":["handoff_to_isa"],"handoff":true,"contains_any":["Isa"]}},
   {"id":"purchase-03","category":"purchase","history":[],"message":"quiero comprar 3 Taylor Black","expect":{"tools":["handoff_to_isa"],"handoff":true,"forbid":["get_product"],"contains_any":["Isa"]}},
   {"id":"purchase-04","category":"purchase","history":[{"role":"user","content":"Busco Isabel I Chocolate"},{"role":"assistant","content":"La variante existe."}],"message":"dale, quiero una","expect":{"tools":["handoff_to_isa"],"handoff":true,"contains_any":["Isa"]}},
 
-  {"id":"advice-01","category":"advice","history":[],"message":"quiero unas pestañas naturales","expect":{"tools":["handoff_to_isa"],"handoff":true,"contains_any":["Isa"]}},
-  {"id":"advice-02","category":"advice","history":[{"role":"user","content":"Estoy viendo pestañas"},{"role":"assistant","content":"¿Buscás algún modelo puntual?"}],"message":"cuál me recomendás?","expect":{"tools":["handoff_to_isa"],"handoff":true,"contains_any":["Isa"]}},
-  {"id":"advice-03","category":"advice","history":[],"message":"qué pestañas me sirven para lifting?","expect":{"tools":["handoff_to_isa"],"handoff":true,"forbid":["get_product"],"contains_any":["Isa"]}},
+  {"id":"advice-01","category":"advice","history":[],"message":"quiero unas pestañas naturales","expect":{"tools":["handoff_to_isa"],"handoff":true,"handoff_reason":"product_advice","contains_any":["Isa"]}},
+  {"id":"advice-02","category":"advice","history":[{"role":"user","content":"Estoy viendo pestañas"},{"role":"assistant","content":"¿Buscás algún modelo puntual?"}],"message":"cuál me recomendás?","expect":{"tools":["handoff_to_isa"],"handoff":true,"handoff_reason":"product_advice","contains_any":["Isa"]}},
+  {"id":"advice-03","category":"advice","history":[],"message":"qué pestañas me sirven para lifting?","expect":{"tools":["handoff_to_isa"],"handoff":true,"handoff_reason":"product_advice","forbid":["get_product"],"contains_any":["Isa"]}},
 
   {"id":"wholesale-01","category":"wholesale","history":[],"message":"trabajan mayorista?","expect":{"tools":["search_knowledge"],"contains_any":["mayorista"]}},
   {"id":"wholesale-02","category":"wholesale","history":[],"message":"qué marcas tienen para mayorista?","expect":{"tools":["search_knowledge"],"contains_any":["marca","SHOOW"]}},
