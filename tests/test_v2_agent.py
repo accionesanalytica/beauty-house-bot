@@ -13,7 +13,8 @@ for path in (BOT_DIR, EVAL_DIR):
 
 from fred_v2_ab import compare_turns  # noqa: E402
 from v2_agent import FredV2Agent  # noqa: E402
-from v2_tools import TOOL_SCHEMAS, V2ToolAdapters, live_handoff_adapter  # noqa: E402
+from v2_live_adapters import live_handoff_adapter  # noqa: E402
+from v2_tools import TOOL_SCHEMAS, V2ToolAdapters  # noqa: E402
 
 
 def model_tool(name, arguments, call_id="call-1"):

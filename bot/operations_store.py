@@ -452,6 +452,61 @@ def agent_observability_snapshot() -> Dict[str, Any]:
     }
 
 
+def record_v2_shadow_observation(observation: Dict[str, Any]) -> bool:
+    """Persist an isolated shadow record; never touch conversations or v1 state."""
+    if observation.get("side_effects") is not False:
+        raise ValueError("Shadow con side effects rechazado")
+
+    def non_negative(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO fred_v2_shadow_observations (
+                    correlation_id, source_message_id_hash, conversation_id, generation,
+                    input_text_redacted, v1_response_redacted, v2_response_redacted,
+                    v1_response_hash, v2_response_hash, v2_tool_calls, v2_tool_results,
+                    v2_llm_calls, v2_prompt_tokens, v2_completion_tokens, v2_latency_ms,
+                    v2_handoff_reason, error_type, side_effects
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false)
+                ON CONFLICT (correlation_id) DO NOTHING
+                """,
+                (
+                    str(observation.get("correlation_id") or "")[:80],
+                    str(observation.get("source_message_id_hash") or "")[:64] or None,
+                    int(observation.get("conversation_id") or 0),
+                    non_negative(observation.get("generation")),
+                    str(observation.get("input_text_redacted") or "")[:4000],
+                    str(observation.get("v1_response_redacted") or "")[:4000],
+                    str(observation.get("v2_response_redacted") or "")[:4000],
+                    str(observation.get("v1_response_hash") or "")[:64],
+                    str(observation.get("v2_response_hash") or "")[:64],
+                    Json(observation.get("v2_tool_calls") or []),
+                    Json(observation.get("v2_tool_results") or []),
+                    non_negative(observation.get("v2_llm_calls")),
+                    non_negative(observation.get("v2_prompt_tokens")),
+                    non_negative(observation.get("v2_completion_tokens")),
+                    non_negative(observation.get("v2_latency_ms")),
+                    str(observation.get("v2_handoff_reason") or "")[:80] or None,
+                    str(observation.get("error_type") or "")[:120] or None,
+                ),
+            )
+            inserted = cursor.rowcount == 1
+        connection.commit()
+        return inserted
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def claim_daily_operations_report(report_day) -> bool:
     """Reserve a calendar-day report so deployments cannot send it twice."""
     connection = _connect()

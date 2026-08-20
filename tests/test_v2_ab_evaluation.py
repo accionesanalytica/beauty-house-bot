@@ -93,10 +93,12 @@ class ABScoringTests(unittest.TestCase):
 
 
 class ShadowSafetyTests(unittest.TestCase):
-    def test_production_webhook_does_not_import_v2(self):
+    def test_production_webhook_imports_shadow_only_behind_disabled_flag(self):
         source = (ROOT / "bot" / "app.py").read_text(encoding="utf-8")
-        self.assertNotIn("v2_agent", source)
-        self.assertNotIn("v2_shadow", source)
+        self.assertNotIn("\nfrom v2_shadow", source)
+        self.assertIn('os.getenv("FRED_V2_SHADOW_ENABLED", "false")', source)
+        helper = source[source.index("def _begin_v2_shadow_turn"):source.index("def _observe_v2_shadow_delivery")]
+        self.assertLess(helper.index("if not FRED_V2_SHADOW_ENABLED"), helper.index("from v2_shadow"))
 
     def test_shadow_returns_only_observation_fields_and_dry_run_handoff(self):
         responses = iter((
@@ -120,7 +122,7 @@ class ShadowSafetyTests(unittest.TestCase):
         record = propose_shadow_turn("quiero cuatro", agent=agent)
         self.assertEqual(ALLOWED_SHADOW_LOG_FIELDS, set(record))
         self.assertEqual("handoff_to_isa", record["decision"]["action"])
-        self.assertNotIn("tool_results", record)
+        self.assertFalse(record["tool_results"][0]["result"]["side_effect_executed"])
         self.assertNotIn("customer_phone", record)
 
 

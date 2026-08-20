@@ -62,30 +62,38 @@ crees pedidos ni checkout. Después de una tool, redactá usando sólo su eviden
 No expliques nombres internos de herramientas a la clienta."""
 
 
+def make_model_call(*, timeout_seconds: float = 45.0) -> Callable[[List[Dict[str, Any]]], Dict[str, Any]]:
+    """Build the same v2 model client with a caller-owned network deadline."""
+    def call(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise RuntimeError("Falta DEEPSEEK_API_KEY en las variables de entorno.")
+        response = requests.post(
+            MODEL_URL,
+            headers={"Authorization": "Bearer {}".format(api_key), "Content-Type": "application/json"},
+            json={
+                "model": MODEL,
+                "messages": messages,
+                "tools": TOOL_SCHEMAS,
+                "tool_choice": "auto",
+                "temperature": 0.2,
+            },
+            timeout=max(1.0, float(timeout_seconds)),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        choices = payload.get("choices") or []
+        if not choices or not choices[0].get("message"):
+            raise RuntimeError("El modelo v2 devolvió una respuesta vacía.")
+        message = dict(choices[0]["message"])
+        message["_usage"] = payload.get("usage") or {}
+        return message
+
+    return call
+
+
 def _default_model_call(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    if not api_key:
-        raise RuntimeError("Falta DEEPSEEK_API_KEY en las variables de entorno.")
-    response = requests.post(
-        MODEL_URL,
-        headers={"Authorization": "Bearer {}".format(api_key), "Content-Type": "application/json"},
-        json={
-            "model": MODEL,
-            "messages": messages,
-            "tools": TOOL_SCHEMAS,
-            "tool_choice": "auto",
-            "temperature": 0.2,
-        },
-        timeout=45,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    choices = payload.get("choices") or []
-    if not choices or not choices[0].get("message"):
-        raise RuntimeError("El modelo v2 devolvió una respuesta vacía.")
-    message = dict(choices[0]["message"])
-    message["_usage"] = payload.get("usage") or {}
-    return message
+    return make_model_call()(messages)
 
 
 def _history_messages(history: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
