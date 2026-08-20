@@ -326,7 +326,10 @@ def score(case: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
     if missing:
         causes.append("wrong_tool")
     if extra or forbidden:
-        causes.append("stale_context" if case["category"] == "topic_change" else "unnecessary_tool")
+        if expect.get("strict_tools"):
+            causes.append("wrong_tool")
+        else:
+            causes.append("stale_context" if case["category"] == "topic_change" else "unnecessary_tool")
     handoff = "handoff_to_isa" in tools
     if "handoff" in expect and handoff != bool(expect["handoff"]):
         causes.append("wrong_handoff")
@@ -348,15 +351,23 @@ def score(case: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
     elif expect.get("contains_any") and not any(_norm(term) in reply for term in expect["contains_any"]):
         causes.append("missing_data")
     flags = hallucination_flags(result)
+    if expect.get("allow_capability_description"):
+        flags = [flag for flag in flags if flag != "unsupported_stock_claim"]
     if flags:
         causes.append("hallucination")
     if result.get("errors"):
         causes.append("bad_response")
     if float(result.get("latency_ms") or 0) > 15000:
         causes.append("latency")
+    exceeded_llm_limit = (
+        expect.get("max_llm_calls") is not None
+        and int(result.get("model_calls") or 0) > int(expect["max_llm_calls"])
+    )
+    if exceeded_llm_limit:
+        causes.append("bad_response")
     causes = list(dict.fromkeys(causes))
     blocking = {"wrong_tool", "stale_context", "hallucination", "wrong_handoff"}
-    status = "FAIL" if blocking.intersection(causes) else "REVIEW" if causes else "PASS"
+    status = "FAIL" if blocking.intersection(causes) or exceeded_llm_limit else "REVIEW" if causes else "PASS"
     return {"status": status, "causes": causes, "hallucination_flags": flags}
 
 
@@ -598,6 +609,7 @@ def main() -> int:
     parser.add_argument("--json-output", type=Path, default=DEFAULT_JSON_OUTPUT)
     parser.add_argument("--md-output", type=Path, default=DEFAULT_MD_OUTPUT)
     parser.add_argument("--limit", type=int, help="Ejecuta sólo los primeros N casos para smoke tests.")
+    parser.add_argument("--case-id", action="append", help="Ejecuta sólo IDs exactos; puede repetirse.")
     parser.add_argument("--rescore-json", type=Path, help="Recalcula scoring/reporte sin nuevas llamadas al modelo.")
     args = parser.parse_args()
     if args.rescore_json:
@@ -616,6 +628,12 @@ def main() -> int:
         raise SystemExit("Falta DEEPSEEK_API_KEY.")
 
     cases = json.loads(CASES_PATH.read_text(encoding="utf-8"))
+    if args.case_id:
+        requested = set(args.case_id)
+        cases = [case for case in cases if case["id"] in requested]
+        missing = requested.difference(case["id"] for case in cases)
+        if missing:
+            raise SystemExit("Case IDs inexistentes: {}".format(", ".join(sorted(missing))))
     if args.limit:
         cases = cases[:args.limit]
     v1 = V1ReplayRunner()

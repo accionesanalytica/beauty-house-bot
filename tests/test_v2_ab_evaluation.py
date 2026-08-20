@@ -16,7 +16,7 @@ from run_fred_v2_ab import (  # noqa: E402
     hallucination_flags,
     score,
 )
-from v2_agent import FredV2Agent  # noqa: E402
+from v2_agent import FredV2Agent, SYSTEM_PROMPT  # noqa: E402
 from v2_shadow import ALLOWED_SHADOW_LOG_FIELDS, propose_shadow_turn  # noqa: E402
 from v2_tools import V2ToolAdapters  # noqa: E402
 
@@ -33,6 +33,17 @@ class ABCaseBatteryTests(unittest.TestCase):
             "social", "topic_change", "order", "policy", "product", "purchase",
             "advice", "wholesale", "ambiguity",
         }.issubset({case["category"] for case in cases}))
+
+    def test_four_real_production_cases_are_in_the_priority_battery(self):
+        import json
+
+        cases = json.loads(CASES_PATH.read_text(encoding="utf-8"))
+        real = [case for case in cases if case["id"].startswith("real-prod-")]
+        self.assertEqual(4, len(real))
+        self.assertEqual(58, len(cases))
+        self.assertTrue(all(case["expect"].get("strict_tools") for case in real))
+        capabilities = next(case for case in real if case["id"] == "real-prod-02")
+        self.assertEqual(1, capabilities["expect"]["max_llm_calls"])
 
     def test_order_fixture_preserves_fulfillment_truth(self):
         self.assertEqual("PACKED", fixture_order("6342")["fulfillment_status"])
@@ -90,6 +101,36 @@ class ABScoringTests(unittest.TestCase):
             }}],
         }
         self.assertNotIn("dry_run_handoff_claim", hallucination_flags(result))
+
+    def test_capability_description_is_not_misread_as_live_stock_claim(self):
+        case = {
+            "category": "real_production",
+            "expect": {
+                "tools": [], "strict_tools": True, "max_llm_calls": 1,
+                "allow_capability_description": True,
+            },
+        }
+        result = {
+            "reply": "Puedo verificar si un producto está disponible y su precio.",
+            "tool_calls": [], "tool_results": [], "model_calls": 1, "errors": [],
+        }
+        self.assertEqual("PASS", score(case, result)["status"])
+
+    def test_capability_case_fails_if_it_uses_more_than_one_llm_call(self):
+        case = {
+            "category": "real_production",
+            "expect": {"tools": [], "strict_tools": True, "max_llm_calls": 1},
+        }
+        result = {
+            "reply": "Puedo ayudarte.", "tool_calls": [], "tool_results": [],
+            "model_calls": 2, "errors": [],
+        }
+        self.assertEqual("FAIL", score(case, result)["status"])
+
+    def test_sensitive_order_action_and_human_priority_are_prompt_contracts(self):
+        self.assertIn("acción sensible", SYSTEM_PROMPT)
+        self.assertIn("handoff_to_isa(reason=human_request)", SYSTEM_PROMPT)
+        self.assertIn("incluso si el mensaje también contiene otra consulta", SYSTEM_PROMPT)
 
 
 class ShadowSafetyTests(unittest.TestCase):

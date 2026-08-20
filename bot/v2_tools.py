@@ -248,7 +248,10 @@ TOOL_SCHEMAS = [
                 "Deriva a Isa. Es OBLIGATORIA para asesoramiento subjetivo (reason=product_advice), "
                 "cualquier solicitud explícita de comprar/llevar una cantidad "
                 "(reason=purchase_intent), aun sin identidad verificada, y producto no encontrado "
-                "(custom_order). Para compra no consultar catálogo ni pedir foto/link. No crea checkout."
+                "(custom_order). También es obligatoria con reason=human_request para pedidos "
+                "de hablar con una persona y acciones sensibles sobre un pedido (cancelar, cambiar, "
+                "devolver): no consultar otras tools primero. Para compra no consultar catálogo ni "
+                "pedir foto/link. No crea checkout ni modifica pedidos."
             ),
             "parameters": {
                 "type": "object",
