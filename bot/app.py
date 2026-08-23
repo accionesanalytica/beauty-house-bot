@@ -113,6 +113,7 @@ from tiendanube_events import (
     register_order_paid_webhook,
     webhook_signature_is_valid,
 )
+from v2_runtime import run_v2_customer_turn
 from operations_store import (
     agent_observability_snapshot,
     claim_daily_operations_report,
@@ -140,6 +141,7 @@ from conversation_store import (
     get_isa_sale_session,
     get_active_sales_intake,
     get_product_selection,
+    get_v2_bot_message,
     is_latest_customer_message,
     isa_reminders_snoozed,
     load_history,
@@ -148,11 +150,13 @@ from conversation_store import (
     mark_sales_intake_ready,
     pending_action_count,
     pending_reminder_snapshot,
+    prepare_v2_bot_message,
     record_isa_feedback,
     record_bot_message,
     record_inbound_message,
     enqueue_inbound_message,
     finish_processing_claim,
+    finish_v2_bot_message,
     processing_claim_is_current,
     release_processing_claim,
     renew_processing_claim,
@@ -199,8 +203,9 @@ if KNOWLEDGE_RAG_SOURCE not in {"local", "supabase"}:
     KNOWLEDGE_RAG_SOURCE = "local"
 KNOWLEDGE_DIRECTORY = Path(__file__).resolve().parents[1] / "knowledge"
 
-# Seguridad: hasta completar las pruebas, el webhook conserva la plantilla
-# actual. El modo agent se habilitará explícitamente en una etapa posterior.
+# template conserva la respuesta aprobada; v2 es el responder principal nuevo.
+# agent queda como nombre del runtime v1 heredado sólo mientras sus pruebas y
+# código se retiran: el cutover de Railway debe usar explícitamente "v2".
 BOT_RESPONSE_MODE = os.getenv("BOT_RESPONSE_MODE", "template").lower()
 # Opening Fred can be gradual without editing code. "open" preserves normal
 # production behavior; "allowlist" answers only listed test phones; "paused"
@@ -2021,17 +2026,13 @@ def send_escalacion_isa_template(
             f"[WhatsApp] HTTP {response.status_code}"
         )
 
-        print(
-            f"[WhatsApp] Response: {response.text}"
-        )
-
         response.raise_for_status()
 
         return True
 
-    except Exception as e:
+    except Exception as error:  # noqa: BLE001
 
-        print(f"ERROR enviando plantilla a WhatsApp: {e}")
+        print(f"ERROR enviando plantilla a WhatsApp: {type(error).__name__}")
 
         return False
 
@@ -2093,7 +2094,6 @@ def send_whatsapp_text(phone_number: str, text: str) -> bool:
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         print(f"[WhatsApp] HTTP {response.status_code}")
-        print(f"[WhatsApp] Response: {response.text}")
         response.raise_for_status()
         if delivery_context and (
             normalize_whatsapp_recipient(phone_number)
@@ -5816,12 +5816,15 @@ def _ingest_durable_webhook(body: dict) -> None:
             quiet_seconds=MESSAGE_QUIET_WINDOW_SECONDS,
             max_burst_seconds=MESSAGE_MAX_BURST_WAIT_SECONDS,
         )
+        inbound_hash = hashlib.sha256(
+            str(inbound.wa_message_id or "").encode("utf-8")
+        ).hexdigest()[:12]
         if result["duplicate"]:
-            print("[Cola] Mensaje duplicado ignorado: {}".format(inbound.wa_message_id))
+            print("[Cola] Mensaje duplicado ignorado: id_hash={}".format(inbound_hash))
         else:
             print(
-                "[Cola] Mensaje {} en conversación {}, generation {}.".format(
-                    inbound.wa_message_id,
+                "[Cola] Mensaje id_hash={} en conversación {}, generation {}.".format(
+                    inbound_hash,
                     result["conversation_id"],
                     result["generation"],
                 )
@@ -6039,11 +6042,10 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
         )
         return JSONResponse(content={"ok": True})
 
-    print(
-        f"\n[WhatsApp] "
-        f"{customer_phone}: "
-        f"{message_text}"
-    )
+    inbound_id_hash = hashlib.sha256(str(wa_message_id or "").encode("utf-8")).hexdigest()[:12]
+    print("\n[WhatsApp] inbound_id_hash={} chars={}".format(
+        inbound_id_hash, len(message_text),
+    ))
 
     conversation_id = 0
     state = "BOT"
@@ -6060,7 +6062,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
     # Capture the earlier conversation before saving this inbound event.  The
     # agent receives ``message_text`` separately, so this prevents the newest
     # customer turn from appearing twice in its context.
-    if BOT_RESPONSE_MODE == "agent" and not persisted_claim:
+    if BOT_RESPONSE_MODE in {"agent", "v2"} and not persisted_claim:
         try:
             with _timed(turn_latency, "history_load_ms"):
                 prior_history = load_history(customer_phone)
@@ -6079,7 +6081,39 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             turn_latency["inbound_record_ms"] += (
                 time.monotonic() - inbound_started) * 1000
             if duplicate:
-                print("[Conversacion] Mensaje duplicado ignorado.")
+                if BOT_RESPONSE_MODE == "v2":
+                    # A Meta retry is also the recovery path for a response
+                    # already prepared/failed (or a handoff prepared just
+                    # before a process crash). Replay is strictly outbox-only:
+                    # it never runs the model or v1 for a duplicate event.
+                    duplicate_result = await asyncio.to_thread(
+                        run_v2_customer_turn,
+                        customer_phone=customer_phone,
+                        conversation_id=conversation_id,
+                        source_message_id=wa_message_id or "",
+                        generation=0,
+                        message=message_text,
+                        history=prior_history,
+                        send_message=send_whatsapp_text,
+                        load_message=get_v2_bot_message,
+                        prepare_message=prepare_v2_bot_message,
+                        finish_message=finish_v2_bot_message,
+                        delivery_allowed=(
+                            lambda: not (
+                                CONVERSATION_DEBOUNCE_SECONDS
+                                and conversation_id
+                                and wa_message_id
+                            ) or is_latest_customer_message(conversation_id, wa_message_id)
+                        ),
+                        replay_only=True,
+                    )
+                    print(
+                        "[Conversacion] Mensaje duplicado; replay_v2_delivered={}.".format(
+                            str(bool(duplicate_result.get("delivered"))).lower(),
+                        )
+                    )
+                else:
+                    print("[Conversacion] Mensaje duplicado ignorado.")
                 return JSONResponse(content={"ok": True})
 
             print(
@@ -6092,7 +6126,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             history_available = False
             print(f"ERROR guardando conversacion (tipo: {type(error).__name__})")
 
-    if BOT_RESPONSE_MODE == "agent" and history_available and not persisted_claim:
+    if BOT_RESPONSE_MODE in {"agent", "v2"} and history_available and not persisted_claim:
         try:
             # A client often writes one thought in several bubbles. Wait a
             # small, bounded window; only the newest event in that burst gets
@@ -6118,7 +6152,7 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
     # RESPUESTA
     # ========================================================
 
-    if BOT_RESPONSE_MODE == "agent":
+    if BOT_RESPONSE_MODE in {"agent", "v2"}:
         access_reply = _customer_access_reply(customer_phone)
         if access_reply:
             if send_whatsapp_text(customer_phone, access_reply) and conversation_id:
@@ -6126,12 +6160,70 @@ async def _process_webhook_body(body: dict, persisted_claim: Optional[dict] = No
             print("[Operacion] Fred limitado por FRED_CUSTOMER_MODE={}.".format(FRED_CUSTOMER_MODE))
             return JSONResponse(content={"ok": True})
 
+        def v2_delivery_allowed() -> bool:
+            if persisted_claim:
+                return processing_claim_is_current(
+                    persisted_claim["conversation_id"],
+                    persisted_claim["generation"],
+                    persisted_claim["lease_owner"],
+                )
+            if (
+                CONVERSATION_DEBOUNCE_SECONDS
+                and conversation_id
+                and wa_message_id
+            ):
+                return is_latest_customer_message(conversation_id, wa_message_id)
+            return True
+
         # A database outage must not turn into a stateless AI conversation.
         if not history_available:
-            _send_service_fallback(
-                customer_phone, conversation_id, message_text, prior_history,
-                "Fred no pudo acceder al historial de conversación.",
+            if BOT_RESPONSE_MODE == "v2":
+                v2_result = await asyncio.to_thread(
+                    run_v2_customer_turn,
+                    customer_phone=customer_phone,
+                    conversation_id=conversation_id,
+                    source_message_id=wa_message_id or "",
+                    generation=(persisted_claim or {}).get("generation", 0),
+                    message=message_text,
+                    history=[],
+                    send_message=send_whatsapp_text,
+                    load_message=get_v2_bot_message,
+                    prepare_message=prepare_v2_bot_message,
+                    finish_message=finish_v2_bot_message,
+                    delivery_allowed=v2_delivery_allowed,
+                    platform_error="conversation_history_unavailable",
+                )
+                delivery_context = current_delivery_context.get()
+                if delivery_context and v2_result.get("delivered"):
+                    delivery_context.delivered = True
+            else:
+                _send_service_fallback(
+                    customer_phone, conversation_id, message_text, prior_history,
+                    "Fred no pudo acceder al historial de conversación.",
+                )
+            return JSONResponse(content={"ok": True})
+
+        if BOT_RESPONSE_MODE == "v2":
+            # Final cutover: v2 runs before legacy ownership, Fred Core,
+            # routing, retrieval and agent.answer. The immediate return keeps
+            # every v1 customer-response path unreachable in this mode.
+            v2_result = await asyncio.to_thread(
+                run_v2_customer_turn,
+                customer_phone=customer_phone,
+                conversation_id=conversation_id,
+                source_message_id=wa_message_id or "",
+                generation=(persisted_claim or {}).get("generation", 0),
+                message=message_text,
+                history=prior_history,
+                send_message=send_whatsapp_text,
+                load_message=get_v2_bot_message,
+                prepare_message=prepare_v2_bot_message,
+                finish_message=finish_v2_bot_message,
+                delivery_allowed=v2_delivery_allowed,
             )
+            delivery_context = current_delivery_context.get()
+            if delivery_context and v2_result.get("delivered"):
+                delivery_context.delivered = True
             return JSONResponse(content={"ok": True})
 
         if state != "BOT":

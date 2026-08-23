@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -18,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from operations_store import record_v2_shadow_observation
+from privacy import redact_text as _redact_text, redact_value as _redact_value
 from v2_agent import FredV2Agent, make_model_call
 from v2_tools import V2ToolAdapters
 
@@ -31,10 +31,6 @@ ALLOWED_SHADOW_LOG_FIELDS = {
     "proposed_reply", "tools", "tool_results", "latency_ms", "decision",
     "model_calls", "tokens", "errors",
 }
-
-_PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)")
-_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
-
 
 def shadow_enabled() -> bool:
     return os.getenv("FRED_V2_SHADOW_ENABLED", "false").strip().lower() == "true"
@@ -51,25 +47,6 @@ def shadow_timeout_seconds() -> float:
 
 def _hash_text(value: Any) -> str:
     return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
-
-
-def _redact_text(value: Any) -> str:
-    text = str(value or "")[:4000]
-    return _PHONE_RE.sub("[phone]", _EMAIL_RE.sub("[email]", text))
-
-
-def _redact_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key)[:80]: _redact_value(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_redact_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_redact_value(item) for item in value]
-    if isinstance(value, str):
-        return _redact_text(value)
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    return _redact_text(value)
 
 
 def _simulated_handoff(payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -507,6 +507,344 @@ def record_v2_shadow_observation(observation: Dict[str, Any]) -> bool:
         connection.close()
 
 
+_V2_HANDOFF_REASONS = {
+    "custom_order", "human_request", "purchase_intent", "product_advice",
+    "unable_to_verify", "cancel_order", "modify_order", "return_order",
+    "sensitive_order_action", "operational_detail_unverified",
+}
+_V2_EVENT_TYPES = {"response", "tool", "handoff", "handoff_resolved", "error"}
+_V2_EVENT_TOPICS = {"general", "knowledge", "order", "product", "handoff"}
+_V2_TOOL_NAMES = {
+    "search_knowledge", "get_order", "get_product", "handoff_to_isa", "unknown",
+}
+
+
+def record_v2_handoff(
+    *,
+    correlation_id: str,
+    conversation_id: int,
+    reason: str,
+    order_number: str = "",
+) -> Dict[str, Any]:
+    """Prepare one idempotent, topic-scoped handoff without changing ownership."""
+    if reason not in _V2_HANDOFF_REASONS:
+        raise ValueError("Motivo de handoff v2 inválido")
+    safe_correlation = str(correlation_id or "").strip()[:80]
+    if not safe_correlation:
+        raise ValueError("correlation_id es obligatorio")
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO fred_v2_handoffs (
+                    correlation_id, conversation_id, reason, order_number, status
+                ) VALUES (%s, %s, %s, %s, 'prepared')
+                ON CONFLICT (correlation_id) DO UPDATE
+                -- The first semantic decision for a source message is
+                -- canonical. A retry may return different model arguments,
+                -- but it must never rewrite the reason/order paired with the
+                -- already-persisted customer response.
+                SET correlation_id = fred_v2_handoffs.correlation_id
+                WHERE fred_v2_handoffs.conversation_id = EXCLUDED.conversation_id
+                RETURNING id, reason, order_number, status, created_at,
+                          delivered_at, resolved_at
+                """,
+                (
+                    safe_correlation,
+                    int(conversation_id),
+                    reason,
+                    str(order_number or "")[:64] or None,
+                ),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    if not row:
+        raise RuntimeError("No se pudo preparar el handoff v2")
+    return {
+        "id": int(row[0]), "reason": row[1], "order_number": row[2],
+        "status": row[3], "created_at": row[4], "delivered_at": row[5],
+        "resolved_at": row[6],
+    }
+
+
+def mark_v2_handoff_delivery(
+    conversation_id: int, handoff_ids: List[int], delivered: bool,
+) -> int:
+    """Move freshly prepared handoffs to pending only after customer delivery."""
+    safe_ids = []
+    for value in handoff_ids:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0 and parsed not in safe_ids:
+            safe_ids.append(parsed)
+    safe_ids.sort()
+    if not safe_ids:
+        return 0
+    status = "pending" if delivered else "delivery_failed"
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE fred_v2_handoffs
+                SET status = %s,
+                    delivered_at = CASE WHEN %s THEN now() ELSE delivered_at END,
+                    updated_at = now()
+                WHERE conversation_id = %s
+                  AND id = ANY(%s)
+                  AND status = 'prepared'
+                """,
+                (status, bool(delivered), int(conversation_id), safe_ids),
+            )
+            updated = cursor.rowcount
+        connection.commit()
+        return int(updated)
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def get_v2_handoff_by_correlation(
+    conversation_id: int, correlation_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Recover a handoff prepared just before an outbox/process crash."""
+    safe_correlation = str(correlation_id or "").strip()[:80]
+    if not safe_correlation:
+        return None
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, reason, order_number, status, created_at,
+                       delivered_at, resolved_at
+                FROM fred_v2_handoffs
+                WHERE conversation_id = %s AND correlation_id = %s
+                LIMIT 1
+                """,
+                (int(conversation_id), safe_correlation),
+            )
+            row = cursor.fetchone()
+    finally:
+        connection.close()
+    if not row:
+        return None
+    return {
+        "id": int(row[0]), "reason": row[1], "order_number": row[2],
+        "status": row[3], "created_at": row[4], "delivered_at": row[5],
+        "resolved_at": row[6],
+    }
+
+
+def list_pending_v2_handoffs(conversation_id: int, limit: int = 5) -> List[Dict[str, Any]]:
+    """Load bounded, non-PII state for the semantic agent's current turn."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, reason, order_number, status, created_at
+                FROM fred_v2_handoffs
+                WHERE conversation_id = %s AND status = 'pending'
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (int(conversation_id), max(1, min(10, int(limit)))),
+            )
+            rows = cursor.fetchall()
+    finally:
+        connection.close()
+    return [{
+        "id": int(row[0]), "reason": row[1], "order_number": row[2],
+        "status": row[3], "created_at": row[4],
+    } for row in rows]
+
+
+def acknowledge_v2_handoff(conversation_id: int, handoff_id: int) -> Dict[str, Any]:
+    """Resolve only the selected handoff in this conversation."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE fred_v2_handoffs
+                SET status = 'customer_acknowledged',
+                    resolved_at = COALESCE(resolved_at, now()),
+                    updated_at = now()
+                WHERE conversation_id = %s AND id = %s
+                  AND status IN ('pending', 'customer_acknowledged')
+                RETURNING id, reason, order_number, status, resolved_at
+                """,
+                (int(conversation_id), int(handoff_id)),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    if not row:
+        return {"found": False, "status": "not_found"}
+    return {
+        "found": True, "id": int(row[0]), "reason": row[1],
+        "order_number": row[2], "status": row[3], "resolved_at": row[4],
+    }
+
+
+def record_v2_events(events: List[Dict[str, Any]]) -> int:
+    """Persist one small event batch without customer text, phones or tool payloads."""
+    if not events:
+        return 0
+
+    def optional_non_negative(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return None
+
+    preserve_existing_correlations = {
+        str(event.get("correlation_id") or "").strip()[:80]
+        for event in events
+        if event.get("preserve_existing")
+    }
+    preserve_existing_correlations.discard("")
+    rows = []
+    for index, event in enumerate(events):
+        event_type = str(event.get("event_type") or "")
+        topic = str(event.get("topic") or "") or None
+        if event_type not in _V2_EVENT_TYPES:
+            raise ValueError("Tipo de evento v2 inválido")
+        if topic is not None and topic not in _V2_EVENT_TOPICS:
+            raise ValueError("Topic de evento v2 inválido")
+        reason = str(event.get("handoff_reason") or "") or None
+        if reason is not None and reason not in _V2_HANDOFF_REASONS:
+            raise ValueError("Motivo de evento v2 inválido")
+        correlation_id = str(event.get("correlation_id") or "").strip()[:80]
+        if not correlation_id:
+            raise ValueError("correlation_id de evento es obligatorio")
+        tool_name = str(event.get("tool_name") or "") or None
+        if tool_name is not None and tool_name not in _V2_TOOL_NAMES:
+            tool_name = "unknown"
+        rows.append((
+            correlation_id,
+            optional_non_negative(event.get("event_index", index)) or 0,
+            int(event.get("conversation_id") or 0),
+            event_type,
+            topic,
+            str(event.get("outcome") or "")[:80] or None,
+            tool_name,
+            reason,
+            optional_non_negative(event.get("latency_ms")),
+            optional_non_negative(event.get("llm_calls")),
+            optional_non_negative(event.get("prompt_tokens")),
+            optional_non_negative(event.get("completion_tokens")),
+            str(event.get("error_type") or "")[:120] or None,
+        ))
+
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            correlation_ids = sorted({row[0] for row in rows})
+            # A fully persisted successful delivery is terminal. A durable
+            # worker retry must not downgrade it or replace its tool/handoff
+            # evidence with a later failed/recomputed path.
+            cursor.execute(
+                """
+                SELECT correlation_id
+                FROM fred_v2_events
+                WHERE correlation_id = ANY(%s)
+                  AND event_type = 'response'
+                  AND outcome = 'sent'
+                FOR UPDATE
+                """,
+                (correlation_ids,),
+            )
+            terminal_correlations = {str(row[0]) for row in cursor.fetchall()}
+            rows = [row for row in rows if row[0] not in terminal_correlations]
+            if not rows:
+                connection.commit()
+                return 0
+            active_correlations = sorted({row[0] for row in rows})
+            # Replace non-terminal measurement rows so a changed retry path
+            # cannot leave orphan tool/errors. An outbox replay is the same
+            # canonical attempt, so it upgrades response outcome while keeping
+            # the original tool/usage evidence. Terminal handoff facts survive.
+            replace_correlations = [
+                value for value in active_correlations
+                if value not in preserve_existing_correlations
+            ]
+            if replace_correlations:
+                cursor.execute(
+                    """
+                    DELETE FROM fred_v2_events
+                    WHERE correlation_id = ANY(%s)
+                      AND event_type NOT IN ('handoff', 'handoff_resolved')
+                    """,
+                    (replace_correlations,),
+                )
+            inserted = 0
+            for row in rows:
+                if row[0] in preserve_existing_correlations and row[3] == "response":
+                    cursor.execute(
+                        """
+                        INSERT INTO fred_v2_events (
+                            correlation_id, event_index, conversation_id, event_type,
+                            topic, outcome, tool_name, handoff_reason, latency_ms,
+                            llm_calls, prompt_tokens, completion_tokens, error_type
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (correlation_id, event_type, event_index) DO UPDATE SET
+                            conversation_id = EXCLUDED.conversation_id,
+                            outcome = EXCLUDED.outcome
+                        """,
+                        row,
+                    )
+                    inserted += max(0, int(cursor.rowcount or 0))
+                    continue
+                cursor.execute(
+                    """
+                    INSERT INTO fred_v2_events (
+                        correlation_id, event_index, conversation_id, event_type,
+                        topic, outcome, tool_name, handoff_reason, latency_ms,
+                        llm_calls, prompt_tokens, completion_tokens, error_type
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (correlation_id, event_type, event_index) DO UPDATE SET
+                        conversation_id = EXCLUDED.conversation_id,
+                        topic = EXCLUDED.topic,
+                        outcome = EXCLUDED.outcome,
+                        tool_name = EXCLUDED.tool_name,
+                        handoff_reason = EXCLUDED.handoff_reason,
+                        latency_ms = EXCLUDED.latency_ms,
+                        llm_calls = EXCLUDED.llm_calls,
+                        prompt_tokens = EXCLUDED.prompt_tokens,
+                        completion_tokens = EXCLUDED.completion_tokens,
+                        error_type = EXCLUDED.error_type
+                    WHERE fred_v2_events.event_type NOT IN ('handoff', 'handoff_resolved')
+                    """,
+                    row,
+                )
+                inserted += max(0, int(cursor.rowcount or 0))
+        connection.commit()
+        return inserted
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def claim_daily_operations_report(report_day) -> bool:
     """Reserve a calendar-day report so deployments cannot send it twice."""
     connection = _connect()
