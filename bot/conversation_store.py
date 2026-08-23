@@ -281,6 +281,10 @@ def claim_next_conversation(worker_id: str, lease_seconds: float) -> Optional[Di
                 SELECT direction, sender, body
                 FROM messages
                 WHERE conversation_id = %s AND id < %s
+                  AND (
+                    fred_v2_delivery_status IS NULL
+                    OR fred_v2_delivery_status = 'sent'
+                  )
                 ORDER BY id DESC
                 LIMIT 12
                 """,
@@ -463,6 +467,243 @@ def record_bot_message(conversation_id: int, body: str) -> None:
         connection.close()
 
 
+def prepare_v2_bot_message(
+    conversation_id: int,
+    correlation_id: str,
+    body: str,
+    handoff_action: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Persist one idempotent v2 outbox row before attempting WhatsApp.
+
+    The bounded handoff action is stored with the canonical reply so final
+    delivery and its topic-scoped state transition can commit atomically.
+    Free text and tool payloads are deliberately excluded.
+    """
+    safe_correlation = str(correlation_id or "").strip()[:80]
+    safe_body = str(body or "").strip()
+    if not safe_correlation or not safe_body:
+        raise ValueError("correlation_id y body son obligatorios")
+    action = dict(handoff_action or {})
+    operation = str(action.get("operation") or "").strip() or None
+    reason = str(action.get("reason") or "").strip() or None
+    try:
+        handoff_id = int(action.get("handoff_id") or 0) or None
+    except (TypeError, ValueError):
+        handoff_id = None
+    allowed_operations = {"create", "repeat", "resolve"}
+    allowed_reasons = {
+        "custom_order", "human_request", "purchase_intent", "product_advice",
+        "unable_to_verify", "cancel_order", "modify_order", "return_order",
+        "sensitive_order_action", "operational_detail_unverified",
+    }
+    if operation is not None and (
+        operation not in allowed_operations
+        or not handoff_id
+        or reason not in allowed_reasons
+    ):
+        raise ValueError("handoff_action v2 inválida")
+    if operation is None:
+        handoff_id = None
+        reason = None
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO messages (
+                    conversation_id, direction, sender, body,
+                    fred_v2_correlation_id, fred_v2_delivery_status,
+                    fred_v2_handoff_operation, fred_v2_handoff_id,
+                    fred_v2_handoff_reason
+                )
+                VALUES (%s, 'out', 'bot', %s, %s, 'prepared', %s, %s, %s)
+                ON CONFLICT (fred_v2_correlation_id)
+                    WHERE fred_v2_correlation_id IS NOT NULL
+                DO UPDATE SET
+                    fred_v2_delivery_status = CASE
+                        WHEN messages.fred_v2_delivery_status = 'sent' THEN 'sent'
+                        ELSE 'prepared'
+                    END
+                WHERE messages.conversation_id = EXCLUDED.conversation_id
+                RETURNING id, body, fred_v2_delivery_status, fred_v2_delivered_at,
+                          fred_v2_handoff_operation, fred_v2_handoff_id,
+                          fred_v2_handoff_reason
+                """,
+                (
+                    int(conversation_id), safe_body, safe_correlation,
+                    operation, handoff_id, reason,
+                ),
+            )
+            row = cursor.fetchone()
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    if not row:
+        raise RuntimeError("No se pudo preparar la respuesta v2")
+    return {
+        "message_id": int(row[0]), "body": row[1], "status": row[2],
+        "delivered_at": row[3], "handoff_operation": row[4],
+        "handoff_id": row[5], "handoff_reason": row[6],
+    }
+
+
+def get_v2_bot_message(conversation_id: int, correlation_id: str) -> Optional[Dict[str, Any]]:
+    """Read an existing v2 outbox row before any retry executes the agent."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, body, fred_v2_delivery_status, fred_v2_delivered_at,
+                       fred_v2_handoff_operation, fred_v2_handoff_id,
+                       fred_v2_handoff_reason
+                FROM messages
+                WHERE conversation_id = %s AND fred_v2_correlation_id = %s
+                LIMIT 1
+                """,
+                (int(conversation_id), str(correlation_id or "")[:80]),
+            )
+            row = cursor.fetchone()
+    finally:
+        connection.close()
+    if not row:
+        return None
+    return {
+        "message_id": int(row[0]), "body": row[1], "status": row[2],
+        "delivered_at": row[3], "handoff_operation": row[4],
+        "handoff_id": row[5], "handoff_reason": row[6],
+    }
+
+
+def finish_v2_bot_message(
+    conversation_id: int,
+    message_id: int,
+    correlation_id: str,
+    delivered: bool,
+) -> Dict[str, Any]:
+    """Atomically finalize delivery and its bounded handoff state action."""
+    connection = _connect()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT fred_v2_delivery_status, fred_v2_delivered_at,
+                       fred_v2_handoff_operation, fred_v2_handoff_id,
+                       fred_v2_handoff_reason
+                FROM messages
+                WHERE id = %s
+                  AND conversation_id = %s
+                  AND fred_v2_correlation_id = %s
+                FOR UPDATE
+                """,
+                (
+                    int(message_id), int(conversation_id),
+                    str(correlation_id or "")[:80],
+                ),
+            )
+            existing = cursor.fetchone()
+            if not existing:
+                connection.commit()
+                return {"found": False, "status": "not_found"}
+
+            previous_status, previous_delivered_at, operation, handoff_id, reason = existing
+            effective_delivered = bool(delivered) or previous_status == "sent"
+            action_applied = operation is None or operation == "repeat"
+            action_status = None
+            if operation == "create" and handoff_id:
+                target_status = "pending" if effective_delivered else "delivery_failed"
+                cursor.execute(
+                    """
+                    UPDATE fred_v2_handoffs
+                    SET status = CASE
+                            WHEN status IN ('pending', 'customer_acknowledged') THEN status
+                            ELSE %s
+                        END,
+                        delivered_at = CASE
+                            WHEN %s THEN COALESCE(delivered_at, now())
+                            ELSE delivered_at
+                        END,
+                        updated_at = now()
+                    WHERE conversation_id = %s AND id = %s
+                      AND correlation_id = %s
+                      AND status IN (
+                          'prepared', 'delivery_failed', 'pending',
+                          'customer_acknowledged'
+                      )
+                    RETURNING status
+                    """,
+                    (
+                        target_status, effective_delivered, int(conversation_id),
+                        int(handoff_id), str(correlation_id or "")[:80],
+                    ),
+                )
+                action_row = cursor.fetchone()
+                action_applied = bool(action_row)
+                action_status = action_row[0] if action_row else None
+            elif operation == "resolve" and handoff_id and effective_delivered:
+                cursor.execute(
+                    """
+                    UPDATE fred_v2_handoffs
+                    SET status = 'customer_acknowledged',
+                        resolved_at = COALESCE(resolved_at, now()),
+                        updated_at = now()
+                    WHERE conversation_id = %s AND id = %s
+                      AND reason = %s
+                      AND status IN ('pending', 'customer_acknowledged')
+                    RETURNING status
+                    """,
+                    (int(conversation_id), int(handoff_id), reason),
+                )
+                action_row = cursor.fetchone()
+                action_applied = bool(action_row)
+                action_status = action_row[0] if action_row else None
+
+            cursor.execute(
+                """
+                UPDATE messages
+                SET fred_v2_delivery_status = CASE
+                        WHEN fred_v2_delivery_status = 'sent' THEN 'sent'
+                        WHEN %s THEN 'sent' ELSE 'failed'
+                    END,
+                    fred_v2_delivered_at = CASE
+                        WHEN fred_v2_delivery_status = 'sent' THEN fred_v2_delivered_at
+                        WHEN %s THEN now() ELSE fred_v2_delivered_at
+                    END
+                WHERE id = %s
+                  AND conversation_id = %s
+                  AND fred_v2_correlation_id = %s
+                RETURNING fred_v2_delivery_status, fred_v2_delivered_at
+                """,
+                (
+                    effective_delivered, effective_delivered, int(message_id),
+                    int(conversation_id), str(correlation_id or "")[:80],
+                ),
+            )
+            row = cursor.fetchone()
+            if row and row[0] == "sent":
+                cursor.execute(
+                    "UPDATE conversations SET last_message_at = now() WHERE id = %s",
+                    (int(conversation_id),),
+                )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+    if not row:
+        return {"found": False, "status": "not_found"}
+    return {
+        "found": True, "status": row[0], "delivered_at": row[1],
+        "handoff_operation": operation, "handoff_id": handoff_id,
+        "handoff_reason": reason, "handoff_action_applied": action_applied,
+        "handoff_action_status": action_status,
+    }
+
+
 def record_isa_feedback(
     isa_phone: str,
     body: str,
@@ -515,6 +756,10 @@ def load_history(customer_phone: str, limit: int = 12) -> List[Dict[str, Any]]:
                 WHERE conversation_id = (
                     SELECT id FROM conversations WHERE customer_phone = %s
                 )
+                  AND (
+                    fred_v2_delivery_status IS NULL
+                    OR fred_v2_delivery_status = 'sent'
+                  )
                 ORDER BY created_at DESC, id DESC
                 LIMIT %s
                 """,
@@ -573,6 +818,10 @@ def load_open_customer_turn(customer_phone: str, limit: int = 12) -> str:
                     FROM messages
                     WHERE conversation_id = (SELECT id FROM conversation)
                       AND direction = 'out'
+                      AND (
+                        fred_v2_delivery_status IS NULL
+                        OR fred_v2_delivery_status = 'sent'
+                      )
                 )
                 SELECT body
                 FROM messages

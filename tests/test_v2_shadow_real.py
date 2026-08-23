@@ -19,6 +19,7 @@ import tiendanube_tools  # noqa: E402
 import v2_shadow  # noqa: E402
 from run_fred_v2_shadow_eval import aggregate  # noqa: E402
 from v2_shadow import ShadowReadOnlyTools, ShadowTurn  # noqa: E402
+from v2_tools import V2ToolAdapters  # noqa: E402
 
 
 class ShadowToolSafetyTests(unittest.TestCase):
@@ -88,6 +89,24 @@ class ShadowToolSafetyTests(unittest.TestCase):
         put.assert_not_called()
         patch_method.assert_not_called()
         delete.assert_not_called()
+
+    def test_live_product_adapter_drops_product_and_checkout_links(self):
+        with patch.object(
+            tiendanube_tools, "search_products",
+            return_value=[{"product_id": 1}],
+        ), patch.object(
+            tiendanube_tools, "get_product_availability",
+            return_value={
+                "found": True, "product_id": 1, "product_name": "Isabel I",
+                "product_url": "https://tienda.example/isabel",
+                "checkout_url": "https://tienda.example/checkout",
+                "variants": [],
+            },
+        ):
+            result = V2ToolAdapters().call("get_product", {"query": "Isabel I"})
+        product = result["products"][0]
+        self.assertNotIn("product_url", product)
+        self.assertNotIn("checkout_url", product)
 
     def test_shadow_path_never_calls_whatsapp_or_isa_sender(self):
         responses = iter((

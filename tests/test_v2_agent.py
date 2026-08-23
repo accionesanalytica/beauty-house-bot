@@ -110,6 +110,33 @@ class FredV2VerticalSliceTests(unittest.TestCase):
         self.assertEqual(["search_knowledge"], [call["name"] for call in result["tool_calls"]])
         self.assertIn("showroom", model.seen[-1][-1]["content"])
 
+    def test_missing_knowledge_structurally_requires_operational_handoff(self):
+        calls = []
+        tools = V2ToolAdapters(
+            knowledge_search=lambda query: {"found": False, "context": ""},
+            handoff=lambda payload: calls.append(payload) or {
+                "status": "simulated_success", "would_handoff": True,
+                "side_effect_executed": False, **payload,
+            },
+        )
+        model = ScriptedModel([
+            model_tool("search_knowledge", {"query": "retiro sin coordinación"}),
+            {"content": "Podés retirar cuando quieras."},
+            model_tool("handoff_to_isa", {
+                "reason": "operational_detail_unverified",
+                "summary": "Knowledge no confirma este detalle de retiro.",
+            }),
+            {"content": "No tengo ese detalle confirmado; Isa puede revisarlo."},
+        ])
+        result = FredV2Agent(model_call=model, tools=tools).answer(
+            "¿puedo retirar sin coordinar?",
+        )
+        self.assertEqual(
+            ["search_knowledge", "handoff_to_isa"],
+            [call["name"] for call in result["tool_calls"]],
+        )
+        self.assertEqual("operational_detail_unverified", calls[0]["reason"])
+
     def test_order_question_without_number_asks_for_it_without_tools(self):
         result, _ = self.run_script(
             [{"content": "Claro, ¿me pasás el número de pedido?"}],
@@ -144,6 +171,30 @@ class FredV2VerticalSliceTests(unittest.TestCase):
         evidence = result["tool_results"][0]["result"]
         self.assertEqual("packed_waiting_pickup_confirmation", evidence["fulfillment_semantics"])
 
+    def test_missing_order_forces_handoff_instead_of_free_model_claim(self):
+        tools = V2ToolAdapters(
+            order_lookup=lambda number: {"found": False, "order_number": number},
+            handoff=lambda payload: {
+                "status": "simulated_success", "would_handoff": True,
+                "side_effect_executed": False, **payload,
+            },
+        )
+        model = ScriptedModel([
+            model_tool("get_order", {"order_number": "6344"}),
+            {"content": "Tu pedido ya fue cancelado."},
+            model_tool("handoff_to_isa", {
+                "operation": "create", "reason": "unable_to_verify",
+                "summary": "El pedido #6344 no apareció en la fuente real.",
+            }),
+            {"content": "No pude confirmar el pedido; Isa puede revisarlo."},
+        ])
+        result = FredV2Agent(model_call=model, tools=tools).answer("pedido 6344")
+        self.assertEqual(
+            ["get_order", "handoff_to_isa"],
+            [call["name"] for call in result["tool_calls"]],
+        )
+        self.assertNotIn("ya fue cancelado", result["reply"])
+
     def test_specific_product_uses_get_product(self):
         result, _ = self.run_script([
             model_tool("get_product", {"query": "Isabel I Chocolate"}),
@@ -151,6 +202,29 @@ class FredV2VerticalSliceTests(unittest.TestCase):
         ], "¿Tienen Isabel I Chocolate?")
         self.assertEqual(["get_product"], [call["name"] for call in result["tool_calls"]])
         self.assertEqual("get_product", self.called[0][0])
+
+    def test_product_reply_is_deterministic_and_rejects_invented_checkout_facts(self):
+        tools = V2ToolAdapters(product_lookup=lambda query: {
+            "found": True,
+            "products": [{
+                "product_name": "Isabel I",
+                "variants": [{
+                    "variant": "Chocolate", "status": "in_stock",
+                    "quantity": 1, "price": "100.00",
+                }],
+            }],
+        })
+        result = FredV2Agent(model_call=ScriptedModel([
+            model_tool("get_product", {"query": "Isabel I Chocolate"}),
+            {"content": (
+                "Hay 99 unidades a $1. Comprá en "
+                "https://inventado.example/checkout"
+            )},
+        ]), tools=tools).answer("stock y precio de Isabel I Chocolate")
+        self.assertIn("1 unidad", result["reply"])
+        self.assertIn("$100", result["reply"])
+        self.assertNotIn("99 unidades", result["reply"])
+        self.assertNotIn("http", result["reply"])
 
     def test_quantity_plus_product_hands_off_without_checkout(self):
         result, _ = self.run_script([
@@ -251,12 +325,19 @@ class ClosedToolContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tools.call("get_order", {"order_number": "6344; DROP"})
 
-    def test_live_handoff_reuses_existing_queue_only_when_called(self):
+    def test_order_number_accepts_one_customer_hash_prefix(self):
+        seen = []
+        tools = V2ToolAdapters(order_lookup=lambda number: seen.append(number) or {
+            "found": False,
+        })
+        tools.call("get_order", {"order_number": "#6344"})
+        self.assertEqual(["6344"], seen)
+
+    def test_live_handoff_is_injected_without_contacting_isa(self):
         adapter = live_handoff_adapter(
             conversation_id=7,
-            customer_phone="54911",
-            customer_message="quiero cuatro",
-            conversation_context=[],
+            correlation_id="cid",
+            create_handoff=lambda **kwargs: {"id": 11, "status": "prepared"},
         )
         self.assertTrue(callable(adapter))
 

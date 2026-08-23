@@ -8,6 +8,7 @@ these adapters validate identifiers and return evidence from the real source.
 from __future__ import annotations
 
 from dataclasses import asdict
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict
 
 
@@ -19,7 +20,13 @@ ALLOWED_HANDOFF_REASONS = {
     "purchase_intent",
     "product_advice",
     "unable_to_verify",
+    "cancel_order",
+    "modify_order",
+    "return_order",
+    "sensitive_order_action",
+    "operational_detail_unverified",
 }
+ALLOWED_HANDOFF_OPERATIONS = {"create", "repeat", "resolve"}
 
 
 def _bounded_text(value: Any, *, field: str, limit: int) -> str:
@@ -35,9 +42,70 @@ def _bounded_text(value: Any, *, field: str, limit: int) -> str:
 
 def _validated_order_number(value: Any) -> str:
     number = _bounded_text(value, field="order_number", limit=64)
+    if number.startswith("#"):
+        number = number[1:].strip()
     if not all(char.isalnum() or char == "-" for char in number):
         raise ValueError("order_number inválido")
     return number
+
+
+def _verified_price(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return ""
+    if amount < 0:
+        return ""
+    rendered = format(amount, ",.2f")
+    whole, decimals = rendered.split(".")
+    whole = whole.replace(",", ".")
+    return "${}".format(whole if decimals == "00" else "{},{}".format(whole, decimals))
+
+
+def _product_safe_reply(products: Any) -> str:
+    lines = ["Esto es lo que figura ahora en Tiendanube:"]
+    for product in list(products or [])[:3]:
+        product_name = str(product.get("product_name") or "Producto")[:120]
+        variants = list(product.get("variants") or [])[:5]
+        if not variants:
+            lines.append("- {}: sin variantes publicadas para informar.".format(product_name))
+            continue
+        for variant in variants:
+            details = []
+            variant_name = str(variant.get("variant") or "").strip()[:80]
+            status = str(variant.get("status") or "")
+            quantity = variant.get("quantity")
+            if status == "in_stock":
+                if isinstance(quantity, int) and not isinstance(quantity, bool):
+                    details.append("{} {}".format(
+                        quantity, "unidad" if quantity == 1 else "unidades",
+                    ))
+                else:
+                    details.append("stock disponible")
+            elif status == "out_of_stock":
+                details.append("sin stock")
+            else:
+                details.append("stock no confirmado")
+            price = _verified_price(variant.get("price"))
+            if price:
+                details.append(price)
+            label = "{} ({})".format(product_name, variant_name) if variant_name else product_name
+            lines.append("- {}: {}.".format(label, ", ".join(details)))
+    return "\n".join(lines)
+
+
+def _without_purchase_links(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_purchase_links(item)
+            for key, item in value.items()
+            if str(key).lower() not in {"product_url", "checkout_url"}
+        }
+    if isinstance(value, list):
+        return [_without_purchase_links(item) for item in value]
+    return value
 
 
 def _default_knowledge_search(query: str) -> Dict[str, Any]:
@@ -46,13 +114,17 @@ def _default_knowledge_search(query: str) -> Dict[str, Any]:
     from app import search_knowledge_bundle
 
     retrieval = search_knowledge_bundle(query)
+    found = bool(retrieval.rows)
+    handoff_required = bool(retrieval.obligations.escalation_required) or not found
     return {
-        "found": bool(retrieval.rows),
+        "found": found,
+        "status": "found" if found else "not_found",
         "context": retrieval.context,
         "governing_topic": retrieval.governing_topic,
         "retrieved_topics": list(retrieval.retrieved_topics),
         "obligations": asdict(retrieval.obligations),
-        "handoff_required": bool(retrieval.obligations.escalation_required),
+        "handoff_required": handoff_required,
+        "allowed_next_action": "handoff_to_isa" if handoff_required else "reply",
         "dynamic_requirements": [asdict(item) for item in retrieval.dynamic_requirements],
     }
 
@@ -98,7 +170,12 @@ def _default_get_product(query: str) -> Dict[str, Any]:
             continue
         live = get_product_availability(product_id)
         if live.get("found"):
-            products.append(live)
+            # Fred can report verified identity/price/stock, but the v2
+            # cutover does not generate or offer product/purchase links.
+            products.append({
+                key: value for key, value in live.items()
+                if key not in {"product_url", "checkout_url"}
+            })
     return {
         "found": bool(products),
         "status": "found" if products else "not_found",
@@ -145,7 +222,14 @@ class V2ToolAdapters:
         if name == "search_knowledge":
             query = _bounded_text(arguments.get("query"), field="query", limit=MAX_QUERY_CHARS)
             result = self._knowledge_search(query)
-            if "allowed_next_action" not in result:
+            if not result.get("found"):
+                result = {
+                    **result,
+                    "status": "not_found",
+                    "handoff_required": True,
+                    "allowed_next_action": "handoff_to_isa",
+                }
+            elif "allowed_next_action" not in result:
                 result = {
                     **result,
                     "allowed_next_action": (
@@ -159,7 +243,7 @@ class V2ToolAdapters:
             )
         if name == "get_product":
             query = _bounded_text(arguments.get("query"), field="query", limit=MAX_QUERY_CHARS)
-            result = self._product_lookup(query)
+            result = _without_purchase_links(self._product_lookup(query))
             if "status" not in result:
                 result = {
                     **result,
@@ -168,6 +252,11 @@ class V2ToolAdapters:
                         "reply_from_live_evidence"
                         if result.get("found") else "handoff_to_isa/custom_order"
                     ),
+                }
+            if result.get("status") == "found":
+                result = {
+                    **result,
+                    "customer_safe_reply": _product_safe_reply(result.get("products") or []),
                 }
             if result.get("status") == "not_found" and "customer_safe_reply" not in result:
                 result = {
@@ -182,10 +271,24 @@ class V2ToolAdapters:
             reason = _bounded_text(arguments.get("reason"), field="reason", limit=64)
             if reason not in ALLOWED_HANDOFF_REASONS:
                 raise ValueError("reason de handoff inválido")
+            operation = str(arguments.get("operation") or "create").strip().lower()
+            if operation not in ALLOWED_HANDOFF_OPERATIONS:
+                raise ValueError("operation de handoff inválida")
             summary = _bounded_text(
                 arguments.get("summary"), field="summary", limit=MAX_SUMMARY_CHARS,
             )
-            return self._handoff({"reason": reason, "summary": summary})
+            payload = {"operation": operation, "reason": reason, "summary": summary}
+            if arguments.get("order_number"):
+                payload["order_number"] = _validated_order_number(arguments.get("order_number"))
+            if operation in {"repeat", "resolve"}:
+                try:
+                    handoff_id = int(arguments.get("handoff_id") or 0)
+                except (TypeError, ValueError) as error:
+                    raise ValueError("handoff_id inválido") from error
+                if handoff_id <= 0:
+                    raise ValueError("handoff_id inválido")
+                payload["handoff_id"] = handoff_id
+            return self._handoff(payload)
         raise ValueError("Herramienta no permitida: {}".format(name))
 
 
@@ -245,13 +348,18 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "handoff_to_isa",
             "description": (
-                "Deriva a Isa. Es OBLIGATORIA para asesoramiento subjetivo (reason=product_advice), "
+                "Gestiona un handoff por tema mediante un link que decide abrir la clienta; nunca "
+                "envía un mensaje a Isa. Es OBLIGATORIA para asesoramiento subjetivo "
+                "(reason=product_advice), "
                 "cualquier solicitud explícita de comprar/llevar una cantidad "
                 "(reason=purchase_intent), aun sin identidad verificada, y producto no encontrado "
                 "(custom_order). También es obligatoria con reason=human_request para pedidos "
-                "de hablar con una persona y acciones sensibles sobre un pedido (cancelar, cambiar, "
-                "devolver): no consultar otras tools primero. Para compra no consultar catálogo ni "
-                "pedir foto/link. No crea checkout ni modifica pedidos."
+                "de hablar con una persona. Usar cancel_order, modify_order, return_order o "
+                "sensitive_order_action para acciones sensibles sobre pedidos, y "
+                "operational_detail_unverified si Knowledge no confirma un procedimiento. "
+                "operation=create inicia; repeat vuelve a mostrar el link sin afirmar qué pasó "
+                "con Isa; resolve sólo cuando la clienta confirma que ya habló con ella. Para "
+                "compra no consultar catálogo ni pedir foto/link. No crea checkout ni modifica pedidos."
             ),
             "parameters": {
                 "type": "object",
@@ -261,6 +369,12 @@ TOOL_SCHEMAS = [
                         "enum": sorted(ALLOWED_HANDOFF_REASONS),
                     },
                     "summary": {"type": "string"},
+                    "operation": {
+                        "type": "string",
+                        "enum": sorted(ALLOWED_HANDOFF_OPERATIONS),
+                    },
+                    "handoff_id": {"type": "integer", "minimum": 1},
+                    "order_number": {"type": "string"},
                 },
                 "required": ["reason", "summary"],
                 "additionalProperties": False,

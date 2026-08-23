@@ -129,7 +129,9 @@ class ABScoringTests(unittest.TestCase):
 
     def test_sensitive_order_action_and_human_priority_are_prompt_contracts(self):
         self.assertIn("acción sensible", SYSTEM_PROMPT)
-        self.assertIn("handoff_to_isa(reason=human_request)", SYSTEM_PROMPT)
+        self.assertIn("reason=modify_order", SYSTEM_PROMPT)
+        self.assertIn("cancel_order", SYSTEM_PROMPT)
+        self.assertIn("return_order", SYSTEM_PROMPT)
         self.assertIn("incluso si el mensaje también contiene otra consulta", SYSTEM_PROMPT)
 
 

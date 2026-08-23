@@ -8,6 +8,7 @@ deploy ni una venta real.
 
 | Documento | Para qué sirve |
 |---|---|
+| `fred-v2-production.md` | Cutover exclusivo a v2, handoff por tema, migración, Railway y métricas. |
 | `operacion-fred.md` | Operación real: checkout, Isa, pagos, resumen y número oficial. |
 | `kit-replicable-fred.md` | Arquitectura actual y cómo instalar Fred en otro comercio. |
 | `checkout-real.md` | Límites y flujo seguro del checkout aprobado. |
@@ -22,6 +23,10 @@ deploy ni una venta real.
 - `README.md`, `arquitectura.md` y `estado-para-hermano.md` describen fases y
   alternativas del arranque. Algunas mencionan Node/Express o decisiones que
   ya no son el stack desplegado.
+- `fred-v2-agent-handoff.md`, `fred-v2-shadow.md` y
+  `fred-v2-real-production-report.md` documentan la etapa previa al cutover.
+  Sus propuestas de shadow/canary fueron reemplazadas por
+  `fred-v2-production.md`; se conservan como evidencia de validación.
 - `prompt-para-otra-ia.md`, `reglas-tiendanube.md`,
   `plan-skus-y-reconciliacion.md` y `runbook-reconciliacion.md` sirven para
   limpieza de catálogo/inventario. No autorizan modificar stock sin validar el
