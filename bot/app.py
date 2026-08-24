@@ -217,6 +217,7 @@ FRED_BETA_ALLOWED_PHONES = {
     if re.sub(r"\D", "", phone)
 }
 ISA_WHATSAPP_NUMBER = os.getenv("ISA_WHATSAPP_NUMBER", "")
+ISA_INTERNAL_OPERATOR_NUMBER = os.getenv("ISA_INTERNAL_OPERATOR_NUMBER", "")
 SALES_INTAKE_ENABLED = os.getenv("SALES_INTAKE_ENABLED", "false").lower() == "true"
 # Observer-only v2. False is intentionally the default; enabling it never
 # changes which agent owns the reply or any operational conversation state.
@@ -2329,9 +2330,9 @@ async def stop_isa_reminders() -> None:
 
 
 def _is_isa_phone(phone_number: str) -> bool:
-    return bool(ISA_WHATSAPP_NUMBER) and (
+    return bool(ISA_INTERNAL_OPERATOR_NUMBER) and (
         normalize_whatsapp_recipient(phone_number)
-        == normalize_whatsapp_recipient(ISA_WHATSAPP_NUMBER)
+        == normalize_whatsapp_recipient(ISA_INTERNAL_OPERATOR_NUMBER)
     )
 
 
