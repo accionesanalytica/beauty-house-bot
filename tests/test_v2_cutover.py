@@ -72,16 +72,17 @@ class V2HandoffTests(unittest.TestCase):
             captured.update(kwargs)
             return {"id": 31, "status": "prepared"}
 
-        result = self._adapter(created=create)({
-            "operation": "create",
-            "reason": "cancel_order",
-            "customer_reason": "cancelar pedido",
-            "order_number": "6344",
-            "summary": (
-                "quiero cancelar el pedido #6344 y Fred me indicó que este tema "
-                "necesita tu intervención."
-            ),
-        })
+        with patch.dict(os.environ, {"ISA_INTERNAL_OPERATOR_NUMBER": "5491199999999"}):
+            result = self._adapter(created=create)({
+                "operation": "create",
+                "reason": "cancel_order",
+                "customer_reason": "cancelar pedido",
+                "order_number": "6344",
+                "summary": (
+                    "quiero cancelar el pedido #6344 y Fred me indicó que este tema "
+                    "necesita tu intervención."
+                ),
+            })
 
         parsed = urlparse(result["wa_url"])
         message = parse_qs(parsed.query)["text"][0]
@@ -1051,10 +1052,10 @@ class V2OutboxStoreTests(unittest.TestCase):
 
 
 class IncomingRequest:
-    def __init__(self, text, state="ISA"):
+    def __init__(self, text, state="ISA", phone="5491100000000"):
         self.state = state
         self._body = {"entry": [{"changes": [{"value": {"messages": [{
-            "from": "5491100000000", "id": "wamid-cutover", "text": {"body": text},
+            "from": phone, "id": "wamid-cutover", "text": {"body": text},
         }]}}]}]}
 
     async def json(self):
@@ -1062,6 +1063,61 @@ class IncomingRequest:
 
 
 class V2WebhookCutoverTests(unittest.TestCase):
+    def test_public_isa_number_is_treated_as_a_normal_v2_customer(self):
+        public_isa = "5491124528750"
+        with patch.object(app, "BOT_RESPONSE_MODE", "v2"), patch.object(
+            app, "ISA_WHATSAPP_NUMBER", public_isa,
+        ), patch.object(
+            app, "ISA_INTERNAL_OPERATOR_NUMBER", "5491199999999",
+        ), patch.object(
+            app, "CONVERSATION_DEBOUNCE_SECONDS", 0,
+        ), patch.object(app, "load_history", return_value=[]), patch.object(
+            app, "record_inbound_message", return_value=(7, "BOT", False),
+        ), patch.object(
+            app, "run_v2_customer_turn", return_value={"delivered": True},
+        ) as run_v2, patch.object(app, "handle_isa_message") as internal_handler:
+            response = asyncio.run(app.webhook_post(IncomingRequest("hola", phone=public_isa)))
+
+        self.assertEqual(200, response.status_code)
+        run_v2.assert_called_once()
+        internal_handler.assert_not_called()
+
+    def test_internal_operator_number_is_routed_to_the_internal_menu_handler(self):
+        internal_operator = "5491199999999"
+        with patch.object(
+            app, "ISA_INTERNAL_OPERATOR_NUMBER", internal_operator,
+        ), patch.object(app, "run_v2_customer_turn") as run_v2, patch.object(
+            app, "handle_isa_message",
+        ) as internal_handler:
+            response = asyncio.run(app.webhook_post(
+                IncomingRequest("vendí un producto", phone=internal_operator)
+            ))
+
+        self.assertEqual(200, response.status_code)
+        internal_handler.assert_called_once_with(
+            "vendí un producto", wa_message_id="wamid-cutover", button_reply_id="",
+        )
+        run_v2.assert_not_called()
+
+    def test_empty_internal_operator_number_never_intercepts(self):
+        public_isa = "5491124528750"
+        with patch.object(app, "BOT_RESPONSE_MODE", "v2"), patch.object(
+            app, "ISA_WHATSAPP_NUMBER", public_isa,
+        ), patch.object(
+            app, "ISA_INTERNAL_OPERATOR_NUMBER", "",
+        ), patch.object(
+            app, "CONVERSATION_DEBOUNCE_SECONDS", 0,
+        ), patch.object(app, "load_history", return_value=[]), patch.object(
+            app, "record_inbound_message", return_value=(7, "BOT", False),
+        ), patch.object(
+            app, "run_v2_customer_turn", return_value={"delivered": True},
+        ) as run_v2, patch.object(app, "handle_isa_message") as internal_handler:
+            response = asyncio.run(app.webhook_post(IncomingRequest("hola", phone=public_isa)))
+
+        self.assertEqual(200, response.status_code)
+        run_v2.assert_called_once()
+        internal_handler.assert_not_called()
+
     def test_v2_returns_before_legacy_ownership_shadow_and_v1_answer(self):
         with patch.object(app, "BOT_RESPONSE_MODE", "v2"), patch.object(
             app, "CONVERSATION_DEBOUNCE_SECONDS", 0,
