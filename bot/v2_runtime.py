@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional
@@ -30,6 +31,54 @@ _ORDER_HANDOFF_REASONS = {
 }
 _PRODUCT_HANDOFF_REASONS = {"custom_order", "purchase_intent", "product_advice"}
 _TOOL_NAMES = {"search_knowledge", "get_order", "get_product", "handoff_to_isa"}
+
+_CLEAR_PURCHASE_RE = re.compile(
+    r"^\s*(?:quiero|quisiera|me\s+gustar[ií]a)\s+comprar\s+(.+?)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_SENSITIVE_PURCHASE_WORDS = re.compile(
+    r"\b(?:cancel|devolv|modific|cambi|pedido\s+#|hablar\s+con|persona|humano|"
+    r"dni|direcci[oó]n|domicilio|vivo\s+en|ll[aá]mame|escribime)\w*\b",
+    re.IGNORECASE,
+)
+
+
+def _clear_purchase_handoff(message: str) -> Optional[Dict[str, str]]:
+    """Recognize only an explicit, self-contained purchase; ambiguity stays with the model."""
+    compact = " ".join(str(message or "").split())
+    match = _CLEAR_PURCHASE_RE.fullmatch(compact)
+    if not match or "?" in compact or _SENSITIVE_PURCHASE_WORDS.search(compact):
+        return None
+    product = match.group(1).strip(" .,!;:")
+    if not product or len(product) > 100:
+        return None
+    return {
+        "operation": "create",
+        "reason": "purchase_intent",
+        "reason_label": "compra de {}".format(product),
+        "context_summary": (
+            "quiero comprar {} y necesito ayuda para coordinar la compra."
+        ).format(product),
+    }
+
+
+def _direct_handoff_result(
+    handoff: Callable[[Dict[str, Any]], Dict[str, Any]], payload: Dict[str, str],
+) -> Dict[str, Any]:
+    tool_result = handoff(payload)
+    return {
+        "reply": tool_result["customer_safe_reply"],
+        "tool_calls": [{"name": "handoff_to_isa", "arguments": {
+            "operation": "create", "reason": "purchase_intent",
+        }}],
+        "tool_results": [{"name": "handoff_to_isa", "result": tool_result}],
+        "model_calls": 0,
+        "latency_ms": 0,
+        "errors": [],
+        "usage": {},
+        "decision": {"action": "handoff_to_isa", "reason": "purchase_intent"},
+        "fast_path": "clear_purchase_handoff",
+    }
 
 
 def correlation_id_for(source_message_id: str, conversation_id: int, generation: int) -> str:
@@ -556,9 +605,13 @@ def run_v2_customer_turn(
         tools = V2ToolAdapters(handoff=handoff)
         factory = agent_factory or FredV2Agent
         try:
-            result = factory(tools=tools).answer(
-                message, history=history, active_handoffs=active_handoffs,
-            )
+            direct_purchase = _clear_purchase_handoff(message)
+            if direct_purchase and not active_handoffs:
+                result = _direct_handoff_result(handoff, direct_purchase)
+            else:
+                result = factory(tools=tools).answer(
+                    message, history=history, active_handoffs=active_handoffs,
+                )
         except Exception as error:  # noqa: BLE001
             result = _fallback_result(handoff=handoff, error=error)
 
@@ -717,6 +770,11 @@ def run_v2_customer_turn(
                 result["errors"].append(_error_label("handoff_resolution_state", error))
 
     duration_ms = round((time.monotonic() - started) * 1000)
+    decision_ms = max(0, round(float(result.get("latency_ms") or 0)))
+    timings_ms = {
+        "decision": decision_ms,
+        "runtime_and_delivery": max(0, duration_ms - decision_ms),
+    }
     events = _events_for_result(
         result=result,
         correlation_id=correlation_id,
@@ -730,9 +788,12 @@ def run_v2_customer_turn(
     except Exception as error:  # noqa: BLE001
         print("[FredV2] analytics_error={}".format(type(error).__name__))
     print(
-        "[FredV2] conversation={} delivered={} topic={} tools={} llm_calls={} latency_ms={}".format(
+        "[FredV2] conversation={} delivered={} topic={} tools={} llm_calls={} "
+        "latency_ms={} decision_ms={} runtime_and_delivery_ms={} path={}".format(
             conversation_id, str(delivered).lower(), _topic_for(result.get("tool_calls") or []),
             len(result.get("tool_calls") or []), result.get("model_calls") or 0, duration_ms,
+            timings_ms["decision"], timings_ms["runtime_and_delivery"],
+            result.get("fast_path") or "agent",
         )
     )
     return {
@@ -740,5 +801,6 @@ def run_v2_customer_turn(
         "delivered": delivered,
         "correlation_id": correlation_id,
         "duration_ms": duration_ms,
+        "timings_ms": timings_ms,
         "events": events,
     }

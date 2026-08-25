@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Callable, Dict, Iterable
 from urllib.parse import quote
 
@@ -38,8 +39,16 @@ def _configured_isa_number() -> str:
 
 
 def _compact_context(value: Any) -> str:
-    compact = " ".join(redact_text(value, limit=MAX_HANDOFF_CONTEXT_CHARS).split())
-    return compact[:MAX_HANDOFF_CONTEXT_CHARS]
+    compact = " ".join(redact_text(value, limit=MAX_HANDOFF_CONTEXT_CHARS * 4).split())
+    if len(compact) <= MAX_HANDOFF_CONTEXT_CHARS:
+        return compact
+    bounded = compact[: MAX_HANDOFF_CONTEXT_CHARS + 1]
+    sentence_ends = list(re.finditer(r"[.!?](?=\s|$)", bounded))
+    if sentence_ends:
+        return bounded[: sentence_ends[-1].end()].strip()
+    words = bounded[: MAX_HANDOFF_CONTEXT_CHARS - 1].rsplit(" ", 1)
+    safe = words[0] if len(words) == 2 else bounded[: MAX_HANDOFF_CONTEXT_CHARS - 1]
+    return safe.rstrip(" ,;:-") + "."
 
 
 def _handoff_message(reason_label: str, order_number: str, context_summary: str) -> str:
@@ -66,11 +75,29 @@ def _canonical_context(reason: str, order_number: str = "") -> str:
         lead = "{} #{}".format(
             order_actions.get(reason, "necesito ayuda con el pedido"), order_number,
         )
+    elif reason == "purchase_intent":
+        return "quiero coordinar una compra con tu ayuda."
     else:
         lead = "necesito ayuda para {}".format(
             REASON_LABELS.get(reason, "revisar el caso")
         )
     return "{} y Fred me indicó que este tema necesita tu intervención.".format(lead)
+
+
+def _handoff_lead(reason: str) -> str:
+    if reason == "purchase_intent":
+        return (
+            "¡Claro! Para ayudarte con la compra te conviene hablar directamente con "
+            "Isa 😊 Te dejo su WhatsApp con el contexto preparado para que no tengas "
+            "que explicar todo de nuevo."
+        )
+    if reason == "product_advice":
+        return "Para asesorarte bien, te conviene hablar directamente con Isa 😊"
+    if reason in {"cancel_order", "modify_order", "return_order", "sensitive_order_action"}:
+        return "Para ayudarte con tu pedido, te conviene hablar directamente con Isa."
+    if reason == "human_request":
+        return "¡Claro! Te dejo el WhatsApp de Isa para que puedas hablar con ella."
+    return "Para ayudarte con este tema, te conviene hablar directamente con Isa."
 
 
 def build_isa_wa_url(
@@ -93,7 +120,7 @@ def _customer_reply(lead: str, wa_url: str, *, repeated: bool = False) -> str:
             "Si todavía no le escribiste, te vuelvo a pasar el acceso directo.\n\n"
         )
     return (
-        "{}{}\n\nWhatsApp de Isa: {}\n{}"
+        "{}{}\n\nWhatsApp de Isa: {}\n👉 Hablar con Isa:\n{}"
     ).format(visibility, lead, ISA_PUBLIC_DISPLAY, wa_url)
 
 
@@ -161,7 +188,7 @@ def live_handoff_adapter(
                 "side_effect_executed": False,
                 "message_sent_to_isa": False,
                 "customer_safe_reply": _customer_reply(
-                    "Ese tema lo tiene que revisar Isa.", url, repeated=True,
+                    _handoff_lead(existing_reason), url, repeated=True,
                 ),
             }
 
@@ -176,7 +203,10 @@ def live_handoff_adapter(
             raise ValueError("reason de handoff desconocido")
         reason_label = REASON_LABELS[reason]
         order_number = _compact_context(payload.get("order_number") or "")
-        context_summary = _canonical_context(reason, order_number)
+        context_summary = _compact_context(
+            payload.get("context_summary") or _canonical_context(reason, order_number)
+        )
+        reason_label = _compact_context(payload.get("reason_label") or reason_label)
         state = create_handoff(
             correlation_id=correlation_id,
             conversation_id=int(conversation_id),
@@ -188,8 +218,12 @@ def live_handoff_adapter(
         # customer never receives context that disagrees with stored state.
         stored_reason = str(state.get("reason") or reason)
         stored_order_number = str(state.get("order_number") or order_number)
-        stored_reason_label = REASON_LABELS[stored_reason]
-        stored_context_summary = _canonical_context(stored_reason, stored_order_number)
+        stored_reason_label = reason_label if stored_reason == reason else REASON_LABELS[stored_reason]
+        stored_context_summary = (
+            context_summary
+            if stored_reason == reason and stored_order_number == order_number
+            else _canonical_context(stored_reason, stored_order_number)
+        )
         url = build_isa_wa_url(
             reason_label=stored_reason_label,
             order_number=stored_order_number,
@@ -207,7 +241,7 @@ def live_handoff_adapter(
             "side_effect_executed": True,
             "message_sent_to_isa": False,
             "customer_safe_reply": _customer_reply(
-                "Ese tema lo tiene que revisar Isa.", url,
+                _handoff_lead(stored_reason), url,
             ),
         }
         return dict(created_result)
