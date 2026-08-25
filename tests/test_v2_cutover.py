@@ -100,6 +100,27 @@ class V2HandoffTests(unittest.TestCase):
         self.assertFalse(result["message_sent_to_isa"])
         self.assertEqual("prepared", captured.get("status", "prepared"))
 
+    def test_context_truncation_never_cuts_a_sentence_or_word(self):
+        result = self._adapter()({
+            "operation": "create",
+            "reason": "purchase_intent",
+            "context_summary": "Una frase útil completa. " + ("detalle " * 80),
+        })
+        message = parse_qs(urlparse(result["wa_url"]).query)["text"][0]
+        context = message.split("Contexto: ", 1)[1]
+        self.assertLessEqual(len(context), v2_live_adapters.MAX_HANDOFF_CONTEXT_CHARS)
+        self.assertTrue(context.endswith((".", "!", "?")))
+        self.assertEqual("Una frase útil completa.", context)
+
+    def test_purchase_copy_is_natural_and_fallback_has_labeled_link(self):
+        result = self._adapter()({
+            "operation": "create", "reason": "purchase_intent",
+        })
+        reply = result["customer_safe_reply"]
+        self.assertIn("ayudarte con la compra", reply)
+        self.assertIn("👉 Hablar con Isa:\nhttps://wa.me/", reply)
+        self.assertNotIn("lo tiene que revisar", reply)
+
     def test_handoff_storage_excludes_free_text_pii(self):
         captured = {}
 
@@ -259,6 +280,42 @@ class V2HandoffTests(unittest.TestCase):
 
 
 class V2RuntimeTests(unittest.TestCase):
+    def test_clear_purchase_uses_zero_model_or_catalog_calls(self):
+        class ForbiddenAgent:
+            def __init__(self, **_kwargs):
+                raise AssertionError("the model must not be constructed")
+
+        sent = []
+        with patch.dict(os.environ, {"ISA_WHATSAPP_NUMBER": "5491124528750"}), patch.object(
+            v2_runtime, "list_pending_v2_handoffs", return_value=[],
+        ), patch.object(v2_runtime, "record_v2_handoff", return_value={
+            "id": 44, "status": "prepared",
+        }), patch.object(v2_runtime, "mark_v2_handoff_delivery", return_value=1), patch.object(
+            v2_runtime, "record_v2_events", return_value=2,
+        ):
+            result = v2_runtime.run_v2_customer_turn(
+                customer_phone="54911", conversation_id=7,
+                source_message_id="wamid-clear-purchase", generation=0,
+                message="quiero comprar pestañas", history=[],
+                agent_factory=ForbiddenAgent,
+                send_message=lambda phone, reply: sent.append(reply) or True,
+                record_message=lambda *args: None,
+            )
+
+        self.assertEqual(0, result["model_calls"])
+        self.assertEqual(0, result["timings_ms"]["decision"])
+        self.assertGreaterEqual(result["timings_ms"]["runtime_and_delivery"], 0)
+        self.assertEqual("clear_purchase_handoff", result["fast_path"])
+        self.assertEqual(["handoff_to_isa"], [call["name"] for call in result["tool_calls"]])
+        self.assertIn("👉 Hablar con Isa:\nhttps://wa.me/", sent[0])
+        message = parse_qs(urlparse(result["tool_results"][0]["result"]["wa_url"]).query)["text"][0]
+        self.assertIn("Motivo: compra de pestañas", message)
+        self.assertIn(
+            "Contexto: quiero comprar pestañas y necesito ayuda para coordinar la compra.",
+            message,
+        )
+        self.assertFalse(result["tool_results"][0]["result"]["message_sent_to_isa"])
+
     def setUp(self):
         self.isa_env = patch.dict(os.environ, {"ISA_WHATSAPP_NUMBER": "5491124528750"})
         self.isa_env.start()
